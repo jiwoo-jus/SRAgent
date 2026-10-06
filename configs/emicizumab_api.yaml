@@ -1,0 +1,12 @@
+include:
+  - topics/emicizumab_pk.yaml
+  - backend_api.yaml
+run_dir: runs/emicizumab_api
+cache_dir: .cache
+budget_usd: 4.0
+contact_email: ""          # optional: your email for NCBI E-utilities etiquette
+pipeline:
+  max_records: 60          # cost cap for the API test: all 15 gold includes + 45 sampled excludes
+                           # set to null to screen every record
+  max_fulltext_chars: 60000    # API cost control (methods + results usually fit)
+  fulltext_screen_chars: 24000

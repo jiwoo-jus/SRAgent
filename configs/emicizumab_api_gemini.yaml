@@ -1,0 +1,10 @@
+# Gemini API backend for the review.
+include:
+  - emicizumab_api.yaml
+roles:
+  agent:
+    provider: gemini
+    model: gemini-3.8-flash
+    reasoning_effort: null
+    pricing: {input_per_m: 0.75, output_per_m: 3.75}
+budget_usd: 4.2

@@ -1,0 +1,13 @@
+# Cloud API backend.
+# Keys are read from api_env.yaml (path relative to this config dir, the cwd, or absolute).
+# Never commit api_env.yaml.
+llm_defaults:
+  provider: openai
+  model: gpt-6.1-sol
+  api_env: ../api_env.yaml
+  reasoning_effort: low           # keeps reasoning-token cost down for routine stages
+  max_tokens: 16000
+  concurrency: 6
+  # USD per 1M tokens (check current price pages; used for the budget guard)
+  pricing: {input_per_m: 2.00, output_per_m: 10.00}
+

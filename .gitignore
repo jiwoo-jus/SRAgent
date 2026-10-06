@@ -1,0 +1,18 @@
+# Python and credentials
+__pycache__/
+*.py[cod]
+.conda/
+*.egg-info/
+build/
+dist/
+api_env.yaml
+.env
+.env.*
+!.env.example
+
+# Generated review state and API caches
+.cache/
+runs/
+.pytest_cache/
+.test-tmp/
+COMMIT_MESSAGE.txt

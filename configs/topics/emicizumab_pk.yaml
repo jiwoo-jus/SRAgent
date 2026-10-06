@@ -1,0 +1,23 @@
+# Bounded medical topic: pharmacokinetics of emicizumab in humans.
+# Gold standard: SYNERGY "Donners_2021" (Donners et al., Clin Pharmacokinet 2021;
+# doi:10.1007/s40262-021-01042-w), 15 included studies among the screened records.
+topic:
+  key: emicizumab_pk
+  question: >-
+    What are the pharmacokinetics of emicizumab in humans (exposure, key PK parameters, dosing
+    regimens, special populations), and how does emicizumab exposure relate to efficacy?
+  # Eligibility text published by the original review (used as the seed for the protocol;
+  # the agent turns it into atomic criteria that you can edit in runs/<name>/protocol.yaml).
+  seed_eligibility: >-
+    The following inclusion criteria were applied: emicizumab studies providing (1) data on humans,
+    (2) original PK data or modeled PK data or PK/PD relationships, and (3) access to the abstract
+    and the full text in English.
+  # Deterministic exclusions applied before any LLM call or human decision (see sragent/rules.py).
+  # Conference abstracts fail "access to ... the full text"; reviews fail "original PK data".
+  screening_rules: [empty_record, conference_abstract, erratum, editorial, review, off_topic_no_abstract]
+  records:
+    source: synergy          # synergy | pubmed | file
+    synergy_key: Donners_2021
+    data_dir: data
+    pubmed_retmax: 500
+    maxdate: "2021/03/01"    # the original search date; keeps the agent's search comparable
