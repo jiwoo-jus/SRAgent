@@ -32,3 +32,11 @@ topic:
     - {name: pk_results, description: "Key PK results with numbers and units (e.g. trough concentration, half-life, clearance, volume, bioavailability), with the regimen/subgroup they apply to."}
     - {name: exposure_response, description: "Reported relationship between emicizumab concentration/exposure and efficacy (e.g. bleeding rate) or PD markers; NR if not studied."}
     - {name: efficacy_safety, description: "Main efficacy (e.g. annualised bleeding rate) and safety findings, with numbers."}
+  rob_tool_name: "PK-study quality domains (adapted from ClinPK reporting items and Cochrane RoB concepts)"
+  rob_domains:
+    - {name: participant_selection, description: "Is the study population clearly defined and appropriate for the PK question?"}
+    - {name: dosing_documentation, description: "Are dose, schedule and administration documented so exposure can be interpreted?"}
+    - {name: sampling_and_bioanalysis, description: "Are the PK sampling schedule and a validated bioanalytical assay described?"}
+    - {name: pk_analysis, description: "Is the PK analysis method (NCA / population model) appropriate and adequately described/validated?"}
+    - {name: missing_data, description: "Are missing PK samples, dropouts or exclusions reported and unlikely to bias results?"}
+    - {name: selective_reporting, description: "Are all planned PK outcomes reported (no evidence of selective reporting)?"}

@@ -110,3 +110,5 @@ def test_pipeline_milestone(tmp_path):
     pipeline.run(ctx)
     assert ctx.hub.tracker.calls == calls
     assert len(ctx.store.by_type("extraction")) == 3
+    assert ctx.store.by_type("rob") and ctx.store.by_type("synthesis")
+    assert (ctx.run_dir / "report_evidence.html").exists()

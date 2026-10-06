@@ -1,6 +1,6 @@
 # SRAgent
 
-SRAgent takes a review question through literature screening and structured data extraction. Each extracted value is linked to source sentences so a reviewer can check it against the paper. This version adds full-text retrieval and PDF/text inputs.
+SRAgent builds an evidence-linked review from a question and a set of literature records. It screens studies, extracts data, assesses study quality, and writes a cited narrative synthesis. This version adds quality assessment and review reports.
 
 ## Setup
 
@@ -63,7 +63,7 @@ Normal switching between folders does not require reinstalling.
 
 | Input                                | Where to set it                                                                                                                                               |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Review question and eligibility text | `configs/topics/emicizumab_pk.yaml`: `topic.question` and `topic.seed_eligibility`. Add `extraction_fields`.                                                  |
+| Review question and eligibility text | `configs/topics/emicizumab_pk.yaml`: `topic.question` and `topic.seed_eligibility`. Add `extraction_fields` and `rob_domains`.                                                  |
 | Record source                        | The same topic file:`topic.records.source` accepts `synergy`, `pubmed`, or `file`. The example uses the bundled `data/donners_2021_records.jsonl` benchmark.  |
 | Imported records                     | For`source: file`, set `topic.records.file` to a JSONL file. Each line should contain `rid`, `title`, and `abstract`; `pmid`, `doi`, and `year` are optional. |
 | Run settings                         | `configs/emicizumab_api.yaml`: `run_dir`, `cache_dir`, `budget_usd`, and `pipeline.max_records`. It includes the topic and backend YAML files.                |
@@ -84,6 +84,9 @@ Run commands from the project root: relative data and output paths use the worki
 | `screen`   | [sragent/stages/screening.py](sragent/stages/screening.py)                                                           | Records and criteria →`screen:<rid>` decisions, reasons, and supporting evidence.                       |
 | `fulltext` | [sragent/stages/fulltext.py](sragent/stages/fulltext.py), [sragent/stages/screening.py](sragent/stages/screening.py) | Included/uncertain records and available paper text →`ft:<rid>` text and updated eligibility decisions. |
 | `extract`  | [sragent/stages/extraction.py](sragent/stages/extraction.py)                                                         | Included studies and configured fields →`ext:<rid>` values, source spans, and term checks.              |
+| `rob` | [sragent/stages/rob.py](sragent/stages/rob.py) | Extractions, source text, and quality domains → `rob:<rid>` judgments and evidence. |
+| `synthesize` | [sragent/stages/synthesis.py](sragent/stages/synthesis.py) | Included extractions and quality assessments → `syn:<id>` statements, study citations, and support checks. |
+| `report` | [sragent/stages/report.py](sragent/stages/report.py) | Review state → `report.md` and `report_evidence.html`. |
 
 Full-text retrieval uses Europe PMC or supplied files and falls back to the abstract when usable full text is unavailable. Outputs record which source was used.
 
@@ -106,6 +109,7 @@ With the example config, outputs are in `runs/emicizumab_api/`:
 - `store.json`: records, decisions, evidence, and node history; `store_changelog.jsonl`: the change log.
 - `usage.jsonl`, `cost.json`, and `run.log`: API usage, calculated cost, and execution messages.
 - `fulltext/needed_pdfs.csv`: missing or useful paper files, including their expected filenames.
+- `report.md` and `report_evidence.html`: the review narrative and source-linked report.
 
 Reusable LLM and literature-response caches are stored in `.cache/`. Run outputs, caches, and credentials are ignored by Git.
 

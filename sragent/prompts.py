@@ -107,3 +107,62 @@ Rules:
   different sections, e.g. a number in Results and its population in Methods).
 - If the item is not reported, value = "NR" and evidence = [].
 - Do not use outside knowledge about the study."""
+
+ROB = """Draft a risk-of-bias / study-quality assessment for this study. A human reviewer will
+check it, so every judgment must be traceable to the text.
+
+DOMAINS:
+{domains}
+
+STUDY EXTRACTION:
+{extraction}
+
+SOURCE ({kind}) — study id {rid}:
+\"\"\"
+{text}
+\"\"\"
+
+Return JSON:
+{{"domains": [{{"domain": str, "judgment": "low"|"some_concerns"|"high"|"unclear",
+               "rationale": str, "evidence": ["s5", ...]}}],
+  "overall": "low"|"some_concerns"|"high"|"unclear"}}
+Rules: evidence = ids of the numbered source sentences behind the judgment (1 to 4). If the source does not contain the information needed,
+use "unclear" (not "low")."""
+
+# ----------------------------------------------------------------------------- synthesis
+SYNTH = """Write the narrative synthesis for a systematic review.
+
+QUESTION: {question}
+
+INCLUDED STUDIES (extracted data; ids in brackets):
+{table}
+
+RISK OF BIAS (overall per study):
+{rob}
+
+Return JSON:
+{{"statements": [{{"id": "S1", "text": str, "cites": [study ids], "scope": str}}]}}
+Rules:
+- 4 to 8 statements covering design/populations, main PK findings, exposure-response or efficacy,
+  safety if reported, and limitations / certainty.
+- Every statement must cite the study ids that support it; cite only studies whose extracted data
+  actually support the statement.
+- Do not over-generalise: keep population, dose regimen and subgroup qualifiers that the data carry
+  (e.g. "in children <12 years", "with inhibitors"). `scope` states the population the statement
+  applies to.
+- Numbers must come from the extracted data."""
+
+SYNTH_VERIFY = """Check whether a synthesis statement is supported by the extracted data it cites.
+
+STATEMENT [{sid}]: {text}
+
+CITED STUDY DATA:
+{evidence}
+
+Return JSON: {{"support": "supported"|"partially_supported"|"unsupported",
+              "issues": [str], "overgeneralization": bool}}
+"partially_supported": the core is right but a number, qualifier or scope is wrong or broader than
+the data. "overgeneralization": the statement applies a finding to a broader population, regimen or
+outcome than the cited data show."""
+
+# ----------------------------------------------------------------------------- feedback

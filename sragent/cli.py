@@ -44,8 +44,10 @@ def cmd_revalidate(args):
 
 
 def cmd_status(args):
+    from .stages.report import prisma
     ctx = _ctx(args)
     st = ctx.store
+    print("PRISMA:", json.dumps(prisma(ctx)) if st.get("protocol") else "no review yet")
     types = {}
     for n in st.nodes.values():
         types[n["type"]] = types.get(n["type"], 0) + 1
@@ -75,8 +77,8 @@ def main(argv=None):
         p.add_argument("--run-dir", default=None, help="override run_dir")
 
     p = sub.add_parser("run"); common(p)
-    p.add_argument("--until", default="extract",
-                   choices=['plan', 'search', 'screen', 'fulltext', 'extract'])
+    p.add_argument("--until", default="report",
+                   choices=['plan', 'search', 'screen', 'fulltext', 'extract', 'rob', 'synthesize', 'report'])
     p.add_argument("--plan-only", action="store_true")
     p.add_argument("--fresh", action="store_true", help="ignore an existing store.json in run_dir")
     p.set_defaults(fn=cmd_run)
