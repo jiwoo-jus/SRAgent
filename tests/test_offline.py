@@ -109,4 +109,4 @@ def test_pipeline_milestone(tmp_path):
     calls = ctx.hub.tracker.calls
     pipeline.run(ctx)
     assert ctx.hub.tracker.calls == calls
-    assert not ctx.store.by_type("extraction")
+    assert len(ctx.store.by_type("extraction")) == 3

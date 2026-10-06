@@ -120,6 +120,29 @@ def screen_all(ctx: Ctx, protocol: dict) -> dict:
     return counts
 
 
+def fulltext_screen_all(ctx: Ctx, protocol: dict) -> dict:
+    """Second pass on forwarded records (include/uncertain) using full text when available."""
+    st = ctx.store
+    has_ft_criteria = any(c.get("stage") == "full_text" for c in protocol.get("criteria", []))
+    todo = []
+    for n in st.by_type("screen"):
+        rid = n["id"].split(":", 1)[1]
+        if n["data"]["stage"] == "title_abstract" and n["data"]["decision"] in ("include", "uncertain"):
+            ft = st.get(f"ft:{rid}")
+            if (ft and ft["data"].get("kind") == "fulltext") or has_ft_criteria or n["data"]["decision"] == "uncertain":
+                todo.append(rid)
+    ctx.log(f"[screen] full-text screening {len(todo)} records")
+    ctx.map(lambda rid: screen_one(ctx, protocol, rid, "full_text"), todo)
+    flag_awaiting(ctx)
+    ctx.save()
+    from .. import rules
+    rules.apply(ctx, protocol)
+    ctx.save()
+    inc = st.included_ids()
+    ctx.log(f"[screen] final included studies: {len(inc)}")
+    return {"included": len(inc)}
+
+
 def flag_awaiting(ctx: Ctx):
     st = ctx.store
     for n in st.by_type("screen"):

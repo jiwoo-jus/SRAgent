@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sragent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Human-in-the-loop, evidence-linked agent for systematic reviews (research prototype)"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "requests>=2.31",
   "rapidfuzz>=3.0",
   "pandas>=2.0",
+  "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]

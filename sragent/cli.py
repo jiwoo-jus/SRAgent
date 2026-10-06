@@ -37,6 +37,12 @@ def cmd_rescreen(args):
     print(screening.rescreen_rule_only(ctx, protocol))
 
 
+def cmd_revalidate(args):
+    from .stages import extraction
+    ctx = _ctx(args)
+    print(extraction.revalidate_terms(ctx))
+
+
 def cmd_status(args):
     ctx = _ctx(args)
     st = ctx.store
@@ -69,13 +75,15 @@ def main(argv=None):
         p.add_argument("--run-dir", default=None, help="override run_dir")
 
     p = sub.add_parser("run"); common(p)
-    p.add_argument("--until", default="screen",
-                   choices=['plan', 'search', 'screen'])
+    p.add_argument("--until", default="extract",
+                   choices=['plan', 'search', 'screen', 'fulltext', 'extract'])
     p.add_argument("--plan-only", action="store_true")
     p.add_argument("--fresh", action="store_true", help="ignore an existing store.json in run_dir")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("status"); common(p); p.set_defaults(fn=cmd_status)
+    p = sub.add_parser("revalidate-terms", help="re-run database term validation on stored extractions (no LLM)")
+    common(p); p.set_defaults(fn=cmd_revalidate)
     p = sub.add_parser("rescreen", help="re-derive eligibility decisions after editing protocol.yaml (no LLM calls)")
     common(p); p.set_defaults(fn=cmd_rescreen)
 

@@ -1,8 +1,7 @@
 # Create from the project root, then install dependencies from pyproject.toml:
-# conda env create --name sragent --file environment.yml
-# conda activate sragent
+# conda env create --prefix "$PWD/.conda" --file environment.yml
+# conda activate "$PWD/.conda"
 # python -m pip install -e ".[dev]"
-name: sragent
 channels: [conda-forge]
 dependencies:
   - python=3.11

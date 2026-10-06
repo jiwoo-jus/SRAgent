@@ -17,5 +17,9 @@ runs/
 .test-tmp/
 COMMIT_MESSAGE.txt
 
+# Locally supplied source documents
+fulltext/
+*.pdf
+
 # Live local cluster configuration
 configs/local_endpoints.yaml

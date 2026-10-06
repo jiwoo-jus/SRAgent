@@ -84,3 +84,26 @@ Return JSON:
   "confidence": float}}"""
 
 # ----------------------------------------------------------------------------- extraction
+EXTRACT = """Extract the following items for one study included in a systematic review.
+
+REVIEW QUESTION: {question}
+
+ITEMS:
+{fields}
+
+SOURCE ({kind}) — study id {rid}:
+\"\"\"
+{text}
+\"\"\"
+
+The source is split into numbered sentences [s1], [s2], ... under section headings.
+
+Return JSON: {{"fields": {{"<item name>": {{"value": str, "evidence": ["s12", "s40"], "entities": [str]}} , ...}}}}
+Rules:
+- entities: ONLY for items marked [drug] or [disease]: the bare generic drug / disease names mentioned
+  in the value (e.g. ["emicizumab"], ["haemophilia A"]), no doses or qualifiers; [] otherwise.
+- value: concise, include units and the population/subgroup the value applies to.
+- evidence: ids of the sentences that together support the value (1 to 4; they may be in
+  different sections, e.g. a number in Results and its population in Methods).
+- If the item is not reported, value = "NR" and evidence = [].
+- Do not use outside knowledge about the study."""

@@ -21,3 +21,14 @@ topic:
     data_dir: data
     pubmed_retmax: 500
     maxdate: "2021/03/01"    # the original search date; keeps the agent's search comparable
+  extraction_fields:
+    - {name: study_design, description: "Design, phase and setting (e.g. phase 1 first-in-human, phase 3 RCT, population PK analysis, real-world cohort, case report)."}
+    - {name: population, description: "Who received emicizumab: healthy volunteers or patients; age group; haemophilia A severity; FVIII inhibitor status; key subgroups."}
+    - {name: sample_size, description: "Number of participants with emicizumab PK data (state the population it refers to)."}
+    - {name: condition, kind: disease, description: "Disease studied (e.g. haemophilia A). Use the disease name only."}
+    - {name: intervention, kind: drug, description: "Drug name(s) and regimen: loading dose, maintenance dose, frequency, route."}
+    - {name: comparator, kind: drug, description: "Comparator or control (drug name / no prophylaxis / none)."}
+    - {name: pk_methods, description: "PK sampling and analysis approach (non-compartmental, population PK model, assay)."}
+    - {name: pk_results, description: "Key PK results with numbers and units (e.g. trough concentration, half-life, clearance, volume, bioavailability), with the regimen/subgroup they apply to."}
+    - {name: exposure_response, description: "Reported relationship between emicizumab concentration/exposure and efficacy (e.g. bleeding rate) or PD markers; NR if not studied."}
+    - {name: efficacy_safety, description: "Main efficacy (e.g. annualised bleeding rate) and safety findings, with numbers."}
