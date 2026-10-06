@@ -1,0 +1,15 @@
+# Copy to local_endpoints.yaml, or use sragent local-endpoints --nodes ...
+# Each entry is an independently reachable vLLM server, not a tensor-parallel worker.
+endpoints:
+  - ssh_host: compute-node-1
+    remote_host: 127.0.0.4
+    remote_port: 8000
+    model: auto
+    max_concurrency: 1
+    # roles: [agent, judge, reviewer, judge2]  # omit to allow every role
+    # revision: weights-v1  # change when weights change behind the same model ID
+    # api_key_env: LOCAL_API_KEY
+  # For a tunnel you manage yourself, use url instead of ssh_host:
+  # - url: http://127.0.0.1:18002/v1
+  #   model: auto
+  #   max_concurrency: 1

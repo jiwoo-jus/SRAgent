@@ -1,0 +1,18 @@
+# The agent only needs HTTP and SSH clients; vLLM runs in your server environment.
+llm_defaults:
+  provider: local
+  model: auto
+  api_env: ../api_env.yaml
+  reasoning_effort: null
+  extra_body: {}
+  max_tokens: 16000
+  timeout: 600
+  concurrency: 32
+  json_mode: true
+  pricing: {input_per_m: 0.0, output_per_m: 0.0}
+local:
+  endpoints_file: local_endpoints.yaml
+  poll_interval: 2
+  retry_interval: 5
+  probe_timeout: 5
+  wait_timeout: null

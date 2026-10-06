@@ -36,8 +36,8 @@ def test_unsupported_provider():
 
 def test_example_configs():
     for path in (ROOT / "configs").glob("*.yaml"):
-        if path.name == "models.yaml":
+        if path.name in {"models.yaml", "local_endpoints.example.yaml", "local_endpoints.yaml"}:
             continue
         cfg = load_config(path)
         for role in cfg["roles"]:
-            assert role_cfg(cfg, role)["provider"] in {"openai", "gemini"}
+            assert role_cfg(cfg, role)["provider"] in {"openai", "gemini", "local"}

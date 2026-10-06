@@ -1,0 +1,10 @@
+include:
+  - topics/emicizumab_pk.yaml
+  - backend_local.yaml
+run_dir: runs/emicizumab_local
+cache_dir: .cache
+budget_usd: 4.0
+pipeline:
+  max_records: 60
+  max_fulltext_chars: 30000
+  fulltext_screen_chars: 12000

@@ -21,7 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "contact_email": "",          # sent to NCBI / Crossref as a courtesy (optional)
     "ncbi_api_key": "",           # optional, raises E-utilities rate limit
     "llm_defaults": {
-        "provider": "openai",     # openai | gemini | mock (tests)
+        "provider": "openai",     # openai | gemini | local | mock (tests)
         "model": "gpt-6.1-sol",
         "api_env": "api_env.yaml",
         "base_url": None,         # optional API endpoint override
@@ -34,6 +34,13 @@ DEFAULTS: dict[str, Any] = {
         "json_mode": True,        # use response_format=json_object when available
         "pricing": {"input_per_m": 0.0, "output_per_m": 0.0},
         "concurrency": 4,
+    },
+    "local": {
+        "endpoints_file": "local_endpoints.yaml",  # relative to the run config directory
+        "poll_interval": 2,
+        "retry_interval": 5,
+        "probe_timeout": 5,
+        "wait_timeout": None,   # wait for updated/recovered endpoints until cancelled
     },
     # role-specific overrides of llm_defaults
     "roles": {
@@ -69,6 +76,11 @@ def _load_layer(p: Path, depth: int = 0) -> dict:
         raise ValueError("include nesting too deep")
     with open(p) as f:
         user = yaml.safe_load(f) or {}
+    local = user.get("local") or {}
+    if local.get("endpoints_file"):
+        endpoint_file = Path(local["endpoints_file"]).expanduser()
+        if not endpoint_file.is_absolute():
+            local["endpoints_file"] = str((p.parent / endpoint_file).resolve())
     merged: dict = {}
     for inc in user.pop("include", []) or []:
         merged = deep_merge(merged, _load_layer((p.parent / inc).resolve(), depth + 1))
@@ -126,6 +138,7 @@ def load_secrets(api_env: str | None, config_dir: str | None = None) -> dict:
     env_map = {
         "openai_api_key": "OPENAI_API_KEY",
         "gemini_api_key": "GEMINI_API_KEY",
+        "local_api_key": "LOCAL_API_KEY",
     }
     for k, env in env_map.items():
         if os.environ.get(env):

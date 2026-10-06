@@ -16,3 +16,6 @@ runs/
 .pytest_cache/
 .test-tmp/
 COMMIT_MESSAGE.txt
+
+# Live local cluster configuration
+configs/local_endpoints.yaml

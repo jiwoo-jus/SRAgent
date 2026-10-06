@@ -3,6 +3,7 @@
 All providers are reached through the OpenAI-compatible Chat Completions API:
   * openai : api.openai.com
   * gemini : Google's OpenAI-compatible endpoint
+  * local  : reloadable vLLM endpoints, optionally reached through SSH tunnels
   * mock   : deterministic in-process stub for offline tests
 
 Every call is cached on disk (SQLite) keyed by (provider, model, messages, params),
@@ -57,7 +58,7 @@ class CostTracker:
             raise BudgetExceeded(f"Budget ${self.budget:.2f} exhausted (spent ${self.spent:.4f}).")
 
     def add(self, role: str, model: str, tag: str, pin: int, pout: int, cost: float,
-            seconds: float, cached: bool):
+            seconds: float, cached: bool, *, endpoint: str | None = None, provider: str | None = None):
         with self.lock:
             self.spent_equiv += cost
             if cached:
@@ -77,7 +78,8 @@ class CostTracker:
                     f.write(json.dumps({"ts": time.time(), "role": role, "model": model, "tag": tag,
                                         "prompt_tokens": pin, "completion_tokens": pout,
                                         "usd": 0.0 if cached else round(cost, 6),
-                                        "seconds": round(seconds, 2), "cached": cached}) + "\n")
+                                        "seconds": round(seconds, 2), "cached": cached,
+                                        "endpoint": endpoint, "provider": provider}) + "\n")
 
     def summary(self) -> dict:
         return {"spent_usd": round(self.spent, 4), "spent_this_session_usd": round(self.spent - self.spent_at_start, 4),
@@ -153,18 +155,23 @@ def parse_json(text: str) -> Any:
 
 class LLM:
     def __init__(self, cfg: dict, role: str, tracker: CostTracker, cache: DiskCache | None,
-                 mock_fn: Callable[[list[dict], str], str] | None = None):
+                 mock_fn: Callable[[list[dict], str], str] | None = None, local_pool=None):
         self.role = role
         self.c = role_cfg(cfg, role)
         self.provider = self.c["provider"]
-        if self.provider not in {"openai", "gemini", "mock"}:
+        if self.provider not in {"openai", "gemini", "local", "mock"}:
             raise ValueError(f"Unsupported API provider: {self.provider}")
         self.model = self.c["model"]
         self.tracker = tracker
         self.cache = cache
         self.mock_fn = mock_fn
         self.client = None
-        if self.provider != "mock":
+        self.local_pool = local_pool
+        if self.provider == "local":
+            from .local import LocalPool
+            self.local_pool = local_pool or LocalPool(cfg)
+            self.local_key = load_secrets(self.c.get("api_env"), cfg.get("_config_dir")).get("local_api_key")
+        elif self.provider != "mock":
             from openai import OpenAI
             secrets = load_secrets(self.c.get("api_env"), cfg.get("_config_dir"))
             if self.provider == "openai":
@@ -191,7 +198,9 @@ class LLM:
              use_cache: bool = True) -> Any:
         temperature = self.c["temperature"] if temperature is None else temperature
         max_tokens = max_tokens or self.c["max_tokens"]
-        key_src = json.dumps([self.provider, self.model, messages, json_out, temperature,
+        if self.provider == "local":
+            return self._local_chat(messages, json_out, tag, max_tokens, temperature, use_cache)
+        key_src = json.dumps([self.provider, self.model, messages, json_out, temperature, max_tokens,
                               self.c.get("reasoning_effort"), self.c.get("extra_body")], sort_keys=True)
         key = hashlib.sha256(key_src.encode()).hexdigest()
         if use_cache and self.cache:
@@ -234,6 +243,56 @@ class LLM:
                     raise
                 time.sleep(min(60, 2 ** attempt * 2))
         raise RuntimeError(f"LLM call failed after retries ({self.name}, tag={tag}): {last_err}")
+
+    def _local_chat(self, messages, json_out, tag, max_tokens, temperature, use_cache):
+        from .local import completion, LocalRequestError
+
+        def request(entry, url, headers, model):
+            payload = {"model": model, "messages": messages, "max_tokens": max_tokens,
+                       "temperature": temperature}
+            if json_out and self.c.get("json_mode", True):
+                payload["response_format"] = {"type": "json_object"}
+            extra = self.c.get("extra_body") or {}
+            if set(extra) & {"model", "messages", "stream"}:
+                raise LocalRequestError("extra_body cannot override model, messages or stream")
+            payload.update(extra)
+            # Endpoint identity is stable even if its managed tunnel gets another port.
+            # revision disambiguates different weights served under the same model ID.
+            cache_key = hashlib.sha256(json.dumps(
+                ["local", entry["_key"], entry.get("revision", ""), payload], sort_keys=True).encode()).hexdigest()
+            if use_cache and self.cache:
+                hit = self.cache.get(cache_key)
+                if hit is not None:
+                    self.tracker.add(self.role, hit["model"], tag, hit["pin"], hit["pout"], 0, 0, True,
+                                     endpoint=entry["_key"], provider="local")
+                    return parse_json(hit["text"]) if json_out else hit["text"]
+            for attempt in range(self.c["max_retries"] + 1):
+                t0 = time.time()
+                result = completion(url, headers, payload, self.c["timeout"])
+                try:
+                    text = result["choices"][0]["message"].get("content") or ""
+                    actual_model = result.get("model") or model
+                    usage = result.get("usage") or {}
+                    pin = int(usage.get("prompt_tokens") or 0)
+                    pout = max(int(usage.get("completion_tokens") or 0), int(usage.get("total_tokens") or 0) - pin)
+                except (KeyError, IndexError, TypeError, ValueError) as exc:
+                    raise LocalRequestError("Malformed chat completion response from local server") from exc
+                self.tracker.add(self.role, actual_model, tag, pin, pout, 0, time.time() - t0, False,
+                                 endpoint=entry["_key"], provider="local")
+                try:
+                    value = parse_json(text) if json_out else text
+                except ValueError:
+                    if attempt == self.c["max_retries"]:
+                        raise LocalRequestError("Local model did not return valid JSON after repair attempts")
+                    payload["messages"] = messages + [{"role": "assistant", "content": text[:4000]},
+                        {"role": "user", "content": "Return ONLY valid JSON, without commentary."}]
+                    continue
+                # Do not cache a response under a different discovered model's identity.
+                if use_cache and self.cache and actual_model == model:
+                    self.cache.set(cache_key, {"text": text, "pin": pin, "pout": pout, "model": actual_model})
+                return value
+
+        return self.local_pool.run(self.role, self.model, self.local_key, request)
 
     def _call(self, messages, json_out, max_tokens, temperature):
         if self.provider == "mock":
@@ -278,7 +337,13 @@ class LLM:
         if n <= 1 or len(items) <= 1:
             return [fn(x) for x in items]
         with ThreadPoolExecutor(max_workers=n) as ex:
-            return list(ex.map(fn, items))
+            try:
+                return list(ex.map(fn, items))
+            except BaseException:
+                # Wake indefinitely waiting local workers before executor shutdown joins them.
+                if self.local_pool is not None:
+                    self.local_pool.close()
+                raise
 
 
 class LLMHub:
@@ -290,8 +355,18 @@ class LLMHub:
         self.cache = DiskCache(Path(cfg.get("cache_dir", ".cache")) / "llm_cache.sqlite")
         self.mock_fn = mock_fn
         self._clients: dict[str, LLM] = {}
+        self._local_pool = None
+        self._client_lock = threading.Lock()
 
     def __getitem__(self, role: str) -> LLM:
-        if role not in self._clients:
-            self._clients[role] = LLM(self.cfg, role, self.tracker, self.cache, self.mock_fn)
-        return self._clients[role]
+        with self._client_lock:
+            if role not in self._clients:
+                if role_cfg(self.cfg, role)["provider"] == "local" and self._local_pool is None:
+                    from .local import LocalPool
+                    self._local_pool = LocalPool(self.cfg)
+                self._clients[role] = LLM(self.cfg, role, self.tracker, self.cache, self.mock_fn, self._local_pool)
+            return self._clients[role]
+
+    def close(self):
+        if self._local_pool is not None:
+            self._local_pool.close()

@@ -1,3 +1,5 @@
 # Copy to api_env.yaml and fill in the providers you use.
 openai_api_key: ""
 gemini_api_key: ""
+# Optional: only needed if the local server requires an API key.
+local_api_key: ""

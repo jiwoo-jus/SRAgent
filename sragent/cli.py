@@ -81,6 +81,19 @@ def main(argv=None):
 
     p = sub.add_parser("data"); p.add_argument("--synergy", required=True); p.set_defaults(fn=cmd_data)
 
+    p = sub.add_parser("local-endpoints", help="inspect or atomically update live local model endpoints")
+    p.add_argument("--config", required=True)
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--nodes", nargs="*", default=None, help="replace the list with SSH node names; empty clears it")
+    group.add_argument("--urls", nargs="*", default=None, help="replace the list with existing endpoint URLs")
+    p.add_argument("--model", default="auto", help="served model ID, or auto for single-model servers")
+    p.add_argument("--remote-host", default="127.0.0.4")
+    p.add_argument("--remote-port", type=int, default=8000)
+    p.add_argument("--slots", type=int, default=1, help="maximum active requests per endpoint in this process")
+    p.add_argument("--probe", action="store_true", help="connect and list served models (no inference)")
+    from .local import cli_endpoints
+    p.set_defaults(fn=cli_endpoints)
+
     args = ap.parse_args(argv)
     args.fn(args)
 
