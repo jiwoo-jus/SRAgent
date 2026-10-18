@@ -15,21 +15,32 @@ from ..context import Ctx
 
 
 def prisma(ctx: Ctx) -> dict:
+    """PRISMA 2020 flow. Not retrieved, parse failures, undecided and ineligible are kept apart."""
     st = ctx.store
     s = (st.get("search") or {}).get("data", {})
     screens = st.by_type("screen")
-    ta_excl = [n for n in screens if n["data"]["stage"] == "title_abstract" and n["data"]["decision"] == "exclude"]
+    dec = lambda n: n["data"]["decision"]
+    ta_excl = [n for n in screens if n["data"]["stage"] == "title_abstract" and dec(n) == "exclude"]
+    pending_ta = [n for n in screens if n["data"]["stage"] == "title_abstract" and dec(n) != "exclude"]
+    sought = [n for n in screens if n["data"]["stage"] in ("retrieval", "full_text") or
+              (n["data"].get("rule") and n["data"].get("decision_before_rule") not in (None, "exclude"))]
     ft = [n for n in screens if n["data"]["stage"] == "full_text"]
-    ft_excl = [n for n in ft if n["data"]["decision"] == "exclude"]
+    ft_excl = [n for n in ft if dec(n) == "exclude"]
     reasons = {}
     for n in ft_excl:
         for c in n["data"].get("because", []) or ["unspecified"]:
             reasons[c] = reasons.get(c, 0) + 1
+    rule_excl = [n for n in screens if n["data"].get("rule") and dec(n) == "exclude"]
     return {"identified": s.get("n_identified"), "duplicates": s.get("n_duplicates"),
-            "screened": len(screens), "excluded_title_abstract": len(ta_excl),
+            "screened": len(screens), "excluded_by_rules": len(rule_excl),
+            "excluded_title_abstract": len([n for n in ta_excl if not n["data"].get("rule")]),
+            "awaiting_fulltext_review": len(pending_ta),
+            "reports_sought": len(sought),
+            "reports_not_retrieved": sum(1 for n in screens if dec(n) == "fulltext_unavailable"),
+            "reports_unreadable": sum(1 for n in screens if dec(n) == "parse_failed"),
             "fulltext_assessed": len(ft), "excluded_fulltext": len(ft_excl),
             "excluded_fulltext_reasons": reasons,
-            "awaiting_classification": sum(1 for n in screens if n["data"]["decision"] == "awaiting"),
+            "awaiting_classification": sum(1 for n in ft if dec(n) == "awaiting"),
             "included": len(st.included_ids())}
 
 
@@ -60,7 +71,9 @@ def report_markdown(ctx: Ctx) -> str:
     L += ["", f"**Search.** PubMed: `{s.get('query', '')}` ({s.get('hits', '?')} hits).", "",
           "## Study selection (PRISMA)", "",
           f"Records identified: {pr['identified']}; duplicates removed: {pr['duplicates']}; "
-          f"screened: {pr['screened']}; excluded at title/abstract: {pr['excluded_title_abstract']}; "
+          f"screened: {pr['screened']}; excluded by publication-type rules: {pr['excluded_by_rules']}; "
+          f"excluded at title/abstract: {pr['excluded_title_abstract']}; full texts sought: {pr['reports_sought']}; "
+          f"not retrieved: {pr['reports_not_retrieved']}; unreadable files: {pr['reports_unreadable']}; "
           f"full texts assessed: {pr['fulltext_assessed']}; excluded at full text: {pr['excluded_fulltext']}; "
           f"awaiting classification (human decision needed): {pr['awaiting_classification']}; "
           f"**included: {pr['included']}**.", ""]
@@ -188,10 +201,10 @@ navigator.clipboard&&navigator.clipboard.writeText(c).catch(()=>{});}}
 
 
 def _ev_txt(x: dict) -> str:
-    """Evidence as text with locations (new format) or the legacy quote."""
+    """Evidence as text with locations."""
     if x.get("spans"):
         return " | ".join(f"[{s['sid']}, {s['section']}] \"{s['text'][:300]}\"" for s in x["spans"])
-    return f"\"{x.get('quote', '')}\"" if x.get("quote") else "(no location cited)"
+    return "(no location cited)"
 
 
 def _ev_html(x: dict, rid: str | None) -> str:
@@ -203,8 +216,6 @@ def _ev_html(x: dict, rid: str | None) -> str:
                     else f"<span class='b'>{_e(loc)}</span>")
             out.append(f"<div>{link} <span class='q'>“{_e(s['text'][:400])}”</span></div>")
         return "".join(out)
-    if x.get("quote"):
-        return f"<span class='q'>“{_e(x['quote'])}”</span>"
     return "<span class='q'>(no location cited)</span>"
 
 

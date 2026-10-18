@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sragent</title>
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--fg:#1f2328;--mut:#656d76;--line:#d8dee4;--acc:#0b5cad;--acc-bg:#e8f0fb;
+--ok:#1a7f37;--ok-bg:#e6f4ea;--warn:#9a6700;--warn-bg:#fff4d6;--bad:#cf222e;--bad-bg:#fde8ea}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:10px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header b{font-size:15px}.mut{color:var(--mut)}.small{font-size:12px}
+nav{background:var(--card);border-bottom:1px solid var(--line);padding:0 12px;display:flex;gap:2px;overflow-x:auto}
+nav button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 12px;font:inherit;color:var(--mut);cursor:pointer;white-space:nowrap}
+nav button.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}
+main{max-width:1050px;margin:0 auto;padding:18px 16px 60px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:12px}
+h2{font-size:17px;margin:4px 0 12px}h3{font-size:15px;margin:2px 0 4px}
+.chip{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;background:#eef1f4;color:var(--mut);white-space:nowrap}
+.chip.done{background:var(--ok-bg);color:var(--ok)}.chip.you{background:var(--warn-bg);color:var(--warn)}
+.chip:empty{display:none}
+.chip.run{background:var(--acc-bg);color:var(--acc)}.chip.bad{background:var(--bad-bg);color:var(--bad)}
+.step{display:grid;grid-template-columns:150px 110px 1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.step:last-child{border-bottom:0}
+@media(max-width:700px){.step{grid-template-columns:1fr;gap:4px}}
+button.btn{font:inherit;border:1px solid var(--line);background:var(--card);border-radius:6px;padding:5px 12px;cursor:pointer}
+button.btn:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.primary:disabled{opacity:.5;cursor:default}
+button.link{background:none;border:0;color:var(--acc);cursor:pointer;font:inherit;padding:0}
+.q{font-weight:600;margin:6px 0}
+.ctx{margin:6px 0 8px;padding-left:18px;color:#3b434b;font-size:13px}
+.ctx li{margin:2px 0;word-break:break-word}
+.opts{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.opt{border:1px solid var(--line);border-radius:18px;padding:5px 14px;cursor:pointer;user-select:none;background:var(--card)}
+.opt.sel{border-color:var(--acc);background:var(--acc-bg);color:var(--acc);font-weight:600}
+.hint{font-size:12px;color:var(--mut);margin:-2px 0 6px}
+textarea,input,select{font:inherit;border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:#fff;color:var(--fg)}
+textarea{width:100%;min-height:54px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.row label.k{min-width:170px;color:var(--mut)}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.filters .opt{padding:3px 10px;font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+pre.log{background:#0f1419;color:#d7dde4;border-radius:6px;padding:10px;max-height:320px;overflow:auto;font-size:12px;white-space:pre-wrap}
+.saved{color:var(--ok);font-size:13px}.err{color:var(--bad);font-size:13px}
+code{background:#eef1f4;padding:1px 5px;border-radius:4px;font-size:12px;word-break:break-all}
+.empty{color:var(--mut);padding:20px;text-align:center}
+.next{border-color:var(--acc);background:var(--acc-bg)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:800px){.next{border-color:var(--acc);background:var(--acc-bg)}
+.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <b>sragent</b>
+  <span id="runname" class="mut"></span>
+  <span class="mut small" id="topic"></span>
+  <span style="flex:1"></span>
+  <span id="spent" class="small"></span>
+  <span id="jobpill"></span>
+</header>
+<nav id="tabs">
+  <button data-t="steps" class="on">Steps</button>
+  <button data-t="todo">To-do <span id="todo-n" class="chip you"></span></button>
+  <button data-t="studies">Studies</button>
+  <button data-t="run">Run</button>
+  <button data-t="pdfs">Full texts</button>
+  <button data-t="activity">Activity <span id="act-n" class="chip run"></span></button>
+  <button onclick="window.open('/report','_blank')">Report ↗</button>
+</nav>
+<main>
+  <section id="v-steps"></section>
+  <section id="v-todo" hidden></section>
+  <section id="v-run" hidden></section>
+  <section id="v-pdfs" hidden></section>
+  <section id="v-studies" hidden></section>
+  <section id="v-activity" hidden></section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let S = null, M = null, tab = "steps", showSnoozed = false, lastJobId = null;
+const answers = {};            // todo id -> {option, text, extra}
+const STAGES = [["plan","Protocol"],["search","Search"],["screen","Title/abstract screening"],["fulltext","Full texts + full-text screening"],["snowball","Citation chasing"],
+                ["extract","Data extraction"],["rob","Risk of bias"],["synthesize","Synthesis"],["report","Report (whole review)"]];
+
+async function api(path, body){
+  const r = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
+  return r.json();
+}
+document.querySelectorAll("#tabs button[data-t]").forEach(b => b.onclick = () => show(b.dataset.t));
+function show(t){
+  tab = t;
+  document.querySelectorAll("#tabs button[data-t]").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  ["steps","todo","run","pdfs","studies","activity"].forEach(v => $("#v-"+v).hidden = v !== t);
+  render();
+  if (t === "run") loadModels();
+  if (t === "studies") loadStudies();
+  if (t === "activity") loadActivity();
+}
+
+async function refresh(force){
+  try { S = await api("/api/state"); } catch(e){ return; }
+  $("#runname").textContent = S.run.name;
+  $("#topic").textContent = S.run.topic.length > 90 ? S.run.topic.slice(0,90)+"…" : S.run.topic;
+  $("#spent").innerHTML = `<span class="chip ${S.run.human_mode==="agent_only"?"run":""}" title="human-involvement condition">${S.run.human_mode==="agent_only"?"agent-only":"human-in-the-loop"}</span> spent $` + S.run.spent_usd.toFixed(2);
+  const open = S.todos.filter(t => !t.snoozed).length;
+  $("#todo-n").textContent = open || "";
+  const j = S.job.current;
+  const nAct = (j ? 1 : 0) + (S.job.queued || 0);
+  $("#act-n").textContent = nAct || "";
+  if (lastJobId !== (j ? j.id : null)) { const was = lastJobId; lastJobId = j ? j.id : null; if (was && tab === "studies" && ST.rid) openStudy(ST.rid, true); }
+  $("#jobpill").innerHTML = j ? `<span class="chip run">running: ${esc(j.action)}</span>` + (S.job.queued ? ` <span class="chip">${S.job.queued} queued</span>` : "")
+                              : (S.job.last ? `<span class="chip ${S.job.last.status==="done"?"done":"bad"}">last job ${esc(S.job.last.status)}</span>` : "");
+  render(!force);
+}
+
+function render(fromPoll){
+  if (!S) return;
+  if (tab === "steps") renderSteps();
+  if (tab === "todo" && !fromPoll) renderTodo();
+  if (tab === "todo" && fromPoll) renderTodo(true);
+  if (tab === "run") renderJob();
+  if (tab === "pdfs") renderPdfs();
+  if (tab === "activity") renderJobsCard(fromPoll);
+}
+
+/* ---------------- next step banner ---------------- */
+function nextBanner(){
+  const n = S.next || {};
+  const label = {todo:"Go", run:"Open Run", pdfs:"Open Full texts", report:"Open report"}[n.go] || "Go";
+  return `<div class="card next"><div class="row" style="margin:0">
+     <div style="flex:1"><div class="small mut">Next step</div><div style="font-size:16px;font-weight:600">${esc(n.text||"")}</div></div>
+     <button class="primary btn" onclick="goNext()">${label} →</button></div></div>`;
+}
+function goNext(){
+  const n = S.next || {};
+  if (n.go === "todo") { show("todo"); setTimeout(() => { const el = document.getElementById("g-"+(n.group||"")); if (el) el.scrollIntoView({behavior:"smooth"}); }, 50); }
+  else if (n.go === "run") presetRun(n.until || "report");
+  else if (n.go === "pdfs") show("pdfs");
+  else window.open("/report", "_blank");
+}
+
+/* ---------------- steps ---------------- */
+function renderSteps(){
+  const rows = S.steps.map(s => {
+    const cls = s.status === "done" ? "done" : s.status === "needs you" ? "you" : "";
+    return `<div class="step">
+      <div><b>${esc(s.label)}</b></div>
+      <div><span class="chip ${cls}">${esc(s.status)}</span></div>
+      <div class="mut">${esc(s.summary)}</div>
+      <div class="row" style="margin:0">
+        ${s.run_until ? `<button class="btn" onclick="presetRun('${s.run_until}')">Run up to here</button>` : ""}
+      </div></div>`;
+  }).join("");
+  $("#v-steps").innerHTML = nextBanner() + `<div class="card"><h2>Review steps</h2>${rows}</div>
+    <p class="mut small">${S.ruled.length} records were excluded automatically by publication-type rules (conference abstracts, reviews, editorials, off-topic records without an abstract). They are listed at the bottom of the To-do page and can be restored.</p>`;
+}
+function presetRun(stage){ runOpts.action = "run"; runOpts.until = stage; show("run"); }
+
+/* ---------------- to-do ---------------- */
+const elig = {};     // rid -> {option, criterion, text}
+const robSel = {};   // rid -> bool
+const robEdit = {};  // rid -> {domain, judgment, text, open}
+function renderTodo(fromPoll){
+  // keep the page still only while the user is typing or choosing in a field
+  const ae = document.activeElement;
+  if (fromPoll && ae && $("#v-todo").contains(ae) && ["INPUT","TEXTAREA","SELECT"].includes(ae.tagName)) return;
+  const T = S.todos.filter(t => showSnoozed || !t.snoozed);
+  const k = kind => T.filter(t => t.kind === kind);
+  const parts = [nextBanner()];
+  const gen = (id, title, items) => items.length ? `<div id="g-${id}"><h2>${title} <span class="chip">${items.length}</span></h2>${items.map(card).join("")}</div>` : "";
+  parts.push(gen("protocol", "Protocol", k("protocol")));
+  parts.push(gen("feedback", "The agent's answers to your feedback", [...k("clarify"), ...k("changeset"), ...k("disagreement")]));
+  parts.push(eligTable(k("eligibility")));
+  const sy = k("sync")[0];
+  if (sy) parts.push(`<div id="g-sync"><h2>Out-of-date outputs</h2><div class="card"><h3>${esc(sy.title)}</h3>
+      <ul class="ctx">${sy.context.map(c => `<li>${esc(c)}</li>`).join("")}</ul>
+      <div class="row"><button class="primary btn" onclick="answerNow('sync','sync')">Update now</button>
+      <button class="btn" onclick="answerNow('sync','later')">Later</button>
+      <span class="small mut">Extracts and assesses newly included studies and revises only the affected synthesis statements (a few cents with Gemini Flash).</span><span id="m-sync"></span></div></div></div>`);
+  const ft = k("fulltexts")[0];
+  if (ft) parts.push(`<div id="g-fulltexts"><h2>Full texts <span class="chip">${ft.files.length}</span></h2>${pdfPanel(ft, true)}</div>`);
+  parts.push(gen("edits", "Your edits", k("manual_edit")));
+  parts.push(gen("flags", "Points the agent flagged", k("flag")));
+  parts.push(robTable(k("rob")));
+  parts.push(ruledList());
+  const any = T.length;
+  $("#v-todo").innerHTML = parts.join("") + (any ? "" : `<div class="card empty">Nothing waiting for you.</div>`) +
+    `<label class="small mut"><input type="checkbox" ${showSnoozed?"checked":""} onchange="showSnoozed=this.checked;renderTodo()"> show items set to "later"</label>`;
+}
+
+/* eligibility: one table, suggestions pre-filled, one Save */
+function eligTable(items){
+  if (!items.length) return "";
+  items.forEach(t => { if (!elig[t.rid]) elig[t.rid] = {option: t.suggest.option, criterion: t.suggest.criterion || "", text: ""}; });
+  const rows = items.map(t => {
+    const e = elig[t.rid];
+    const pill = (v, l) => `<span class="opt ${e.option===v?"sel":""}" onclick="elig['${t.rid}'].option='${v}';renderTodo()">${l}</span>`;
+    const reason = e.option === "exclude" ? `<select onchange="elig['${t.rid}'].criterion=this.value"><option value="">reason…</option>
+        ${t.criteria.concat(["other"]).map(c => `<option ${e.criterion===c?"selected":""}>${esc(c)}</option>`).join("")}</select>` : "";
+    return `<tr><td style="min-width:280px">
+        <div><b>${esc(t.title)}</b></div>
+        <div class="small mut">${esc(t.meta)}</div>
+        <div class="small">${t.pmid ? `<a target="_blank" href="https://pubmed.ncbi.nlm.nih.gov/${esc(t.pmid)}/">PubMed ${esc(t.pmid)}</a>` : ""}
+          ${t.doi ? ` · <a target="_blank" href="https://doi.org/${esc(t.doi)}">DOI</a>` : ""} · <span class="mut">undecided: ${esc(t.why)}</span></div>
+        ${t.abstract ? `<details><summary class="small mut">abstract</summary><div class="small">${esc(t.abstract)}</div></details>` : `<div class="small mut">no abstract</div>`}
+      </td>
+      <td style="min-width:230px"><div class="opts" style="margin:0">${pill("include","Include")}${pill("exclude","Exclude")}${pill("pdf","Need full text")}</div>
+        ${reason}<div class="small mut">suggested: ${esc(t.suggest.option === "pdf" ? "need full text" : t.suggest.option)} (${esc(t.suggest.why)})</div></td></tr>`;
+  }).join("");
+  return `<div id="g-eligibility"><h2>Eligibility <span class="chip">${items.length}</span></h2>
+    <div class="card"><p class="small mut" style="margin-top:0">The agent could not decide these. A suggestion is pre-selected for each row; change any you disagree with, then save once.
+      "Need full text" moves the study to the Full texts list.</p>
+    <table>${rows}</table>
+    <div class="row"><button class="primary btn" onclick="saveElig()">Save ${items.length} decision${items.length>1?"s":""}</button><span id="eligmsg"></span></div></div></div>`;
+}
+async function saveElig(){
+  const rids = S.todos.filter(t => t.kind === "eligibility").map(t => t.rid);
+  const items = rids.map(r => ({rid:r, ...elig[r]}));
+  const bad = items.filter(i => i.option === "exclude" && !i.criterion);
+  if (bad.length) { $("#eligmsg").innerHTML = `<span class="err">choose a reason for each exclusion</span>`; return; }
+  const r = await api("/api/bulk", {kind:"eligibility", items});
+  $("#eligmsg").innerHTML = r.ok ? `<span class="saved">✓ ${esc(r.message)}</span>` : `<span class="err">${esc(r.message||r.error)}</span>`;
+  rids.forEach(r => delete elig[r]);
+  refresh(true);
+}
+
+/* full texts: copyable PMID list + file names */
+function pdfPanel(ft, compact){
+  const pm = ft.pmids || [], dois = ft.dois || [];
+  const q = encodeURIComponent(pm.map(p => p + "[pmid]").join(" OR "));
+  const rows = ft.files.map(x => `<tr><td>${x.present?'<span class="chip done">added</span>':'<span class="chip">missing</span>'}</td>
+      <td style="white-space:nowrap"><code style="word-break:normal">${esc(x.filename)}</code></td>
+      <td>${esc(x.title)}<div class="small mut">${esc(x.why)}${x.open_access_url?` · <a target="_blank" href="${esc(x.open_access_url)}">open-access copy</a> (the server could not download it; your browser usually can)`:""}</div></td>
+      <td style="white-space:nowrap">${x.priority===1 && !x.present ? `<button class="link small" onclick="pdfUnwant('${x.rid}')">decide without it</button><br>` : ""}
+        ${!x.present ? `<button class="link small" onclick="pdfUnavailable('${x.rid}')">not obtainable</button>` : ""}</td></tr>`).join("");
+  return `<div class="card">
+    <div class="row" style="margin-top:0"><label class="k">PMIDs (${pm.length})</label>
+      <input id="pmidbox" readonly style="flex:1;min-width:240px" value="${esc(pm.join(","))}">
+      <button class="btn" onclick="copyText('${esc(pm.join(","))}', this)">Copy</button>
+      ${pm.length ? `<a class="btn" style="text-decoration:none;color:inherit" target="_blank" href="https://pubmed.ncbi.nlm.nih.gov/?term=${q}">Open in PubMed</a>` : ""}</div>
+    ${dois.length ? `<div class="row"><label class="k">DOIs without PMID (${dois.length})</label><input readonly style="flex:1" value="${esc(dois.join(", "))}">
+      <button class="btn" onclick="copyText('${esc(dois.join(", "))}', this)">Copy</button></div>` : ""}
+    <div class="row"><label class="k">Save PDFs in</label><code>${esc(S.fulltext.dir)}</code><button class="btn" onclick="copyText('${esc(S.fulltext.dir)}', this)">Copy</button>
+      <span class="small mut">named <code>&lt;PMID&gt;.pdf</code>, e.g. <code>${esc((ft.files[0]||{}).filename||"30157389.pdf")}</code></span></div>
+    <div class="row"><button class="primary btn" onclick="processPdfs()" ${(S.fulltext.new_files||[]).length?"":"disabled"}>Process added PDFs (${(S.fulltext.new_files||[]).length})</button><span id="pdfmsg"></span></div>
+    <details ${compact?"":"open"}><summary class="small mut">file list</summary><table>${rows}</table></details></div>`;
+}
+function copyText(t, b){ navigator.clipboard.writeText(t).then(() => { const o = b.textContent; b.textContent = "Copied"; setTimeout(() => b.textContent = o, 1200); }); }
+async function pdfUnwant(rid){ await api("/api/bulk", {kind:"pdf_unwant", ids:[rid]}); refresh(true); }
+async function pdfUnavailable(rid){ await api("/api/bulk", {kind:"pdf_unavailable", ids:[rid]}); refresh(true); }
+
+/* risk of bias: one table, bulk confirm */
+const JCOL = {low:"done", some_concerns:"you", high:"bad", unclear:""};
+function robTable(items){
+  if (!items.length) return "";
+  const rows = items.map(t => {
+    const ed = robEdit[t.rid];
+    const doms = t.domains.map(d => `<span class="chip ${JCOL[d.judgment]||""}" title="${esc(d.rationale)}">${esc(d.domain)}: ${esc(d.judgment)}</span>`).join(" ");
+    const edit = ed ? `<div class="card" style="margin:8px 0 0;background:#fafbfc">
+        <table>${t.domains.map((d,i) => `<tr><td style="width:190px"><b>${esc(d.domain)}</b></td>
+          <td style="width:160px"><select onchange="robEdit['${t.rid}'].j[${i}]=this.value">${["low","some_concerns","high","unclear"].map(j=>`<option ${ed.j[i]===j?"selected":""}>${j}</option>`).join("")}</select>
+            ${ed.j[i]!==d.judgment?`<div class="small mut">agent: ${esc(d.judgment)}</div>`:""}</td>
+          <td class="small mut">${esc(d.rationale)}</td></tr>`).join("")}</table>
+        <textarea placeholder="Why (optional; kept in the history, and sent to the agent if you ask it to re-assess)" oninput="robEdit['${t.rid}'].text=this.value">${esc(ed.text||"")}</textarea>
+        <div class="row"><button class="primary btn" onclick="robChange('${t.rid}')">Save changes and confirm</button>
+          <button class="btn" onclick="robAgent('${t.rid}')">Ask the agent to re-assess instead</button>
+          <button class="btn" onclick="delete robEdit['${t.rid}'];renderTodo()">Cancel</button><span id="robm-${t.rid}"></span></div></div>` : "";
+    return `<tr><td><input type="checkbox" ${robSel[t.rid]?"checked":""} onchange="robSel['${t.rid}']=this.checked"></td>
+      <td style="min-width:170px"><b>${esc(t.title.split(":")[0])}</b><div class="small"><a target="_blank" href="${t.link}">open in report</a> · <button class="link small" onclick="openStudy('${t.rid}')">study page</button></div></td>
+      <td>${doms}${edit}</td>
+      <td style="white-space:nowrap"><button class="link small" onclick="robOpen('${t.rid}')">${ed?"":"change"}</button></td></tr>`;
+  }).join("");
+  return `<div id="g-rob"><h2>Risk of bias drafts <span class="chip">${items.length}</span></h2><div class="card">
+    <p class="small mut" style="margin-top:0">Hover a domain to see the agent's rationale. Tick the ones you agree with and confirm them together, or click "change" to set any number of domains at once.</p>
+    <div class="row"><button class="btn" onclick="robAll(true)">Select all</button><button class="btn" onclick="robAll(false)">Clear</button>
+      <button class="primary btn" onclick="robConfirm()">Confirm selected</button><span id="robmsg"></span></div>
+    <table>${rows}</table></div></div>`;
+}
+function robOpen(rid){ const t = S.todos.find(x => x.kind==="rob" && x.rid===rid); robEdit[rid] = {j: t.domains.map(d => d.judgment), text:""}; renderTodo(); }
+function robAll(v){ S.todos.filter(t => t.kind==="rob").forEach(t => robSel[t.rid] = v); renderTodo(); }
+async function robConfirm(){
+  const ids = S.todos.filter(t => t.kind==="rob" && robSel[t.rid]).map(t => t.id);
+  if (!ids.length) { $("#robmsg").innerHTML = `<span class="err">tick at least one row</span>`; return; }
+  const r = await api("/api/bulk", {kind:"rob_confirm", ids});
+  ids.forEach(i => delete robSel[i.slice(4)]);
+  $("#robmsg").innerHTML = `<span class="saved">✓ ${esc(r.message)}</span>`; refresh(true);
+}
+async function robChange(rid){
+  const t = S.todos.find(x => x.kind==="rob" && x.rid===rid), e = robEdit[rid];
+  const changes = t.domains.map((d,i) => ({domain:d.domain, judgment:e.j[i]})).filter((c,i) => c.judgment !== t.domains[i].judgment);
+  const r = await api("/api/answer", {todo_id:"rob:"+rid, option:"change", text:e.text||"", extra:{changes}});
+  $("#robm-"+rid).innerHTML = r.ok ? `<span class="saved">✓ ${esc(r.message)}</span>` : `<span class="err">${esc(r.message)}</span>`;
+  if (r.ok) { delete robEdit[rid]; setTimeout(() => refresh(true), 500); }
+}
+async function robAgent(rid){
+  const e = robEdit[rid];
+  const r = await api("/api/answer", {todo_id:"rob:"+rid, option:"fix", text:e.text||"Please re-assess this risk-of-bias draft."});
+  $("#robm-"+rid).innerHTML = r.ok ? `<span class="saved">✓ ${esc(r.message)}</span>` : `<span class="err">${esc(r.message)}</span>`;
+  if (r.ok) { delete robEdit[rid]; setTimeout(() => refresh(true), 800); }
+}
+
+/* rule exclusions: visible and reversible */
+function ruledList(){
+  const R = S.ruled || [];
+  if (!R.length) return "";
+  const groups = {}; R.forEach(r => (groups[r.rule] = groups[r.rule] || []).push(r));
+  const body = Object.entries(groups).map(([rule, rs]) => `<details><summary><b>${esc(rule.replace(/_/g," "))}</b> <span class="chip">${rs.length}</span> <span class="small mut">${esc(rs[0].reason.split("(")[0])}</span></summary>
+     <table>${rs.map(r => `<tr><td>${esc(r.title)}<div class="small mut">${esc(r.reason)}</div></td>
+       <td style="white-space:nowrap">${r.pmid?`<a class="small" target="_blank" href="https://pubmed.ncbi.nlm.nih.gov/${esc(r.pmid)}/">PubMed</a>`:""}</td>
+       <td><button class="link small" onclick="restoreRule('${r.rid}')">restore</button></td></tr>`).join("")}</table></details>`).join("");
+  return `<div id="g-ruled"><h2>Excluded automatically <span class="chip">${R.length}</span></h2><div class="card">
+    <p class="small mut" style="margin-top:0">No action needed. These were excluded by publication-type rules before any LLM call. "Restore" sends a record back to your eligibility table.</p>${body}</div></div>`;
+}
+async function restoreRule(rid){ await api("/api/bulk", {kind:"restore_rule", ids:[rid]}); refresh(true); }
+
+/* generic card for the few remaining items (protocol, proposals, flags, out-of-date outputs) */
+function card(t){
+  const a = answers[t.id] || (answers[t.id] = {option:null, text:"", extra:{}});
+  const ctx = (t.context || []).length ? `<ul class="ctx">${t.context.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : "";
+  const opts = t.options.map(o => `<span class="opt ${a.option===o.value?"sel":""}" onclick="pick('${t.id}','${o.value}')">${esc(o.label)}</span>`).join("");
+  const hint = (t.options.find(o => o.value === a.option) || {}).hint;
+  const free = t.free_text ? `<textarea placeholder="${esc(t.free_text)}" oninput="answers['${t.id}'].text=this.value">${esc(a.text)}</textarea>` : "";
+  return `<div class="card" id="c-${esc(t.id)}">
+    <h3>${esc(t.title)}</h3>
+    <div class="q">${esc(t.question)}</div>${ctx}
+    <div class="opts">${opts}</div>${hint ? `<div class="hint">${esc(hint)}</div>` : ""}${free}
+    <div class="row"><button class="primary btn" ${a.option?"":"disabled"} onclick="submitTodo('${t.id}')">Submit</button>
+      ${t.link ? `<a class="small" href="${t.link}" target="_blank">open in report ↗</a>` : ""}<span id="m-${esc(t.id)}"></span></div></div>`;
+}
+async function answerNow(id, opt){
+  const r = await api("/api/answer", {todo_id:id, option:opt});
+  const m = document.getElementById("m-"+id); if (m) m.innerHTML = r.ok ? `<span class="saved">✓ ${esc(r.message)}</span>` : `<span class="err">${esc(r.message||r.error)}</span>`;
+  setTimeout(() => refresh(true), 400);
+}
+function pick(id, v){ answers[id].option = v; renderTodo(); }
+async function submitTodo(id){
+  const a = answers[id];
+  const r = await api("/api/answer", {todo_id:id, option:a.option, text:a.text, extra:a.extra});
+  const m = document.getElementById("m-"+id);
+  if (m) m.innerHTML = r.ok ? `<span class="saved">✓ ${esc(r.message)}</span>` : `<span class="err">${esc(r.message||r.error)}</span>`;
+  if (r.ok) { delete answers[id]; setTimeout(() => refresh(true), 400); }
+}
+
+/* ---------------- run ---------------- */
+const runOpts = {action:"run", until:"report", suite:"all", n_cases:"", max_records:"", extra_budget:2, agent:null, judge:null, effort:"low"};
+async function loadModels(){
+  M = await api("/api/models");
+  const st = M.settings || {};
+  if (!runOpts.agent) runOpts.agent = st.agent || {provider:M.current.agent.provider, model:M.current.agent.model, effort:M.current.agent.reasoning_effort||"low"};
+  if (!runOpts.judge) runOpts.judge = st.judge || {provider:M.current.judge.provider, model:M.current.judge.model, effort:"low"};
+  if (st.extra_budget) runOpts.extra_budget = st.extra_budget;
+  if (st.max_records && M.benchmark) runOpts.max_records = st.max_records;
+  renderRun();
+}
+function modelOptions(sel, role){
+  const api = M.api.filter(m => !m.roles || m.roles.includes(role) || role==="agent");
+  const o = api.map(m => {
+    const v = JSON.stringify({provider:m.provider, model:m.id});
+    const on = sel && sel.provider===m.provider && sel.model===m.id;
+    return `<option value='${esc(v)}' ${on?"selected":""} ${m.key_available?"":"disabled"}>${esc(m.id)} · $${m.input_per_m} in / $${m.output_per_m} out per 1M${m.key_available?"":" (no API key)"}</option>`;
+  }).join("");
+  const lo = M.local.models.map(id => {
+    const v = JSON.stringify({provider:"local", model:id});
+    const on = sel && sel.provider==="local" && sel.model===id;
+    return `<option value='${esc(v)}' ${on?"selected":""}>${esc(id==="auto" ? "served model (auto)" : id)} · free (local)</option>`;
+  }).join("");
+  return `<optgroup label="API models (list price)">${o}</optgroup><optgroup label="Local models (vLLM endpoints)">${lo}</optgroup>`;
+}
+function noteFor(sel){
+  if (!sel) return "";
+  if (sel.provider === "local") {
+    const L = M.local;
+    return L.error ? `No valid endpoint list at ${L.file} (${L.error}). Register running servers with sragent local-endpoints (GUIDE section 4).`
+                   : `${L.endpoints} endpoint(s) in ${L.file}. Check them with sragent local-endpoints --probe.`;
+  }
+  const m = M.api.find(x => x.id === sel.model); return m ? m.note || "" : "";
+}
+function renderRun(){
+  if (!M) { $("#v-run").innerHTML = `<div class="card empty">Loading models…</div>`; return; }
+  const a = runOpts;
+  const what = [["run","Continue the review"],["pdfs","Process added PDFs"],["sync","Update outputs after my decisions"]].concat(M.benchmark ? [["eval","Evaluation (hypotheses)"]] : [])
+    .map(([v,l]) => `<span class="opt ${a.action===v?"sel":""}" onclick="runOpts.action='${v}';renderRun()">${l}</span>`).join("");
+  $("#v-run").innerHTML = `
+  <div class="card"><h2>What to run</h2><div class="opts">${what}</div>
+    ${a.action==="run" ? `<div class="row"><label class="k">Up to stage</label><select onchange="runOpts.until=this.value;estimate()">${STAGES.map(([v,l])=>`<option value="${v}" ${a.until===v?"selected":""}>${l}</option>`).join("")}</select></div>
+       ${M.benchmark ? `<div class="row"><label class="k">Max records to screen</label><input type="number" min="1" placeholder="all" value="${esc(a.max_records)}" oninput="runOpts.max_records=this.value;estimate()" style="width:110px"><span class="small mut">blank = all records; a sample keeps every known answer (benchmark only)</span></div>` : ""}` : ""}
+    ${a.action==="eval" ? `<div class="row"><label class="k">Suite</label><select onchange="runOpts.suite=this.value;estimate()">${["all","e2e","screening","stagewise","grounding","synthesis","claim1","claim2","judge"].map(s=>`<option ${a.suite===s?"selected":""}>${s}</option>`).join("")}</select>
+         <span class="small mut">each evaluation is its own run in eval/runs/ (fresh model calls, own cost and report)</span></div>
+       <div class="row"><label class="k">Claim-2 cases per type</label><input type="number" min="1" placeholder="config" value="${esc(a.n_cases)}" oninput="runOpts.n_cases=this.value" style="width:110px"></div>` : ""}
+  </div>
+  <div class="card"><h2>Model</h2>
+    <div class="row"><label class="k">Agent model</label><select style="flex:1;min-width:260px" onchange="runOpts.agent={...JSON.parse(this.value),effort:runOpts.agent.effort};renderRun()">${modelOptions(a.agent,"agent")}</select></div>
+    <div class="hint" style="margin-left:180px">${esc(noteFor(a.agent))}</div>
+    <div class="row"><label class="k">Reasoning effort</label>
+      ${[["low","Low (cheaper, recommended)"],["default","Model default"]].map(([v,l])=>`<span class="opt ${(a.agent.effort||"low")===v?"sel":""}" onclick="runOpts.agent.effort='${v}';renderRun()">${l}</span>`).join("")}</div>
+    ${a.action==="eval" ? `<div class="row"><label class="k">Judge model</label><select style="flex:1;min-width:260px" onchange="runOpts.judge={...JSON.parse(this.value),effort:'low'};estimate()">${modelOptions(a.judge,"judge")}</select></div>
+       <div class="hint" style="margin-left:180px">Prefer a judge from a different model family than the agent.</div>` : ""}
+    <div class="row"><label class="k">Spending cap for this job</label>$ <input type="number" min="0" step="0.5" value="${esc(a.extra_budget)}" oninput="runOpts.extra_budget=this.value" style="width:90px">
+      <span class="small mut">the job stops cleanly when it is reached; finished work is kept</span></div>
+    <div class="row"><button class="btn" onclick="testModel()">Test model (one tiny call)</button><span id="testres" class="small"></span></div>
+  </div>
+  ${(a.action==="run" && a.until!=="plan" && S && S.steps[0].status==="needs you") ? `<div class="card" style="border-color:#e3b341;background:#fff8e6">The protocol is not approved yet. You can still run, but screening follows the current criteria. <button class="link" onclick="show('todo')">Review the protocol →</button></div>` : ""}
+  <div class="card"><h2>Estimated cost</h2><div id="est" class="mut">…</div></div>
+  <div class="card"><div class="row" style="margin:0"><button class="primary btn" id="runbtn" onclick="startRun()">Run</button>
+     <button class="btn" onclick="stopRun()">Stop</button><span id="runmsg" class="small"></span></div>
+     <div id="jobbox"></div></div>`;
+  estimate(); renderJob();
+}
+let estTimer = null;
+function estimate(){
+  clearTimeout(estTimer);
+  estTimer = setTimeout(async () => {
+    const e = await api("/api/estimate", {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null});
+    const el = $("#est"); if (!el) return;
+    if (e.error) { el.innerHTML = `<span class="err">${esc(e.error)}</span>`; return; }
+    const rows = (e.rows||[]).map(r => `<tr><td>${esc(r.stage)}</td><td>${r.calls}</td><td>${r.in_per_call.toLocaleString()} / ${r.out_per_call.toLocaleString()}</td><td>$${r.usd.toFixed(3)}</td><td class="mut">${esc(r.source)}</td></tr>`).join("");
+    if (!rows && !e.note) { el.innerHTML = `<p>Nothing left to run for this choice; it is already done (or waiting for your decisions in the To-do list).</p>
+       <p class="small mut">Already spent in this run folder: $${e.spent_so_far}.</p>`; return; }
+    el.innerHTML = (rows ? `<table><tr><th>Stage</th><th>LLM calls</th><th>Tokens in / out per call</th><th>Cost</th><th>Token source</th></tr>${rows}</table>` : "") +
+      `<p><b>About $${e.total_usd.toFixed(2)}</b> <span class="mut">(likely $${e.range_usd[0]} to $${e.range_usd[1]})</span>${e.note?` <span class="small mut">${esc(e.note)}</span>`:""}</p>
+       ${e.spent_so_far!==undefined?`<p class="small mut">Already spent in this run folder: $${e.spent_so_far}. Cached calls are free and are not counted again.</p>`:""}`;
+  }, 250);
+}
+async function testModel(){
+  $("#testres").textContent = "testing…";
+  const r = await api("/api/test_model", runOpts.agent);
+  $("#testres").innerHTML = r.ok ? `<span class="saved">✓ ${esc(r.model)} answered in ${r.seconds}s</span>` : `<span class="err">${esc(r.error||"failed")}</span>`;
+}
+async function startRun(){
+  const body = {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null,
+                n_cases: runOpts.n_cases ? Number(runOpts.n_cases) : null};
+  if (body.action !== "eval") delete body.judge;
+  const r = await api("/api/run", body);
+  $("#runmsg").innerHTML = r.id ? `<span class="saved">started (${esc(r.action)})</span>` : `<span class="err">${esc(r.error)}</span>`;
+  setTimeout(refresh, 800);
+}
+async function stopRun(){ await api("/api/stop", {}); setTimeout(refresh, 800); }
+function renderJob(){
+  const box = $("#jobbox"); if (!box || !S) return;
+  const j = S.job.current || S.job.last;
+  if (!j) { box.innerHTML = ""; return; }
+  const st = S.job.current ? "running" : j.status;
+  box.innerHTML = `<div class="row"><span class="chip ${st==="done"?"done":st==="running"?"run":"bad"}">${esc(st)}</span>
+     <code>sragent ${esc(j.cmd||j.action)}</code>${j.usd!=null?`<span class="small mut">cost $${j.usd}</span>`:""}</div>
+     <pre class="log">${esc(j.log||"")}</pre>`;
+  const pre = box.querySelector("pre"); if (pre) pre.scrollTop = pre.scrollHeight;
+}
+
+/* ---------------- full texts ---------------- */
+function renderPdfs(){
+  const ft = S.todos.find(t => t.kind === "fulltexts");
+  $("#v-pdfs").innerHTML = `<h2>Full-text PDFs</h2>` + (ft ? pdfPanel(ft, false)
+    : `<div class="card empty">No full texts are needed right now.${(S.fulltext.new_files||[]).length ? ` <button class="primary btn" onclick="processPdfs()">Process ${(S.fulltext.new_files||[]).length} added file(s)</button>` : ""}</div>`);
+}
+async function processPdfs(){
+  if (!M) M = await api("/api/models");
+  const st = M.settings || {};
+  const r = await api("/api/run", {action:"pdfs", agent: runOpts.agent || st.agent, extra_budget: runOpts.extra_budget});
+  $("#pdfmsg").innerHTML = r.id ? `<span class="saved"> started; see the Run tab for progress</span>` : `<span class="err">${esc(r.error)}</span>`;
+  setTimeout(refresh, 800);
+}
+
+/* ---------------- shared: model picker for agent jobs ---------------- */
+async function ensureModels(){ if (!M) M = await api("/api/models"); return M; }
+function defaultAgent(){
+  const st = (M && M.settings) || {};
+  return runOpts.agent || st.agent || (M ? {provider:M.current.agent.provider, model:M.current.agent.model, effort:"low"} : null);
+}
+function modelPicker(holder, key){
+  // holder[key] = {provider, model, effort}
+  if (!M) return `<span class="small mut">loading models…</span>`;
+  if (!holder[key]) holder[key] = {...defaultAgent()};
+  const path = holder === ST.rr ? "ST.rr" : holder === ACT ? "ACT" : "ST";
+  return `<select style="min-width:260px;max-width:100%" onchange="${path}.${key}={...JSON.parse(this.value),effort:'low'};studyEst()">${modelOptions(holder[key],"agent")}</select>`;
+}
+function chipFor(status){
+  const s = String(status||"");
+  return s.startsWith("included") ? "done" : s.startsWith("excluded") ? "" : s ? "you" : "";
+}
+function fmtT(ts){ if (!ts) return ""; const d = new Date(ts*1000); return d.toLocaleDateString(undefined,{month:"short",day:"numeric"})+" "+d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}); }
+function msg(el, r){ const m = typeof el === "string" ? document.getElementById(el) : el; if (m) m.innerHTML = r.ok ? `<span class="saved">✓ ${esc(r.message||"saved")}</span>` : `<span class="err">${esc(r.message||r.error||"failed")}</span>`; }
+
+/* ---------------- studies ---------------- */
+const ST = {list:null, group:"all", status:"", q:"", rid:null, d:null, edit:null, rr:{}, rcomment:"", agent:null};
+async function loadStudies(){
+  ensureModels();
+  if (ST.rid) return openStudy(ST.rid, true);
+  ST.list = await api("/api/studies"); renderStudies();
+}
+function filteredStudies(){
+  const q = ST.q.toLowerCase();
+  return (ST.list||[]).filter(r => (ST.group==="all" || r.group===ST.group) && (!ST.status || r.status===ST.status) &&
+    (!q || (r.rid+" "+r.title+" "+r.first_author+" "+r.year+" "+r.reason+" "+r.pmid).toLowerCase().includes(q)));
+}
+function renderStudies(){
+  if (ST.rid) return renderStudy();
+  const hadFocus = document.activeElement && document.activeElement.id === "studyq";
+  const L = ST.list || [];
+  const cnt = g => L.filter(r => g==="all" || r.group===g).length;
+  const groups = [["all","All"],["included","Included"],["pending","Pending"],["excluded","Excluded"]]
+    .map(([g,l]) => `<span class="opt ${ST.group===g?"sel":""}" onclick="ST.group='${g}';ST.status='';renderStudies()">${l} ${cnt(g)}</span>`).join("");
+  const statuses = [...new Set(L.filter(r => ST.group==="all" || r.group===ST.group).map(r => r.status))].sort();
+  const F = filteredStudies();
+  const pm = F.map(r => r.pmid).filter(Boolean);
+  const rows = F.slice(0, 400).map(r => `<tr style="cursor:pointer" onclick="openStudy('${r.rid}')">
+      <td class="small mut">${esc(r.rid)}</td>
+      <td><b>${esc(r.first_author)} ${esc(r.year)}</b> ${esc(r.title.slice(0,150))}</td>
+      <td><span class="chip ${chipFor(r.status)}">${esc(r.status)}</span><div class="small mut">${esc(r.reason.slice(0,110))}</div></td>
+      <td class="small">${esc(r.source)}</td>
+      <td class="small">${r.flags_open?`<span class="chip bad">${r.flags_open} open</span>`:""} <span class="mut">${r.flags_total||""}</span></td>
+      <td class="small">${r.rob_overall?`<span class="chip ${JCOL[r.rob_overall]||""}">${esc(r.rob_overall)}</span>${r.rob_confirmed?" ✓":""}`:""}</td>
+      <td class="small">${esc(r.cited_in)}</td><td class="small">${r.comments||""}</td></tr>`).join("");
+  $("#v-studies").innerHTML = `
+   <div class="card"><div class="filters" style="margin:0">${groups}
+     <select onchange="ST.status=this.value;renderStudies()"><option value="">any status</option>${statuses.map(s=>`<option ${ST.status===s?"selected":""}>${esc(s)}</option>`).join("")}</select>
+     <input placeholder="search title, author, PMID, reason" style="flex:1;min-width:200px" value="${esc(ST.q)}" oninput="ST.q=this.value;clearTimeout(window._sq);window._sq=setTimeout(renderStudies,250)" id="studyq"></div>
+     <div class="row"><span class="small mut">${F.length} shown</span>
+       <button class="btn" onclick="copyText('${pm.join(",")}', this)">Copy ${pm.length} PMIDs</button>
+       <a class="btn" style="text-decoration:none;color:inherit" href="/export/studies.csv${ST.group!=="all"?"?group="+ST.group:""}">Download table (CSV)</a>
+       <a class="btn" style="text-decoration:none;color:inherit" href="/export/review.json">Download everything (JSON)</a>
+       <button class="btn" onclick="loadStudies()">Refresh</button></div></div>
+   <div class="card"><h3>Comment on the whole review</h3>
+     <textarea id="revc" oninput="ST.revc=this.value" placeholder="e.g. 'Re-check every population statement for scope' or a note for your co-reviewer">${esc(ST.revc||"")}</textarea>
+     <div class="row"><span class="small mut">Agent model</span>${modelPicker(ST, "agent")}
+       <button class="primary btn" onclick="reviewComment(true)">Send to the agent</button><button class="btn" onclick="reviewComment(false)">Save as a comment only</button><span id="revcm"></span></div>
+     <div class="hint">Sent comments go through the same check as feedback: the agent finds the output it is about, checks it against the source and proposes a change set that you approve in the To-do list.</div></div>
+   <div class="card" style="padding:0"><table><tr><th>ID</th><th>Study</th><th>Status</th><th>Source</th><th>Flags</th><th>RoB</th><th>Cited in</th><th>💬</th></tr>${rows}</table>
+     ${F.length>400?`<p class="small mut" style="padding:8px">Showing 400 of ${F.length}; narrow the filter.</p>`:""}</div>`;
+  if (hadFocus) { const qi = $("#studyq"); qi.focus(); qi.setSelectionRange(qi.value.length, qi.value.length); }
+}
+async function reviewComment(send){
+  const t = $("#revc").value.trim(); if (!t) return;
+  const r = await api("/api/comment", {target:"review", text:t, send, agent: send ? ST.agent : null});
+  msg("revcm", r); if (r.ok) { $("#revc").value = ""; ST.revc = ""; }
+}
+async function openStudy(rid, keepEdit){
+  if (tab !== "studies") show("studies");
+  await ensureModels();
+  if (ST.rid !== rid) { ST.edit = null; ST.rr = {step:"", note:"", propagate:true, agent:null}; }
+  if (!keepEdit) ST.edit = null;
+  ST.rid = rid;
+  try { ST.d = await api("/api/study?rid="+encodeURIComponent(rid)); } catch(e){ ST.d = {error:String(e)}; }
+  renderStudy(); window.scrollTo(0,0);
+}
+function backToList(){ ST.rid = null; ST.d = null; loadStudies(); }
+function evList(ev){ return (ev||[]).map(e => `<div class="small"><span class="chip">${esc(e.sid)} · ${esc(e.section)}</span> <span class="mut">“${esc(e.text)}”</span></div>`).join(""); }
+function sec(title, body, right){ return `<div class="card"><div class="row" style="margin:0 0 6px"><h3 style="flex:1;margin:0">${title}</h3>${right||""}</div>${body}</div>`; }
+function renderStudy(){
+  const d = ST.d; if (!d) return;
+  if (d.error) { $("#v-studies").innerHTML = `<button class="btn" onclick="backToList()">← All studies</button><div class="card err">${esc(d.error)}</div>`; return; }
+  const r = d.record, E = ST.edit || {};
+  const links = Object.entries(d.links).map(([k,v]) => `<a target="_blank" href="${esc(v)}">${esc(k)}</a>`).join(" · ");
+  const out = [];
+  out.push(`<div class="row"><button class="btn" onclick="backToList()">← All studies</button><span style="flex:1"></span>
+     <button class="btn" onclick="copyStudy(this)">Copy as Markdown</button>
+     <a class="btn" style="text-decoration:none;color:inherit" href="/export/study/${d.rid}.md">Download .md</a>
+     <a class="btn" style="text-decoration:none;color:inherit" href="/export/study/${d.rid}.json">Download .json</a>
+     <button class="btn" onclick="openStudy('${d.rid}')">Refresh</button></div>`);
+  out.push(`<div class="card"><div class="small mut">${esc(d.rid)} · ${esc((r.pub_types||[]).join(", "))}</div>
+     <h2 style="margin:4px 0">${esc(r.title)}</h2><div class="mut">${esc(r.authors)} · <i>${esc(r.journal)}</i> ${esc(r.year)}</div>
+     <div class="row"><span class="chip ${chipFor(d.status)}">${esc(d.status)}</span><span class="small">${esc(d.reason)}</span></div>
+     <div class="small">${links}</div>
+     ${d.source ? `<div class="small mut">Source used by the agent: <b>${esc(d.source.kind)}</b> (${esc(d.source.origin)}, ${d.source.chars} characters)${d.pdf_wanted?" · waiting for your PDF":""}${d.pdf_unavailable?" · marked not obtainable":""}</div>` : ""}
+     ${r.abstract ? `<details><summary class="small mut">abstract</summary><div class="small">${esc(r.abstract)}</div></details>` : ""}</div>`);
+
+  // agent actions
+  const steps = [["screen","Screening (eligibility)"]].concat(d.group==="included" ? [["extract","Data extraction"]] : []).concat(d.extraction && d.group==="included" ? [["rob","Risk of bias"]] : []);
+  const rr = ST.rr;
+  out.push(sec("Ask the agent", `
+    <div class="row"><label class="k">Re-run this step</label>${steps.map(([v,l]) => `<span class="opt ${rr.step===v?"sel":""}" onclick="ST.rr.step='${v}';renderStudy();studyEst()">${l}</span>`).join("")}</div>
+    <div class="row"><label class="k">Model</label>${modelPicker(ST.rr, "agent")}</div>
+    <div class="row"><label class="k">Note for the agent</label><textarea style="flex:1" placeholder="optional, e.g. 'the table on page 5 has the steady-state troughs'" oninput="ST.rr.note=this.value">${esc(rr.note||"")}</textarea></div>
+    <div class="row"><label class="k"></label><label class="small"><input type="checkbox" ${rr.propagate?"checked":""} onchange="ST.rr.propagate=this.checked;studyEst()"> also propose updates to the outputs that depend on it (recommended)</label></div>
+    <div class="row"><label class="k"></label><button class="primary btn" ${rr.step?"":"disabled"} onclick="doRerun()">Re-run</button><span id="rrest" class="small mut"></span><span id="rrmsg"></span></div>
+    <div class="hint">The new result is not applied directly. It appears as a proposal (with the dependent changes) in the To-do list and below; accepting it updates everything at once. Comments at the bottom of this page can also be sent to the agent.</div>`));
+
+  // screening
+  if (d.screening) {
+    const s = d.screening;
+    const crit = s.criteria.map(c => `<tr><td><b>${esc(c.id)}</b><div class="small mut">${esc(c.type)}</div></td><td class="small">${esc(c.text)}</td>
+        <td><span class="chip ${c.assessment==="met"?"done":c.assessment==="not_met"?"bad":"you"}">${esc(c.assessment)}</span></td><td>${evList(c.evidence)}</td></tr>`).join("");
+    const crits = s.criteria.map(c => c.id);
+    const ed = E.kind === "screen" ? `<div class="card" style="background:#fafbfc"><div class="row"><label class="k">Decision</label>
+        ${["include","exclude","awaiting"].map(v => `<span class="opt ${E.decision===v?"sel":""}" onclick="ST.edit.decision='${v}';renderStudy()">${v}</span>`).join("")}</div>
+        ${E.decision==="exclude"?`<div class="row"><label class="k">Reason</label><select onchange="ST.edit.criterion=this.value"><option value="">criterion…</option>${crits.concat(["other"]).map(c=>`<option ${E.criterion===c?"selected":""}>${esc(c)}</option>`).join("")}</select></div>`:""}
+        ${editNote()}<div class="row"><button class="primary btn" onclick="saveEdit()">Save (no LLM)</button><button class="btn" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg"></span></div></div>` : "";
+    out.push(sec("Eligibility", `<div><span class="chip ${s.decision==="include"?"done":s.decision==="exclude"?"":"you"}">${esc(s.decision)}</span>
+        <span class="small mut">${esc(s.stage)} · because ${esc((s.because||[]).join(", ")||"-")} · v${s.version}</span></div>
+        ${s.rule?`<div class="small">Rule <b>${esc(s.rule)}</b>: ${esc(s.rule_reason)}</div>`:""}
+        ${s.human_decision?`<div class="small">Your decision: <b>${esc(s.human_decision.decision)}</b> ${esc(s.human_decision.reason||"")} ${esc(s.human_decision.note||"")}</div>`:""}
+        ${s.llm_reason?`<div class="small mut">Agent: ${esc(s.llm_reason)}</div>`:""}
+        ${s.title_abstract?`<div class="small mut">Title/abstract stage: ${esc(s.title_abstract.decision)}</div>`:""}
+        ${crit?`<table style="margin-top:6px"><tr><th>Criterion</th><th></th><th>Assessment</th><th>Evidence</th></tr>${crit}</table>`:""}${ed}`,
+      E.kind==="screen" ? "" : `<button class="btn" onclick="ST.edit={kind:'screen',decision:'${s.decision}',criterion:'',note:''};renderStudy()">Edit</button>`));
+  }
+  // extraction
+  if (d.extraction) {
+    const x = d.extraction, editing = E.kind === "ext";
+    const rows = x.fields.map(f => `<tr><td style="width:150px"><b>${esc(f.name)}</b></td>
+        <td style="min-width:240px">${editing ? `<textarea oninput="ST.edit.fields['${f.name}']=this.value">${esc(E.fields[f.name])}</textarea>` : esc(f.value)}
+          ${f.edited?`<div class="small mut">edited by you; was “${esc(String(f.edited.before).slice(0,120))}”</div>`:""}
+          ${(f.terms||[]).map(t => `<div class="small"><span class="chip ${t.status==="validated"?"done":t.status==="not_found"?"bad":"you"}">${esc(t.status)}</span> ${esc(t.term)} <span class="mut">${esc(JSON.stringify(t.ids||{}))}</span></div>`).join("")}</td>
+        <td>${evList(f.evidence)}${f.check && f.check!=="located"?`<span class="chip you">${esc(f.check)}</span>`:""}</td></tr>`).join("");
+    out.push(sec(`Extracted data <span class="small mut">v${x.version} · from ${esc(x.source_kind)}${x.status!=="active"?" · "+esc(x.status):""}</span>`,
+      `<table><tr><th>Item</th><th>Value</th><th>Evidence (sentence id · section)</th></tr>${rows}</table>
+       ${editing?`${editNote()}<div class="row"><button class="primary btn" onclick="saveEdit()">Save (no LLM)</button><button class="btn" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg"></span></div>
+       <div class="hint">The cited sentences stay as the agent's evidence; your value is marked as edited, and the outputs that use it are listed in the To-do list for an optional update.</div>`:""}`,
+      editing ? "" : `<button class="btn" onclick="editExt()">Edit values</button>`));
+  }
+  // rob
+  if (d.rob) {
+    const b = d.rob, editing = E.kind === "rob";
+    const rows = b.domains.map((x,i) => `<tr><td style="width:170px"><b>${esc(x.domain)}</b></td>
+        <td style="width:150px">${editing ? `<select onchange="ST.edit.changes[${i}].judgment=this.value">${["low","some_concerns","high","unclear"].map(j=>`<option ${E.changes[i].judgment===j?"selected":""}>${j}</option>`).join("")}</select>`
+          : `<span class="chip ${JCOL[x.judgment]||""}">${esc(x.judgment)}</span>`}
+          ${x.judgment_agent && x.judgment_agent!==x.judgment?`<div class="small mut">agent: ${esc(x.judgment_agent)}</div>`:""}</td>
+        <td class="small">${editing ? `<textarea oninput="ST.edit.changes[${i}].rationale=this.value">${esc(E.changes[i].rationale)}</textarea>` : esc(x.rationale)}</td>
+        <td>${evList(x.evidence)}</td></tr>`).join("");
+    out.push(sec(`Risk of bias <span class="small mut">overall <b>${esc(b.overall)}</b> · ${b.confirmed?"confirmed":"draft"} · v${b.version}</span>`,
+      `<table><tr><th>Domain</th><th>Judgment</th><th>Rationale</th><th>Evidence</th></tr>${rows}</table>
+       ${editing?`${editNote()}<div class="row"><button class="primary btn" onclick="saveEdit()">Save and confirm (no LLM)</button><button class="btn" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg"></span></div>`:""}`,
+      editing ? "" : `<button class="btn" onclick="editRob()">Edit domains</button>`));
+  }
+  // synthesis
+  if (d.synthesis.length) {
+    out.push(sec("Cited in the synthesis", d.synthesis.map(s => {
+      const editing = E.kind === "syn" && E.node === s.id;
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><b>${esc(s.id.replace("syn:",""))}</b>
+        ${editing ? `<textarea style="min-height:80px" oninput="ST.edit.text=this.value">${esc(E.text)}</textarea>
+           <div class="row"><label class="small mut">cites</label><input style="flex:1" value="${esc(E.cites)}" oninput="ST.edit.cites=this.value"></div>${editNote()}
+           <div class="row"><button class="primary btn" onclick="saveEdit()">Save (no LLM)</button><button class="btn" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg"></span></div>`
+        : `${esc(s.text)} <span class="small mut">cites ${esc(s.cites.join(", "))} · self-check ${esc(s.support||"-")}</span>
+           <button class="link small" onclick="editSyn('${s.id}')">edit</button>`}</div>`; }).join("")));
+  }
+  // proposals
+  if (d.proposals.length) {
+    out.push(sec("Change proposals for this study", d.proposals.map(p => `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span class="chip ${p.status==="proposed"?"you":p.status==="accepted"?"done":""}">${esc(p.status)}</span> <b>${esc(p.id)}</b> <span class="small mut">${esc(p.kind)} · ${fmtT(p.created)}${p.model?" · "+esc(p.model):""}${p.cost_usd!=null?" · $"+p.cost_usd:""}</span>
+      <div class="small">${esc(p.request)}</div>${p.explanation?`<div class="small mut">${esc(p.explanation)}</div>`:""}
+      <ul class="ctx">${p.changes.map(c => `<li><b>${esc(c.node)}</b> (${esc(c.role)}): ${esc(c.what.join("; "))}</li>`).join("")}</ul>
+      ${p.status==="proposed"?`<div class="row"><button class="primary btn" onclick="decideCs('${p.id}','accept',this)">Accept</button><button class="btn" onclick="decideCs('${p.id}','reject',this)">Reject</button></div>`:""}</div>`).join("")));
+  }
+  // flags
+  out.push(sec(`Flags <span class="chip">${d.flags.length}</span>`, d.flags.length ? `<table>${d.flags.map(f => `<tr><td><span class="chip ${f.status==="open"?"bad":""}">${esc(f.status)}</span></td>
+     <td class="small"><b>${esc(f.node)}</b><div class="mut">${esc(f.source||"")} · ${esc(f.actor||"")} · ${fmtT(f.ts)}</div></td><td class="small">${esc(f.text)}${f.resolution?`<div class="mut">→ ${esc(f.resolution)}</div>`:""}</td></tr>`).join("")}</table>` : `<div class="small mut">No flags.</div>`));
+  // comments
+  const targets = [["study:"+d.rid,"this study"]].concat(d.nodes.filter(n => !n.startsWith("rec:") && !n.startsWith("ft:")).map(n => [n, n]));
+  out.push(sec(`Comments <span class="chip">${d.comments.length}</span>`, `${d.comments.map(c => `<div style="padding:4px 0;border-bottom:1px solid var(--line)">
+      <span class="chip ${c.status==="open"?"you":""}">${esc(c.status)}</span> <span class="small mut">${esc(c.id)} on ${esc(c.target)} · ${fmtT(c.ts)}${c.send_to_agent?" · sent to agent"+(c.job_id?" (job "+esc(c.job_id)+")":""):""}</span>
+      <div>${esc(c.text)}</div>${c.status==="open"?`<button class="link small" onclick="resolveComment('${c.id}')">mark resolved</button>`:`<div class="small mut">${esc(c.resolution||"")}</div>`}</div>`).join("")}
+    <div class="row"><label class="small mut">About</label><select id="ctarget" onchange="ST.ctarget=this.value">${targets.map(([v,l]) => `<option value="${v}" ${ST.ctarget===v?"selected":""}>${esc(l)}</option>`).join("")}</select></div>
+    <textarea id="ctext" placeholder="Your comment" oninput="ST.rcomment=this.value">${esc(ST.rcomment)}</textarea>
+    <div class="row"><button class="primary btn" onclick="studyComment(true)">Send to the agent</button><button class="btn" onclick="studyComment(false)">Save as a comment only</button><span id="cmsg"></span></div>
+    <div class="hint">"Send to the agent" uses the model chosen under "Ask the agent" above. The agent checks your comment against the source text; if it agrees it proposes a revision (shown above and in the To-do list), if it disagrees it explains why.</div>`));
+  // history
+  out.push(sec(`History <span class="chip">${d.history.length}</span>`, `<table><tr><th>When</th><th>Output</th><th>What</th><th>Who</th><th>Why</th></tr>
+     ${d.history.slice().reverse().map(h => `<tr><td class="small" style="white-space:nowrap">${fmtT(h.ts)}</td><td class="small">${esc(h.node)}</td>
+       <td class="small">${esc(h.op)}: ${esc(h.changes.join("; "))}</td><td class="small">${esc(h.actor)}</td><td class="small mut">${esc(h.reason)}</td></tr>`).join("")}</table>`));
+  $("#v-studies").innerHTML = out.join("");
+  studyEst();
+}
+function editNote(){ return `<div class="row"><label class="k">Note (kept in the history)</label><input style="flex:1" placeholder="optional" value="${esc((ST.edit||{}).note||"")}" oninput="ST.edit.note=this.value"></div>`; }
+function editSyn(id){ const s = ST.d.synthesis.find(x => x.id === id); ST.edit = {kind:"syn", node:id, text:s.text, cites:s.cites.join(", "), note:""}; renderStudy(); }
+function editExt(){ const f = {}; ST.d.extraction.fields.forEach(x => f[x.name] = x.value); ST.edit = {kind:"ext", fields:f, orig:{...f}, note:""}; renderStudy(); }
+function editRob(){ ST.edit = {kind:"rob", changes: ST.d.rob.domains.map(x => ({domain:x.domain, judgment:x.judgment, rationale:x.rationale||""})), note:""}; renderStudy(); }
+async function saveEdit(){
+  const E = ST.edit, d = ST.d; let body;
+  if (E.kind === "screen") { if (E.decision==="exclude" && !E.criterion) { msg("edmsg",{ok:false,message:"choose a reason"}); return; }
+    body = {kind:"screen", rid:d.rid, decision:E.decision, criterion:E.criterion, note:E.note}; }
+  if (E.kind === "ext") { const ch = {}; Object.keys(E.fields).forEach(k => { if (E.fields[k] !== E.orig[k]) ch[k] = E.fields[k]; });
+    body = {kind:"ext", rid:d.rid, fields:ch, note:E.note}; }
+  if (E.kind === "rob") body = {kind:"rob", rid:d.rid, changes:E.changes, note:E.note};
+  if (E.kind === "syn") body = {kind:"syn", node:E.node, text:E.text, cites:E.cites, note:E.note};
+  const r = await api("/api/edit", body);
+  msg("edmsg", r);
+  if (r.ok) { ST.edit = null; setTimeout(() => { openStudy(d.rid); refresh(true); }, 400); }
+}
+async function studyEst(){
+  const el = $("#rrest"); if (!el || !ST.rr.step) { if (el) el.textContent = ""; return; }
+  const e = await api("/api/estimate", {action:"rerun", step:ST.rr.step, propagate:ST.rr.propagate, agent:ST.rr.agent});
+  if ($("#rrest")) $("#rrest").textContent = e.total_usd!=null ? `about $${e.total_usd.toFixed(3)}` : "";
+}
+async function doRerun(){
+  const r = await api("/api/rerun", {rid:ST.d.rid, step:ST.rr.step, note:ST.rr.note||"", propagate:ST.rr.propagate, agent:ST.rr.agent});
+  msg("rrmsg", r); refresh();
+}
+async function studyComment(send){
+  const t = $("#ctext").value.trim(); if (!t) return;
+  const r = await api("/api/comment", {target:$("#ctarget").value, text:t, send, agent: send ? (ST.rr.agent || defaultAgent()) : null});
+  msg("cmsg", r); if (r.ok) { ST.rcomment = ""; setTimeout(() => openStudy(ST.d.rid), 400); }
+}
+async function resolveComment(id){ const r = await api("/api/comment_resolve", {id}); if (tab==="studies" && ST.rid) openStudy(ST.rid); else loadActivity(); }
+async function decideCs(id, opt, b){
+  b.disabled = true;
+  const r = await api("/api/answer", {todo_id:"cs:"+id, option:opt});
+  if (!r.ok) alert(r.message||r.error);
+  setTimeout(() => { if (tab==="studies" && ST.rid) openStudy(ST.rid); else loadActivity(); refresh(true); }, 400);
+}
+async function copyStudy(b){ const t = await (await fetch(`/export/study/${ST.d.rid}.md`)).text(); copyText(t, b); }
+
+/* ---------------- activity (global history) ---------------- */
+const ACT = {sub:"jobs", actor:"", q:"", H:null, J:null, open:{}};
+async function loadActivity(){
+  [ACT.J, ACT.H] = await Promise.all([api("/api/jobs"), api("/api/history?actor="+encodeURIComponent(ACT.actor)+"&q="+encodeURIComponent(ACT.q))]);
+  renderActivity();
+}
+function jobRow(j, kind){
+  const st = j.status, dur = j.started ? Math.round(((j.ended||Date.now()/1000) - j.started)) : null;
+  return `<tr><td class="small" style="white-space:nowrap">${fmtT(j.created)}</td>
+    <td><b>${esc(j.label||j.action)}</b>${j.rid?` <button class="link small" onclick="openStudy('${esc(j.rid)}')">study ${esc(j.rid)}</button>`:""}${j.note||j.text?`<div class="small mut">${esc((j.note||j.text||"").slice(0,160))}</div>`:""}</td>
+    <td class="small">${esc(j.model||"")}</td>
+    <td><span class="chip ${st==="done"?"done":st==="running"?"run":st==="queued"?"you":st==="cancelled"?"":"bad"}">${esc(st)}</span></td>
+    <td class="small">${j.usd!=null?"$"+j.usd:""}</td><td class="small">${dur!=null?dur+" s":""}</td>
+    <td class="small" style="white-space:nowrap">${kind==="queued"?`<button class="link small" onclick="cancelJob('${j.id}')">cancel</button>`:""}
+      ${kind!=="queued"?`<button class="link small" onclick="toggleLog('${j.id}')">${ACT.open[j.id]?"hide":"log"}</button>`:""}</td></tr>
+    ${ACT.open[j.id]?`<tr><td colspan="7"><pre class="log" id="log-${j.id}">${esc(ACT.open[j.id])}</pre></td></tr>`:""}`;
+}
+function renderJobsCard(fromPoll){
+  const box = $("#jobs-card"); if (!box) return;
+  if (fromPoll) { api("/api/jobs").then(J => { ACT.J = J; const b = $("#jobs-card"); if (b) b.innerHTML = jobsHtml(); }); return; }
+  box.innerHTML = jobsHtml();
+}
+function jobsHtml(){
+  const J = ACT.J || {running:[],queued:[],done:[]};
+  const rows = J.running.map(j => jobRow(j,"running")).join("") + J.queued.map(j => jobRow(j,"queued")).join("") + J.done.map(j => jobRow(j,"done")).join("");
+  return `<div class="row" style="margin-top:0"><b>${J.running.length} running · ${J.queued.length} queued · ${J.done.length} finished</b>
+     ${J.pending_answers?`<span class="chip you">${J.pending_answers} of your answers wait for the running job</span>`:""}<span style="flex:1"></span>
+     <a class="btn" style="text-decoration:none;color:inherit" href="/export/jobs.csv">Download (CSV)</a></div>
+     ${rows?`<table><tr><th>Queued</th><th>Task</th><th>Model</th><th>Status</th><th>Cost</th><th>Time</th><th></th></tr>${rows}</table>`:`<div class="small mut">No LLM jobs yet.</div>`}`;
+}
+async function toggleLog(id){
+  if (ACT.open[id]) { delete ACT.open[id]; }
+  else { ACT.open[id] = await (await fetch("/api/job_log?id="+id)).text(); }
+  $("#jobs-card").innerHTML = jobsHtml();
+}
+async function cancelJob(id){ await api("/api/cancel", {id}); loadActivity(); refresh(); }
+function renderActivity(){
+  const H = ACT.H || {proposals:[],decisions:[],changelog:[],comments:[],llm_by_tag:[]};
+  const subs = [["jobs","LLM jobs"],["proposals",`Agent proposals (${H.proposals.length})`],["comments",`Comments (${H.comments.length})`],
+                ["decisions",`Your decisions (${H.decisions.length})`],["changes",`Change history (${H.changelog_total||0})`],["usage","LLM calls by stage"]];
+  const tabs = subs.map(([v,l]) => `<span class="opt ${ACT.sub===v?"sel":""}" onclick="ACT.sub='${v}';renderActivity()">${l}</span>`).join("");
+  let body = "";
+  if (ACT.sub === "jobs") body = `<div class="card" id="jobs-card">${jobsHtml()}</div><p class="small mut">Every agent task started from this interface (runs, re-runs, comments sent to the agent, updates). The list refreshes every few seconds.</p>`;
+  if (ACT.sub === "proposals") body = `<div class="card">${H.proposals.length ? H.proposals.map(p => `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span class="chip ${p.status==="proposed"?"you":p.status==="accepted"?"done":""}">${esc(p.status)}</span> <b>${esc(p.id)}</b> <span class="small mut">${esc(p.kind)} · target ${esc(p.target||"-")} · ${fmtT(p.created)}${p.cost_usd!=null?" · $"+p.cost_usd:""}</span>
+      <div class="small">${esc(p.request)}</div>${p.explanation?`<div class="small mut">${esc(p.verdict||"")}: ${esc(p.explanation.slice(0,400))}</div>`:""}
+      ${p.changes.length?`<ul class="ctx">${p.changes.map(c => `<li><b>${esc(c.node)}</b> (${esc(c.role)}): ${esc(c.what.join("; ").slice(0,400))}</li>`).join("")}</ul>`:""}
+      ${p.status==="proposed"?`<div class="row"><button class="primary btn" onclick="decideCs('${p.id}','accept',this)">Accept</button><button class="btn" onclick="decideCs('${p.id}','reject',this)">Reject</button></div>`:""}</div>`).join("") : `<div class="small mut">No proposals yet.</div>`}</div>`;
+  if (ACT.sub === "comments") body = `<div class="card">${H.comments.length ? H.comments.map(c => `<div style="padding:4px 0;border-bottom:1px solid var(--line)">
+      <span class="chip ${c.status==="open"?"you":""}">${esc(c.status)}</span> <span class="small mut">${esc(c.id)} on ${c.target.includes(":")?`<button class="link small" onclick="openStudy('${esc(c.target.split(":")[1])}')">${esc(c.target)}</button>`:esc(c.target)} · ${fmtT(c.ts)}${c.send_to_agent?" · sent to agent":""}</span>
+      <div>${esc(c.text)}</div>${c.status==="open"?`<button class="link small" onclick="resolveComment('${c.id}')">mark resolved</button>`:""}</div>`).join("") : `<div class="small mut">No comments yet. Add them on a study page or in the report.</div>`}</div>`;
+  if (ACT.sub === "decisions") body = `<div class="card"><table><tr><th>When</th><th>Item</th><th>Answer</th><th>Note</th><th>Status</th></tr>${H.decisions.map(x => `<tr>
+      <td class="small" style="white-space:nowrap">${fmtT(x.ts)}</td><td class="small">${esc(x.todo_id||"")}</td><td class="small">${esc(x.option||"")}${x.extra&&Object.keys(x.extra).length?" "+esc(JSON.stringify(x.extra).slice(0,160)):""}</td>
+      <td class="small">${esc(x.text||"")}</td><td class="small">${esc(x.status||"")}</td></tr>`).join("")}</table></div>`;
+  if (ACT.sub === "changes") body = `<div class="card"><div class="filters">${[["","everyone"],["agent","agent"],["user","you"],["rule","rules"]].map(([v,l]) => `<span class="opt ${ACT.actor===v?"sel":""}" onclick="ACT.actor='${v}';loadActivity()">${l}</span>`).join("")}
+      <input placeholder="filter by output id or reason (e.g. ext:30157389)" style="flex:1" value="${esc(ACT.q)}" onchange="ACT.q=this.value;loadActivity()">
+      <a class="btn" style="text-decoration:none;color:inherit" href="/export/history.csv">Download all (CSV)</a></div>
+      <table><tr><th>When</th><th>Output</th><th>What</th><th>Who</th><th>Why</th></tr>${H.changelog.map(h => `<tr><td class="small" style="white-space:nowrap">${fmtT(h.ts)}</td>
+      <td class="small">${(h.node.split(":")[1]||"").match(/^[0-9d]/) ? `<button class="link small" onclick="openStudy('${esc(h.node.split(":")[1])}')">${esc(h.node)}</button>` : esc(h.node)}</td>
+      <td class="small">${esc(h.op)}: ${esc(h.changes.join("; ").slice(0,300))}</td><td class="small">${esc(h.actor)}</td><td class="small mut">${esc(h.reason.slice(0,200))}</td></tr>`).join("")}</table>
+      ${H.changelog_total>H.changelog.length?`<p class="small mut">Showing the latest ${H.changelog.length} of ${H.changelog_total}; download the CSV for all.</p>`:""}</div>`;
+  if (ACT.sub === "usage") body = `<div class="card"><table><tr><th>Stage (tag)</th><th>Calls</th><th>From cache</th><th>Cost</th><th>Last</th></tr>${H.llm_by_tag.map(u => `<tr>
+      <td class="small">${esc(u.tag)}</td><td>${u.calls}</td><td>${u.cached}</td><td>$${u.usd.toFixed(3)}</td><td class="small">${fmtT(u.last)}</td></tr>`).join("")}</table></div>`;
+  $("#v-activity").innerHTML = `<div class="filters">${tabs}<span style="flex:1"></span><button class="btn" onclick="loadActivity()">Refresh</button></div>${body}`;
+}
+
+refresh(true);
+setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 3000);
+</script>
+</body>
+</html>

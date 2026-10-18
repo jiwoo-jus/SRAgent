@@ -51,7 +51,9 @@ def mock_fn(messages, mode):
         src = u.split('"""', 1)[1]
         q = src.strip()[:60]
         names = re.findall(r"^- (\w+):", u.split("ITEMS:", 1)[1].split("SOURCE", 1)[0], flags=re.M)
-        return json.dumps({"fields": {n: {"value": f"{n} value 12 participants", "evidence": ["s1", "s2"]} for n in names}})
+        part = re.search(r"part (\d+) of", u)
+        sfx = f" (part {part.group(1)})" if part else ""
+        return json.dumps({"fields": {n: {"value": f"{n} value 12 participants{sfx}", "evidence": ["s1", "s2"]} for n in names}})
     if "risk-of-bias" in u:
         doms = re.findall(r"^- (\w+):", u.split("DOMAINS:", 1)[1].split("STUDY EXTRACTION", 1)[0], flags=re.M)
         src = u.split('"""', 1)[1].strip()[:50]
@@ -63,6 +65,9 @@ def mock_fn(messages, mode):
                                            "cites": ids[k::3] or ids[:1], "scope": "adults"} for k in range(3)]})
     if "Check whether a synthesis statement" in u:
         return json.dumps({"support": "supported", "issues": [], "overgeneralization": False})
+    if "check the feedback against the source" in u and "UNCLEAR" in u.split("TARGET OUTPUT", 1)[0]:
+        return json.dumps({"verdict": "unclear_request", "explanation": "cannot tell", "clarification_question": "Which value?",
+                           "evidence": [], "revised": None})
     if "check the feedback against the source" in u:
         node = _json_after(u, "TARGET OUTPUT")
         if "should not have been excluded" in u and node and "criteria" in node:
@@ -111,6 +116,20 @@ def mock_fn(messages, mode):
     if "For each extracted item" in u:
         names = re.findall(r"- name: (\w+)", u)
         return json.dumps({"items": [{"name": n, "label": "supported", "issue": ""} for n in names]})
+    if "Split it into one request per affected output" in u:
+        ids = re.findall(r"^(ext:\w+|syn:\w+)", u.split("OUTPUTS", 1)[1], flags=re.M)
+        fb = u.split("FEEDBACK:", 1)[1].split("OUTPUTS", 1)[0].strip()
+        if "every" in fb.lower():
+            return json.dumps({"requests": [{"target": i, "pmid": "", "feedback": fb} for i in ids[:2]]})
+        return json.dumps({"requests": [{"target": "NEW_PAPER", "pmid": "", "feedback": fb}]})
+    if "an independent check found problems" in u:
+        node = _json_after(u, "OUTPUT [")
+        return json.dumps({"revised": node, "explanation": "repaired"})
+    if "was read in parts" in u:
+        names = re.findall(r"^- (\w+)", u.split("ITEMS AND CANDIDATES:", 1)[1], flags=re.M)
+        return json.dumps({"fields": {n: {"value": f"{n} merged value", "evidence": ["s1"]} for n in names}})
+    if "Check one extracted value against the original paper" in u:
+        return json.dumps({"label": "supported", "rationale": "mock"})
     if "Identify which output it targets" in u:
         return json.dumps({"target": "NEW_PAPER", "field": "", "pmid": ""})
     return json.dumps({"ok": True})

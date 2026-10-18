@@ -25,3 +25,5 @@ sragent = "sragent.cli:main"
 [tool.setuptools.packages.find]
 include = ["sragent*"]
 
+[tool.setuptools.package-data]
+"sragent.ui" = ["static/*"]

@@ -169,20 +169,6 @@ def validate(term: str, kind: str) -> dict:
     return res
 
 
-def split_terms(value: str) -> list[str]:
-    """Split a free-text field like 'emicizumab vs. FVIII prophylaxis' into candidate terms."""
-    if not value:
-        return []
-    parts = re.split(r";|,|\bvs\.?\b|\bversus\b|\band\b|\bplus\b|\+|/|\(|\)", value)
-    out = []
-    for p in parts:
-        p = re.sub(r"\b\d+(\.\d+)?\s*(mg/kg|mg|µg|ug|iu|iu/kg|q\d+w|qw|weekly|every \d+ weeks?)\b.*", "", p,
-                   flags=re.I).strip(" .-")
-        if 2 < len(p) < 60:
-            out.append(p)
-    return out
-
-
 _STEMS = re.compile(r"\b([A-Za-z][A-Za-z\-]{3,}(?:mab|cept|nib|parin|cog|vec|kinase|ase|vir|statin|pril|sartan|olol|azole|mycin|cillin|platin|taxel|tide))\b", re.I)
 _SPECIAL = re.compile(r"\b(factor VIII|factor IX|factor VIIa|rFVIIa|FVIII|FEIBA|aPCC|bypassing agents?|tranexamic acid|"
                       r"recombinant factor VIIa|activated prothrombin complex concentrates?|placebo)\b", re.I)

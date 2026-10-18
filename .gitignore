@@ -12,7 +12,7 @@ api_env.yaml
 
 # Generated review state and API caches
 .cache/
-runs/
+/runs/
 .pytest_cache/
 .test-tmp/
 COMMIT_MESSAGE.txt
@@ -21,5 +21,3 @@ COMMIT_MESSAGE.txt
 fulltext/
 *.pdf
 
-# Live local cluster configuration
-configs/local_endpoints.yaml

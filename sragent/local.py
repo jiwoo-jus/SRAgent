@@ -34,8 +34,8 @@ class LocalRequestError(RuntimeError):
 
 
 def endpoint_path(cfg: dict) -> Path:
-    p = Path(cfg.get('local', {}).get('endpoints_file', 'local_endpoints.yaml')).expanduser()
-    return p if p.is_absolute() else Path(cfg.get('_config_dir', 'configs')) / p
+    """Absolute when set in a config file; the default is relative to the project root."""
+    return Path(cfg['local']['endpoints_file']).expanduser()
 
 
 def validate_endpoints(data: dict) -> list[dict]:
@@ -87,13 +87,35 @@ def validate_endpoints(data: dict) -> list[dict]:
     return out
 
 
+def read_endpoints(path: Path) -> list[dict]:
+    """The validated entries of an endpoint file, without the internal `_key` ([] if the file is missing)."""
+    if not path.exists():
+        return []
+    return [{k: v for k, v in e.items() if k != '_key'} for e in validate_endpoints(yaml.safe_load(path.read_text()))]
+
+
+def _header(path: Path) -> str:
+    """The comment block at the top of an existing endpoint file (it documents the format)."""
+    if not path.exists():
+        return ''
+    lines = []
+    for line in path.read_text().splitlines():
+        if line.startswith('#') or not line.strip():
+            lines.append(line)
+        else:
+            break
+    return '\n'.join(lines).rstrip('\n') + ('\n' if lines else '')
+
+
 def write_endpoints(path: Path, entries: list[dict]):
-    """Validate then replace atomically so readers never see a partial update."""
+    """Validate then replace atomically so readers never see a partial update. The file's comment header is kept."""
     validate_endpoints({'endpoints': entries})
     path.parent.mkdir(parents=True, exist_ok=True)
+    header = _header(path)
     fd, tmp = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
     try:
         with os.fdopen(fd, 'w') as f:
+            f.write(header)
             yaml.safe_dump({'endpoints': entries}, f, sort_keys=False)
             f.flush()
             os.fsync(f.fileno())
@@ -309,10 +331,14 @@ def cli_endpoints(args):
     cfg = load_config(args.config)
     path = endpoint_path(cfg)
     if args.nodes is not None or args.urls is not None:
-        entries = ([{'ssh_host': node, 'remote_host': args.remote_host, 'remote_port': args.remote_port,
-                     'model': args.model, 'max_concurrency': args.slots} for node in args.nodes]
-                   if args.nodes is not None else
-                   [{'url': url, 'model': args.model, 'max_concurrency': args.slots} for url in args.urls])
+        new = ([{'ssh_host': node, 'remote_host': args.remote_host, 'remote_port': args.remote_port,
+                 'model': args.model, 'max_concurrency': args.slots} for node in args.nodes]
+               if args.nodes is not None else
+               [{'url': url, 'model': args.model, 'max_concurrency': args.slots} for url in args.urls])
+        if args.roles:
+            for e in new:
+                e['roles'] = list(args.roles)
+        entries = (read_endpoints(path) if args.add else []) + new
         write_endpoints(path, entries)
         print(f'Updated {path} ({len(entries)} endpoints); running clients reload it automatically.')
     pool = LocalPool(cfg)

@@ -110,13 +110,31 @@ def apply(ctx, protocol: dict | None = None) -> list[dict]:
 
 
 def restore(ctx, rid: str, note: str = "") -> None:
-    """Undo a rule exclusion: the record goes back to 'awaiting' for a human decision."""
+    """Undo a rule exclusion: the record goes (back) to full-text review; it can only be included there."""
     st = ctx.store
     n = st.get(f"screen:{rid}")
     d = dict(n["data"])
-    d["decision"] = d.get("decision_before_rule") or "awaiting"
-    if d["decision"] in ("exclude", None):
-        d["decision"] = "awaiting"
+    before = d.get("decision_before_rule")
+    has_ft = (st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") == "fulltext"
+    full_text_decided = d["stage"] == "full_text" and before in ("include", "awaiting") and has_ft
+    d["decision"] = before if full_text_decided else "forward"
     d["because"] = []
     d["rule_restored"] = {"rule": d.pop("rule", None), "note": note}
     st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user", reason=f"rule exclusion undone. {note}".strip())
+
+
+def exclude(ctx, rid: str, rule: str, reason: str) -> None:
+    """A deterministic exclusion decided outside classify() (e.g. date range), recorded like a rule."""
+    st = ctx.store
+    sc = st.get(f"screen:{rid}")
+    if sc and (sc["data"].get("rule") == rule or sc["data"].get("human_decision")):
+        return
+    data = dict(sc["data"]) if sc else {"stage": "title_abstract", "criteria": []}
+    before = data.get("decision")
+    data.update({"decision": "exclude", "because": [f"rule:{rule}"], "rule": rule, "rule_reason": reason,
+                 "decision_before_rule": before})
+    st.upsert(f"screen:{rid}", "screen", data, depends_on=sc["depends_on"] if sc else [f"rec:{rid}", "protocol"],
+              actor="rule", reason=f"screening rule {rule}: {reason}")
+    for kind in ("ext", "rob"):
+        if st.get(f"{kind}:{rid}") and st.get(f"{kind}:{rid}")["status"] == "active":
+            st.set_status(f"{kind}:{rid}", "excluded", actor="rule", reason=reason)

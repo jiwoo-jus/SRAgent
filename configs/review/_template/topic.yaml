@@ -1,0 +1,27 @@
+# REVIEW topic template: a real systematic review with no known answer.
+# Copy this folder to configs/review/<your_topic>/ and fill in every <...>.
+# Without a known answer, `sragent eval` cannot score the run and pipeline.max_records is refused.
+topic:
+  key: <your_topic>
+  question: >-
+    <The review question, e.g. What is the effect of X on Y in Z?>
+  # Your eligibility text; the agent turns it into atomic criteria that you can edit in
+  # runs/review/<your_topic>/<run>/protocol.yaml before screening.
+  seed_eligibility: >-
+    <Inclusion and exclusion criteria in plain words.>
+  # Deterministic exclusions before any LLM call (sragent/rules.py). Omit for the default set.
+  screening_rules: [empty_record, conference_abstract, erratum, editorial, off_topic_no_abstract]
+  records:
+    source: pubmed           # pubmed (the agent writes the query) | file (your own JSONL export)
+    pubmed_retmax: 1000      # most records to retrieve from PubMed
+    maxdate: "<YYYY/MM/DD>"  # search end date
+  extraction_fields:         # kind: drug | disease turns on database term checks
+    - {name: study_design, description: "<Design, setting, phase.>"}
+    - {name: population, description: "<Who was studied.>"}
+    - {name: intervention, kind: drug, description: "<Drug and regimen.>"}
+    - {name: comparator, kind: drug, description: "<Comparator or control.>"}
+    - {name: outcomes, description: "<Main results with numbers and units.>"}
+  rob_tool_name: "<Quality / risk-of-bias tool, e.g. RoB 2>"
+  rob_domains:
+    - {name: <domain_1>, description: "<What this domain checks.>"}
+    - {name: <domain_2>, description: "<What this domain checks.>"}

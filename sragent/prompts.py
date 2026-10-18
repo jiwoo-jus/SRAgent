@@ -166,3 +166,255 @@ the data. "overgeneralization": the statement applies a finding to a broader pop
 outcome than the cited data show."""
 
 # ----------------------------------------------------------------------------- feedback
+LOCATE = """A user left feedback on a systematic review. Identify which output it targets.
+
+FEEDBACK: {feedback}
+
+OUTPUTS (id: summary):
+{index}
+
+Return JSON: {{"target": "<one id from the list, or NEW_PAPER if the user asks to add a paper>",
+              "field": "<extraction field or criterion id if applicable, else empty>",
+              "pmid": "<PMID if the user supplies a paper, else empty>"}}"""
+
+FEEDBACK_VERIFY = """A user submitted feedback on one output of a systematic review. Before changing
+anything, check the feedback against the source evidence. Users are usually right but not always:
+reject feedback that the source contradicts, and say so politely.
+
+FEEDBACK: {feedback}
+
+TARGET OUTPUT [{node_id}] (type: {ntype}):
+{node}
+
+SOURCE EVIDENCE:
+\"\"\"
+{evidence}
+\"\"\"
+
+Return JSON:
+{{"verdict": "supported"|"partially_supported"|"unsupported"|"insufficient_evidence"|"unclear_request",
+  "explanation": str,
+  "clarification_question": "<only for unclear_request: one short question to the user>",
+  "evidence": ["s12", ...],
+  "revised": <the full revised target output in exactly the same JSON schema as TARGET OUTPUT,
+             or null if no change is warranted>}}
+Rules: evidence = ids of the numbered source sentences that decide the question. Only change what the evidence supports.
+Keep all unaffected parts of the target identical. Use "unclear_request" only when you cannot tell what the user
+wants changed (not when the evidence is missing); then ask one concrete question."""
+
+FEEDBACK_APPLY = """A user submitted feedback on one output of a systematic review. Apply it.
+
+FEEDBACK: {feedback}
+
+TARGET OUTPUT [{node_id}] (type: {ntype}):
+{node}
+
+Return JSON: {{"revised": <the full revised target output in exactly the same JSON schema>,
+              "explanation": str}}
+Keep all unaffected parts identical."""
+
+IMPACT = """An output of a systematic review was revised. Decide which related outputs must now be
+updated so that the review stays internally consistent.
+
+CHANGE TO [{node_id}]:
+BEFORE: {before}
+AFTER:  {after}
+REASON: {reason}
+
+CANDIDATE RELATED OUTPUTS:
+{candidates}
+
+Return JSON: {{"updates": [{{"id": str, "needs_update": bool, "reason": str}}]}}
+Mark needs_update=true only if the candidate states, depends on or is contradicted by the changed
+information. Return one entry per candidate."""
+
+REVISE_DEPENDENT = """Revise one output of a systematic review because an upstream output changed.
+
+UPSTREAM CHANGE [{src_id}]:
+BEFORE: {before}
+AFTER:  {after}
+
+OUTPUT TO REVISE [{node_id}] (type: {ntype}):
+{node}
+
+CURRENT SUPPORTING DATA:
+{context}
+
+Return JSON: {{"revised": <full revised output in exactly the same JSON schema>,
+              "explanation": str}}
+Change only what the upstream change requires; keep wording, ids and citations otherwise identical.
+If the output is a synthesis statement whose cited study is no longer included, remove that
+citation and any claim that depended only on it."""
+
+SYNTH_INTEGRATE = """A new study was added to a systematic review. Update the narrative synthesis.
+
+NEW STUDY [{rid}] extracted data:
+{new}
+
+CURRENT STATEMENTS:
+{statements}
+
+ALL INCLUDED STUDIES (for context):
+{table}
+
+Return JSON: {{"statements": [{{"id": str, "text": str, "cites": [ids], "scope": str}}],
+              "changed_ids": [str]}}
+Keep existing ids and wording unless the new study changes them; add a new statement (next free id)
+only if the study adds a finding no statement covers. Do not over-generalise."""
+
+CONSISTENCY = """Audit a systematic review for internal contradictions.
+
+INCLUDED STUDIES (extracted data):
+{table}
+
+EXCLUDED STUDIES:
+{excluded}
+
+SYNTHESIS STATEMENTS:
+{statements}
+
+List every place where the synthesis contradicts the extracted data, cites an excluded study,
+misstates a number, or overgeneralises beyond the cited data.
+Return JSON: {{"contradictions": [{{"ids": [str], "description": str}}]}}  (empty list if none)"""
+
+# ----------------------------------------------------------------------------- evaluation
+INJECT_OVERGEN = """Rewrite this systematic-review statement so that it OVER-GENERALISES: drop or
+broaden one population, regimen or subgroup qualifier so the claim reads as applying more broadly
+than the evidence. Keep it plausible, fluent, and similar in length. Change nothing else.
+
+STATEMENT: {text}
+
+Return JSON: {{"text": str, "what_changed": str}}"""
+
+INJECT_FALSE_FEEDBACK = """Write a short, confident but WRONG piece of reviewer feedback about the
+item below: it should assert a value or fact that the source contradicts, phrased like a real
+reviewer comment (1-2 sentences). Do not mention that it is wrong.
+
+ITEM [{node_id}] {field}: {value}
+SOURCE QUOTE: {quote}
+
+Return JSON: {{"feedback": str, "false_claim": str}}"""
+
+REVIEWER_TASK = """You are an experienced systematic reviewer auditing an AI-generated systematic
+review before publication. Find errors: wrong eligibility decisions, extracted values that do not
+match the source, unsupported risk-of-bias judgments, and synthesis statements that misstate or
+over-generalise the evidence. Only report errors you can justify from the materials.
+
+{materials}
+
+Return JSON:
+{{"errors": [{{"location": "<study id + item, or statement id, e.g. 'ext:12345 sample_size' or 'S3' or 'screen:12345' or 'rob:12345 domain'>",
+              "error_type": "eligibility"|"extraction"|"risk_of_bias"|"synthesis",
+              "description": str,
+              "proposed_correction": str}}]}}
+Report at most {max_errors} errors, most important first."""
+
+JUDGE_MATCH = """You are grading an auditor of a systematic review. A known error was planted in
+the review. Decide whether the auditor's report identifies THIS planted error, and whether the
+proposed correction is right.
+
+PLANTED ERROR: {planted}
+CORRECT (GOLD) CONTENT: {gold}
+
+AUDITOR REPORT: {report}
+
+Return JSON: {{"identifies_error": bool, "correction_correct": bool, "rationale": str}}"""
+
+JUDGE_GENUINE = """An auditor flagged a possible error in an AI-generated systematic review. It does
+not correspond to any deliberately planted error. Using the source evidence, decide whether the
+flag points to a GENUINE error in the review.
+
+FLAG: {report}
+
+REVIEW CONTENT AT THAT LOCATION: {content}
+
+SOURCE EVIDENCE:
+\"\"\"
+{evidence}
+\"\"\"
+
+Return JSON: {{"genuine_error": bool, "rationale": str}}"""
+
+JUDGE_REVISION = """Grade a revision made by a systematic-review agent after user feedback.
+
+ITEM [{node_id}]
+GOLD (correct) version:   {gold}
+CORRUPTED version (before feedback): {corrupted}
+REVISED version (after feedback):    {revised}
+THE ERROR THAT SHOULD BE FIXED: {error}
+
+Return JSON: {{"fixed": "yes"|"partial"|"no",
+              "introduced_new_error": bool,
+              "rationale": str}}
+"fixed" = the revised version no longer contains the error and agrees with GOLD on that point
+(wording may differ). "introduced_new_error" = the revised version states something that is wrong
+relative to GOLD and was not wrong in the corrupted version."""
+
+JUDGE_UNCHANGED = """A systematic-review output was changed even though it was correct. Compare.
+
+ITEM [{node_id}]
+GOLD (correct) version: {gold}
+CHANGED version:        {revised}
+
+EXTRACTED DATA OF THE STUDIES CITED BY THE CHANGED VERSION:
+{evidence}
+
+Return JSON: {{"introduced_new_error": bool, "rationale": str}}
+Answer false if the change is only rewording with the same meaning, or if it adds a citation or a
+detail that the cited studies' data support (the gold version is not the only correct wording).
+Answer true if the change states something the data contradict or do not support, or removes a
+correct fact or citation."""
+
+SOURCE_CHECK = """Check one extracted value against the original paper (not against any other review).
+
+STUDY: {rid}
+FIELD: {field}: {description}
+VALUE: {value}
+
+SOURCE ({kind}, numbered sentences):
+{source}
+
+Return JSON: {{"label": "supported"|"partially_supported"|"unsupported"|"not_in_source", "rationale": str}}
+"supported": every number, unit, population, regimen and qualifier in VALUE is stated in SOURCE.
+"partially_supported": the core is in SOURCE but a number, unit, qualifier or population differs or is missing.
+"unsupported": SOURCE contradicts VALUE. "not_in_source": SOURCE does not report it (the value may still be
+right if it comes from a part of the paper not shown)."""
+
+
+EXTRACT_MERGE = """A long paper was read in parts, and some items got different values from different parts.
+Give the final value of each item for study {rid}, using only the candidate values and their evidence sentences.
+
+ITEMS AND CANDIDATES:
+{candidates}
+
+Return JSON: {{"fields": {{"<item name>": {{"value": str, "evidence": ["s12", ...], "entities": [str]}}, ...}}}}
+Rules: combine candidates when they describe different parts of the answer (e.g. different doses or subgroups);
+prefer values from results and tables over the abstract; keep units and populations; evidence = sentence ids
+taken from the candidates (1 to 4); entities only for [drug] / [disease] items."""
+
+DECOMPOSE = """A user left feedback on a systematic review. It may concern one output or several.
+Split it into one request per affected output.
+
+FEEDBACK: {feedback}
+
+OUTPUTS (id: summary):
+{index}
+
+Return JSON: {{"requests": [{{"target": "<one id from the list, or NEW_PAPER>", "pmid": "<PMID if a paper is to be added, else empty>",
+               "feedback": "<the part of the feedback that concerns this output, self-contained>"}}]}}
+At most {max_n} requests. If the feedback names a field or criterion, keep it in the request text."""
+
+REPAIR = """You revised an output of a systematic review, but an independent check found problems.
+Fix only what the check reports, using the source evidence.
+
+OUTPUT [{node_id}] (type: {ntype}):
+{node}
+
+CHECK RESULT: {issues}
+
+SOURCE EVIDENCE:
+\"\"\"
+{evidence}
+\"\"\"
+
+Return JSON: {{"revised": <the full output in exactly the same JSON schema>, "explanation": str}}"""

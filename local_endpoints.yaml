@@ -1,0 +1,57 @@
+# Live list of vLLM servers (used by configs/models/local.yaml). Running clients reload it on every request,
+# so it can be edited while a run is active. Each entry is one independently reachable vLLM server
+# (not a tensor-parallel worker).
+#
+# Entry keys:
+#   ssh_host + remote_host + remote_port   SRAgent opens its own SSH tunnel to the node
+#   url: http://127.0.0.1:18002/v1         instead of ssh_host: a server you reach through your own tunnel
+#   model            auto (the server's single served model) or the served model ID
+#   max_concurrency  active requests on this server from one SRAgent process
+#   roles            which roles may use this server (agent, judge, reviewer, judge2); omit for all roles
+#   revision         optional; change it when different weights are served under the same model ID
+#   api_key_env      optional; environment variable holding this server's API key (default LOCAL_API_KEY)
+#   enabled          optional; false keeps the entry but stops using it
+#
+# Roles are split on purpose here, although every node serves the same model: the agent gets three
+# nodes (it makes most calls), and each evaluation role gets its own node, so a judge is never queued
+# behind review work. Point a role's nodes at another model to get a cross-family judge (GUIDE 4.3).
+#
+# `sragent local-endpoints --nodes ... [--roles ...] [--add]` rewrites the list (this comment block is kept);
+# `--add` appends to the current list, `--roles` restricts the new entries to those roles.
+endpoints:
+- ssh_host: a0218
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles: [agent]
+- ssh_host: a0219
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles: [agent]
+- ssh_host: a0214
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles: [agent]
+- ssh_host: a0345
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles: [reviewer]
+- ssh_host: a0107
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles: [judge]
+- ssh_host: a0183
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles: [judge2]

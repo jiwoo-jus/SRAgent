@@ -6,13 +6,18 @@ a specific criterion and passage, and a reviewer can overturn a single criterion
 
   exclude    if any inclusion criterion is not_met or any exclusion criterion is met
   uncertain  else if any criterion is unclear
-             - title/abstract stage: forwarded to full-text screening
-             - full-text stage: pipeline.fulltext_unclear decides:
-                 "await"   -> 'awaiting' (PRISMA "studies awaiting classification"; flagged for a
-                              human, not synthesised)  [default]
-                 "include" -> included but flagged;  "exclude" -> excluded
   include    otherwise
 Practical criteria (document access, language) are not judged by the LLM.
+
+Final inclusion only after a full-text review (both human-involvement conditions):
+  title/abstract   'exclude' or 'forward' (to full-text review). Nothing is included here.
+  retrieval        every forwarded record needs its full text: user file > Europe PMC open access.
+                   'fulltext_unavailable'  no full text could be obtained (requested as <PMID>.pdf)
+                   'parse_failed'          a supplied file has no usable text (scanned PDF, empty)
+  full text        screened on the full text only:
+                   'include' | 'exclude' | 'awaiting' (undecided; pipeline.fulltext_unclear)
+These statuses stay distinct in reports and evaluation: not retrieved, parse failure, undecided and
+ineligible are never merged.
 
 The LLM's own holistic decision is stored as `llm_decision` for analysis (hypothesis H1b:
 how often does the holistic decision disagree with its own criterion-level assessments?).
@@ -21,12 +26,18 @@ from __future__ import annotations
 
 from .. import prompts
 from ..context import Ctx
-from ..evidence import attach, cites_of, numbered
+from ..evidence import attach, cites_of, packed
 from .planning import criteria_text, synonyms_text
 
 
+RETRIEVAL_FAILURES = ("fulltext_unavailable", "parse_failed")
+OPEN_AT_TA = ("forward", "include")      # 'include' at title/abstract: a human decision before the full-text review
+
+
 def finalize(decision: str, stage: str, policy: str = "await") -> str:
-    if decision == "uncertain" and stage == "full_text":
+    if stage == "title_abstract":
+        return "exclude" if decision == "exclude" else "forward"
+    if decision == "uncertain":
         return {"await": "awaiting", "include": "include", "exclude": "exclude"}.get(policy, "awaiting")
     return decision
 
@@ -76,7 +87,7 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
     out = ctx.agent.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(protocol, stage),
                                                         synonyms=synonyms_text(protocol),
-                                                        record=numbered(text, limit), stage=stage.replace("_", "/"))),
+                                                        record=packed(text, limit), stage=stage.replace("_", "/"))),
                          tag=f"screen_{stage}{tag_suffix}")
     assessments = [a for a in out.get("criteria", []) if isinstance(a, dict)]
     evidence = []
@@ -88,6 +99,7 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     decision, because = rule_decision(protocol, assessments, stage)
     decision = finalize(decision, stage, ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
     data = {"stage": stage, "decision": decision, "because": because, "criteria": assessments,
+            "source_kind": "title_abstract" if stage == "title_abstract" else st.text_of(rid)[1],
             "llm_decision": out.get("decision"), "reason": out.get("reason", ""),
             "confidence": out.get("confidence")}
     if stage == "full_text":
@@ -120,37 +132,90 @@ def screen_all(ctx: Ctx, protocol: dict) -> dict:
     return counts
 
 
-def fulltext_screen_all(ctx: Ctx, protocol: dict) -> dict:
-    """Second pass on forwarded records (include/uncertain) using full text when available."""
+def needs_fulltext_review(st, rid: str) -> bool:
+    n = st.get(f"screen:{rid}")
+    if not n:
+        return False
+    d = n["data"]
+    if d.get("rule"):
+        return False
+    hd = d.get("human_decision") or {}
+    if hd.get("decision") == "exclude":
+        return False
+    dec, stage = d["decision"], d["stage"]
+    if dec in RETRIEVAL_FAILURES or dec == "forward" or (stage == "title_abstract" and dec in OPEN_AT_TA):
+        return True
+    if stage == "full_text" and dec in ("include", "awaiting"):
+        ft = (st.get(f"ft:{rid}") or {}).get("data", {})
+        return ft.get("kind") != "fulltext" or d.get("source_kind") != "fulltext"
+    return False
+
+
+def _mark_retrieval(ctx: Ctx, rid: str, status: str, reason: str):
     st = ctx.store
-    has_ft_criteria = any(c.get("stage") == "full_text" for c in protocol.get("criteria", []))
-    todo = []
-    for n in st.by_type("screen"):
-        rid = n["id"].split(":", 1)[1]
-        if n["data"]["stage"] == "title_abstract" and n["data"]["decision"] in ("include", "uncertain"):
-            ft = st.get(f"ft:{rid}")
-            if (ft and ft["data"].get("kind") == "fulltext") or has_ft_criteria or n["data"]["decision"] == "uncertain":
-                todo.append(rid)
-    ctx.log(f"[screen] full-text screening {len(todo)} records")
-    ctx.map(lambda rid: screen_one(ctx, protocol, rid, "full_text"), todo)
-    flag_awaiting(ctx)
-    ctx.save()
+    n = st.get(f"screen:{rid}")
+    d = dict(n["data"])
+    if d["decision"] == status and d["stage"] == "retrieval":
+        return
+    d.setdefault("title_abstract", {k: n["data"].get(k) for k in ("decision", "because")} if n["data"]["stage"] == "title_abstract" else d.get("title_abstract"))
+    if d.get("human_decision", {}).get("decision") == "include":
+        d["human_decision_pending_fulltext"] = d.pop("human_decision")
+    d.update({"decision": status, "stage": "retrieval", "because": [], "retrieval_note": reason})
+    st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], reason=f"full-text retrieval: {status} ({reason})")
+
+
+def review_one(ctx: Ctx, protocol: dict, rid: str, refetch: bool = False) -> str:
+    """Full-text review of one forwarded record: retrieve, then screen on the full text only."""
+    from . import fulltext
+    st = ctx.store
+    ft = (st.get(f"ft:{rid}") or {}).get("data")
+    fetched = False
+    if ft is None or refetch or (ft.get("kind") != "fulltext" and fulltext.local_file(ctx, rid) is not None):
+        ft = fulltext.fetch_one(ctx, rid)
+        fetched = True
+    if ft.get("kind") == "fulltext":
+        sc = st.get(f"screen:{rid}")["data"]
+        if fetched or not (sc["stage"] == "full_text" and sc.get("source_kind") == "fulltext"):
+            screen_one(ctx, protocol, rid, "full_text")
+        return st.get(f"screen:{rid}")["data"]["decision"]
+    if ft.get("parse_failed"):
+        _mark_retrieval(ctx, rid, "parse_failed", f"the supplied file {ft.get('local_file')} has no usable text")
+        return "parse_failed"
+    _mark_retrieval(ctx, rid, "fulltext_unavailable", "no open-access full text found; PDF requested")
+    return "fulltext_unavailable"
+
+
+def fulltext_review(ctx: Ctx, protocol: dict) -> dict:
+    """Every record forwarded from title/abstract gets a full-text review (retrieve + screen)."""
+    from collections import Counter
+    from . import fulltext
+    st = ctx.store
+    todo = [n["id"].split(":", 1)[1] for n in st.by_type("screen") if needs_fulltext_review(st, n["id"].split(":", 1)[1])]
+    ctx.log(f"[screen] full-text review of {len(todo)} forwarded records")
+    out = ctx.map(lambda rid: review_one(ctx, protocol, rid), todo)
+    sync_awaiting_flags(ctx)
     from .. import rules
     rules.apply(ctx, protocol)
+    fulltext.write_needed_pdfs(ctx)
     ctx.save()
-    inc = st.included_ids()
-    ctx.log(f"[screen] final included studies: {len(inc)}")
-    return {"included": len(inc)}
+    c = Counter(out)
+    ctx.log(f"[screen] full-text review outcomes: {dict(c)}; included now {len(st.included_ids())}")
+    return {"outcomes": dict(c), "included": len(st.included_ids())}
 
 
-def flag_awaiting(ctx: Ctx):
+def sync_awaiting_flags(ctx: Ctx):
+    """One open 'awaiting classification' flag per undecided record, and none once it is decided."""
     st = ctx.store
     for n in st.by_type("screen"):
-        if n["data"]["decision"] == "awaiting" and not any(f["source"] == "screening" and f["status"] == "open"
-                                                           for f in n["flags"]):
+        open_flags = [f for f in n["flags"] if f["source"] == "screening" and f["status"] == "open"]
+        dec = n["data"]["decision"]
+        if dec == "awaiting" and not open_flags:
             st.flag(n["id"], f"Awaiting classification: criteria {n['data'].get('because')} unclear after "
                     f"full-text screening (source: {st.text_of(n['id'].split(':', 1)[1])[1]}). Please decide.",
                     actor="agent", source="screening")
+        elif dec != "awaiting":
+            for f in open_flags:
+                st.resolve_flag(n["id"], f["id"], f"decision is now '{dec}'")
 
 
 def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
@@ -184,7 +249,7 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
             want = "active" if rid in inc else "excluded"
             if n["status"] != want:
                 st.set_status(n["id"], want, actor="user", reason="eligibility re-derived")
-    flag_awaiting(ctx)
+    sync_awaiting_flags(ctx)
     ctx.save()
     ctx.log(f"[screen] rule-only re-screen: {changed} decisions changed; included now {len(inc)}")
     return {"changed": changed, "included": len(inc)}

@@ -85,9 +85,8 @@ def search(ctx: Ctx, protocol: dict) -> list[dict]:
                             f"{src['synergy_key'].lower()}_records.jsonl", log=ctx.log)
         gold_pmids = {r["pmid"] for r in recs if r["label_included"] and r.get("pmid")}
         found = gold_pmids & set(res["pmids"])
-        strategy["benchmark_search_recall"] = {"gold_included_with_pmid": len(gold_pmids),
-                                               "retrieved": len(found),
-                                               "recall": round(len(found) / len(gold_pmids), 3) if gold_pmids else None}
+        bench = {"gold_included_with_pmid": len(gold_pmids), "retrieved": len(found),
+                 "recall": round(len(found) / len(gold_pmids), 3) if gold_pmids else None}
         ctx.log(f"[search] benchmark recall of agent query vs gold includes: {len(found)}/{len(gold_pmids)}")
     elif kind == "file":
         recs = [json.loads(l) for l in open(src["file"]) if l.strip()]
@@ -117,6 +116,13 @@ def search(ctx: Ctx, protocol: dict) -> list[dict]:
         ctx.log(f"[search] sampled {len(recs)} records for screening (max_records={cap})")
 
     st = ctx.store
+    if any("label_included" in r for r in recs):   # gold labels go to the evaluator's private file only
+        from .. import gold
+        gold.strip_records(ctx.run_dir, recs, source=f"{kind}:{src.get('synergy_key') or src.get('file', '')}")
+        if kind == "synergy":
+            g = gold.load(ctx.run_dir)
+            g["benchmark_search_recall"] = bench
+            gold.save(ctx.run_dir, g)
     st.upsert("search", "search", strategy, depends_on=["protocol"], reason="search executed")
     for r in recs:
         rid = r["rid"]

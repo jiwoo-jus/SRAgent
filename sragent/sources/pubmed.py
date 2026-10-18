@@ -80,3 +80,27 @@ def dois_to_pmids(dois: list[str]) -> dict[str, str]:
             if rec["doi"] in chunk:
                 out[rec["doi"]] = rec["pmid"]
     return out
+
+
+def elink(pmid: str, linkname: str) -> list[str]:
+    """NCBI links: pubmed_pubmed_refs (references deposited in PMC) or pubmed_pubmed_citedin (citing PMC articles)."""
+    d = http.get(f"{EUTILS}/elink.fcgi", {"dbfrom": "pubmed", "db": "pubmed", "id": pmid, "linkname": linkname,
+                                          "retmode": "json", "tool": "sragent", **_extra}) or {}
+    out = []
+    for ls in d.get("linksets") or []:
+        for db in ls.get("linksetdbs") or []:
+            if db.get("linkname") == linkname:
+                out += [str(x) for x in db.get("links") or []]
+    return out
+
+
+def within_dates(pmids: list[str], maxdate: str | None = None, mindate: str | None = None) -> set[str]:
+    """The subset of PMIDs whose publication date lies in the range (PubMed's own date filter)."""
+    if not pmids or not (maxdate or mindate):
+        return set(pmids)
+    keep = set()
+    for i in range(0, len(pmids), 200):
+        chunk = pmids[i:i + 200]
+        r = esearch(" OR ".join(f"{p}[uid]" for p in chunk), retmax=len(chunk), mindate=mindate, maxdate=maxdate)
+        keep |= set(r["pmids"])
+    return keep

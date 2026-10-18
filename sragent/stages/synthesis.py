@@ -62,7 +62,10 @@ def synthesize(ctx: Ctx) -> int:
     out = ctx.agent.chat(ctx.msgs(prompts.SYNTH.format(question=ctx.topic["question"], table=table_text(ctx),
                                                        rob=rob_text(ctx))), tag="synthesis")
     statements = out.get("statements", [])
-    write_statements(ctx, statements, "synthesis drafted")
+    keep = write_statements(ctx, statements, "synthesis drafted")
+    for n in ctx.store.by_type("synthesis", active_only=True):   # a re-written synthesis replaces the old one
+        if n["id"] not in keep:
+            ctx.store.set_status(n["id"], "superseded", reason="synthesis re-written")
     ctx.store.meta["synthesis_considered"] = sorted(ctx.store.included_ids())
     ctx.log(f"[synthesis] {len(statements)} statements")
     if ctx.cfg["pipeline"].get("verify_synthesis", True):
@@ -95,11 +98,6 @@ def verify_all(ctx: Ctx):
     for r in res:
         c[r.get("support")] = c.get(r.get("support"), 0) + 1
     ctx.log(f"[synthesis] self-verification: {c}")
-
-
-def statements_text(ctx: Ctx) -> str:
-    return "\n".join(f"[{n['data']['id']}] {n['data']['text']} (cites: {', '.join(n['data']['cites'])})"
-                     for n in ctx.store.by_type("synthesis", active_only=True))
 
 
 def statements_json(ctx: Ctx) -> str:

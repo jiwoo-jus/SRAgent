@@ -1,7 +1,6 @@
 """Local serving behavior without GPUs, SSH sessions, or external requests."""
 from concurrent.futures import ThreadPoolExecutor
 import json
-from pathlib import Path
 import subprocess
 import threading
 import time
@@ -228,6 +227,24 @@ def test_atomic_writer_rejects_invalid_without_replacing_file(tmp_path):
     assert path.read_bytes() == original
     with pytest.raises(ValueError):
         local.write_endpoints(path, [{'url': 'http://a:8000/v1', 'max_concurrency': 0}])
+
+
+def test_cli_add_roles_and_keeps_header(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    cfg = tmp_path / 'run.yaml'
+    cfg.write_text(f"llm_defaults: {{provider: local, api_env: null}}\nlocal: {{endpoints_file: {tmp_path / 'ep.yaml'}}}\n")
+    (tmp_path / 'ep.yaml').write_text('# how to fill this file\nendpoints: []\n')
+    args = SimpleNamespace(config=str(cfg), urls=None, remote_host='127.0.0.4', remote_port=8000, model='auto',
+                           slots=1, probe=False, roles=None, add=False)
+    local.cli_endpoints(SimpleNamespace(**{**vars(args), 'nodes': ['n1', 'n2']}))
+    local.cli_endpoints(SimpleNamespace(**{**vars(args), 'nodes': ['n3'], 'roles': ['judge', 'judge2'], 'add': True}))
+    text = (tmp_path / 'ep.yaml').read_text()
+    assert text.startswith('# how to fill this file\n')
+    entries = local.read_endpoints(tmp_path / 'ep.yaml')
+    assert [e['ssh_host'] for e in entries] == ['n1', 'n2', 'n3'] and 'roles' not in entries[0]
+    assert entries[2]['roles'] == ['judge', 'judge2']
+    with pytest.raises(ValueError, match='Duplicate'):
+        local.cli_endpoints(SimpleNamespace(**{**vars(args), 'nodes': ['n3'], 'add': True}))
 
 
 def test_managed_tunnel_is_reused_restarted_and_closed(monkeypatch):

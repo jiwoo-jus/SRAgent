@@ -1,0 +1,12 @@
+# Review run template: <your_topic> · Gemini · all records · human in the loop.
+# Copy the whole _template folder to configs/review/<your_topic>/ and fill in topic.yaml.
+#   sragent ui --config configs/review/<your_topic>/run.yaml
+# Outputs go to runs/review/<your_topic>/run/. For your own GPUs include ../../models/local.yaml instead.
+include:
+  - topic.yaml
+  - ../../models/gemini.yaml
+cache_dir: .cache
+budget_usd: 10.0           # hard cap for this run folder
+contact_email: ""          # recommended: needed for Unpaywall open-access full texts
+pipeline:
+  human_mode: human_in_the_loop

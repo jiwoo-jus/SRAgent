@@ -1,0 +1,26 @@
+# Benchmark run: emicizumab_pk · Gemini · all records · AGENT ONLY. The main results (GUIDE 11.0).
+# The agent makes every judgment and revision; a person may only supply the full texts it requests
+# (<run_dir>/fulltext/<PMID>.pdf). Evaluation condition 1 of 2 (GUIDE 10.0).
+#   sragent run  --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml
+#   sragent eval --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --suite all
+include:
+  - topic.yaml
+  - ../../models/gemini.yaml
+cache_dir: .cache
+budget_usd: 15.0           # hard cap for this run folder (the review itself)
+pipeline:
+  human_mode: agent_only
+  fulltext_unclear: include  # the agent decides: still unclear after the full text -> included and flagged.
+                             # The completed results were made with 'await' (2 records left undecided).
+  max_records: null          # all records
+  context_chars: 30000
+  fulltext_screen_chars: 12000
+eval:
+  budget_usd: 8.5            # per evaluation run (each run has its own usage.jsonl)
+  grounding_max_studies: null   # all supplied studies
+  claim1_sets: 3
+  claim1_repeats: 2
+  claim1_genuine_checks: 4
+  claim2_cases_per_type: 4
+  judge_agreement_items: 40
+  human_audit_items: 15

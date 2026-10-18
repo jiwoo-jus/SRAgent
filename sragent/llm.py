@@ -3,7 +3,7 @@
 All providers are reached through the OpenAI-compatible Chat Completions API:
   * openai : api.openai.com
   * gemini : Google's OpenAI-compatible endpoint
-  * local  : reloadable vLLM endpoints, optionally reached through SSH tunnels
+  * local  : reloadable vLLM endpoints, optionally reached through SSH tunnels (local.py)
   * mock   : deterministic in-process stub for offline tests
 
 Every call is cached on disk (SQLite) keyed by (provider, model, messages, params),
@@ -28,6 +28,10 @@ GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+class QuotaExhausted(RuntimeError):
+    """The provider's daily quota for a model is used up: stop now (retrying cannot help today)."""
 
 
 class CostTracker:
@@ -164,6 +168,7 @@ class LLM:
         self.model = self.c["model"]
         self.tracker = tracker
         self.cache = cache
+        self.cache_read = True      # False: always ask the model (answers are still written to the cache)
         self.mock_fn = mock_fn
         self.client = None
         self.local_pool = local_pool
@@ -176,10 +181,8 @@ class LLM:
             secrets = load_secrets(self.c.get("api_env"), cfg.get("_config_dir"))
             if self.provider == "openai":
                 key, base = secrets.get("openai_api_key"), self.c.get("base_url")
-            elif self.provider == "gemini":
-                key, base = secrets.get("gemini_api_key"), self.c.get("base_url") or GEMINI_BASE
             else:
-                raise ValueError(f"unknown provider {self.provider}")
+                key, base = secrets.get("gemini_api_key"), self.c.get("base_url") or GEMINI_BASE
             if not key:
                 raise RuntimeError(f"No API key for provider '{self.provider}'. Check api_env path "
                                    f"({self.c.get('api_env')}) or environment variables.")
@@ -203,7 +206,7 @@ class LLM:
         key_src = json.dumps([self.provider, self.model, messages, json_out, temperature, max_tokens,
                               self.c.get("reasoning_effort"), self.c.get("extra_body")], sort_keys=True)
         key = hashlib.sha256(key_src.encode()).hexdigest()
-        if use_cache and self.cache:
+        if use_cache and self.cache and self.cache_read:
             hit = self.cache.get(key)
             if hit is not None:
                 self.tracker.add(self.role, self.model, tag, hit.get("pin", 0), hit.get("pout", 0),
@@ -233,10 +236,12 @@ class LLM:
                 if use_cache and self.cache:
                     self.cache.set(key, {"text": text, "pin": pin, "pout": pout})
                 return val
-            except BudgetExceeded:
+            except (BudgetExceeded, QuotaExhausted):
                 raise
             except Exception as e:  # network / rate limit / server errors
                 last_err = e
+                if "per_day" in str(e).lower() or "PerDay" in str(e):
+                    raise QuotaExhausted(f"{self.name}: daily request quota used up: {str(e)[:300]}") from e
                 if any(k in str(e) for k in ("insufficient_quota", "credit_balance", "invalid_api_key", "PERMISSION_DENIED")):
                     raise RuntimeError(f"{self.name}: account/key problem, not retrying: {e}") from e
                 if "context" in str(e).lower() and "length" in str(e).lower():
@@ -260,7 +265,7 @@ class LLM:
             # revision disambiguates different weights served under the same model ID.
             cache_key = hashlib.sha256(json.dumps(
                 ["local", entry["_key"], entry.get("revision", ""), payload], sort_keys=True).encode()).hexdigest()
-            if use_cache and self.cache:
+            if use_cache and self.cache and self.cache_read:
                 hit = self.cache.get(cache_key)
                 if hit is not None:
                     self.tracker.add(self.role, hit["model"], tag, hit["pin"], hit["pout"], 0, 0, True,
@@ -347,13 +352,14 @@ class LLM:
 
 
 class LLMHub:
-    """Holds one client per role, sharing a tracker and cache."""
+    """Holds one client per role, sharing a tracker, a cache and (for local roles) one endpoint pool."""
 
     def __init__(self, cfg: dict, run_dir: str | Path, mock_fn=None):
         self.cfg = cfg
         self.tracker = CostTracker(cfg.get("budget_usd", 5.0), Path(run_dir) / "usage.jsonl")
         self.cache = DiskCache(Path(cfg.get("cache_dir", ".cache")) / "llm_cache.sqlite")
         self.mock_fn = mock_fn
+        self.cache_read = True      # False: always ask the model (answers are still written to the cache)
         self._clients: dict[str, LLM] = {}
         self._local_pool = None
         self._client_lock = threading.Lock()
@@ -364,7 +370,9 @@ class LLMHub:
                 if role_cfg(self.cfg, role)["provider"] == "local" and self._local_pool is None:
                     from .local import LocalPool
                     self._local_pool = LocalPool(self.cfg)
-                self._clients[role] = LLM(self.cfg, role, self.tracker, self.cache, self.mock_fn, self._local_pool)
+                client = LLM(self.cfg, role, self.tracker, self.cache, self.mock_fn, self._local_pool)
+                client.cache_read = self.cache_read
+                self._clients[role] = client
             return self._clients[role]
 
     def close(self):

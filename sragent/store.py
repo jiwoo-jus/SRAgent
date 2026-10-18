@@ -27,6 +27,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+def record_of(st, rid: str) -> dict:
+    return (st.get(f"rec:{rid}") or {}).get("data", {})
+
+
+def criteria_by_id(st) -> dict:
+    return {c["id"]: c for c in (st.get("protocol") or {}).get("data", {}).get("criteria", [])}
+
+
 def study_of(node_id: str) -> str | None:
     if ":" in node_id:
         kind, rest = node_id.split(":", 1)

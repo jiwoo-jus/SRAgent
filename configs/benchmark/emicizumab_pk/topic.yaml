@@ -1,5 +1,6 @@
-# Bounded medical topic: pharmacokinetics of emicizumab in humans.
-# Gold standard: SYNERGY "Donners_2021" (Donners et al., Clin Pharmacokinet 2021;
+# BENCHMARK topic: pharmacokinetics of emicizumab in humans. It has a known answer, so runs can be
+# scored with `sragent eval` and sampled with pipeline.max_records.
+# Known answer (gold standard): SYNERGY "Donners_2021" (Donners et al., Clin Pharmacokinet 2021;
 # doi:10.1007/s40262-021-01042-w), 15 included studies among the screened records.
 topic:
   key: emicizumab_pk

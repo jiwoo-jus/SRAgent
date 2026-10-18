@@ -66,7 +66,7 @@ def _segment_cached(h: str, text: str) -> tuple:
             st = text.find(piece, off)
             st = st if st >= 0 else off
             # merge fragments that are too short to stand alone (e.g. "n = 12).")
-            if segs and len(piece) < 25 and segs[-1][1] == section:
+            if segs and len(piece) < 25 and segs[-1][1] == section and " | " not in piece and " | " not in segs[-1][4]:
                 sid, sec, a, _, t = segs[-1]
                 segs[-1] = (sid, sec, a, st + len(piece), t + " " + piece)
             else:
@@ -81,19 +81,113 @@ def segment(text: str) -> list[dict]:
             for a, b, c, d, e in _segment_cached(h, text or "")]
 
 
-def numbered(text: str, max_chars: int | None = None) -> str:
-    """Render the source as numbered sentences grouped under their section headings."""
-    out, sec, used = [], None, 0
-    for s in segment(text):
-        if max_chars and used + len(s["text"]) > max_chars:
-            out.append("[... truncated]")
-            break
+# ----------------------------------------------------------------------------- long sources
+# Sections that never carry study data. They are left out of prompts (ids of other sentences unchanged).
+_SKIP = re.compile(r"^(references?|bibliography|literature cited|acknowledg|funding|financial support|conflicts? of interest|"
+                   r"competing interests?|disclosures?|declaration of (competing )?interests?|author(s'|s)? contributions?|"
+                   r"contributions|data (sharing|availability)|abbreviations|orcid|correspondence|ethics (approval|statement)|"
+                   r"consent for publication|publisher'?s note|supplementary (material|information|data)$)", re.I)
+_PRIO = [(re.compile(r"abstract|title|summary", re.I), 0),
+         (re.compile(r"table|figure|results?|pharmacokinetic|exposure|efficacy|safety|outcome|population pk|model|"
+                     r"concentration|parameter|simulation|supplement", re.I), 1),
+         (re.compile(r"method|patients|participants|subjects|study design|design|procedure|sampling|bioanaly|assay|"
+                     r"statistic|dosing|treatment|intervention|eligib|population", re.I), 2),
+         (re.compile(r"page \d+", re.I), 3),
+         (re.compile(r"discussion|conclusion|limitation", re.I), 4),
+         (re.compile(r"introduction|background", re.I), 5)]
+
+
+def section_priority(name: str) -> int:
+    for rx, p in _PRIO:
+        if rx.search(name or ""):
+            return p
+    return 3
+
+
+def _render(segs: list[dict], notes: list[str] | None = None) -> str:
+    out, sec = [], None
+    for s in segs:
+        if s.get("gap"):
+            out.append(f"[... {s['gap']} sentences of '{s['section']}' not shown here]")
+            continue
         if s["section"] != sec:
             sec = s["section"]
             out.append(f"\n## {sec}")
         out.append(f"[{s['sid']}] {s['text']}")
-        used += len(s["text"])
+    if notes:
+        out.append("\n[Not shown: " + "; ".join(notes) + "]")
     return "\n".join(out).strip()
+
+
+def kept_segments(text: str) -> tuple[list[dict], list[str]]:
+    """Sentences minus non-data sections (references, acknowledgements, funding, ...)."""
+    keep, dropped = [], []
+    for s in segment(text):
+        if _SKIP.match(s["section"].strip()):
+            if s["section"] not in dropped:
+                dropped.append(s["section"])
+            continue
+        keep.append(s)
+    return keep, dropped
+
+
+def packed(text: str, max_chars: int | None = None) -> str:
+    """Numbered source for a prompt WITHOUT blind truncation.
+
+    Non-data sections are dropped first. If the rest still exceeds max_chars, whole sections are kept
+    by priority (abstract, results, tables, methods before discussion and introduction) and the
+    remainder of a section that does not fit is marked as omitted. Original sentence ids are kept,
+    so cited evidence always resolves against the full stored text."""
+    segs, dropped = kept_segments(text)
+    notes = [f"section '{d}' (no study data)" for d in dropped]
+    total = sum(len(s["text"]) for s in segs)
+    if not max_chars or total <= max_chars:
+        return _render(segs, notes)
+    order, groups = [], {}
+    for s in segs:
+        if s["section"] not in groups:
+            order.append(s["section"])
+            groups[s["section"]] = []
+        groups[s["section"]].append(s)
+    budget, chosen = max_chars, {}
+    for sec in sorted(order, key=lambda x: (section_priority(x), order.index(x))):
+        take = []
+        for s in groups[sec]:
+            if len(s["text"]) > budget:
+                break
+            take.append(s)
+            budget -= len(s["text"])
+        chosen[sec] = take
+        if budget <= 0:
+            break
+    out = []
+    for sec in order:
+        take = chosen.get(sec, [])
+        out += take
+        missing = len(groups[sec]) - len(take)
+        if missing:
+            out.append({"gap": missing, "section": sec})
+    return _render(out, notes)
+
+
+def chunks(text: str, max_chars: int, overlap: int = 2) -> list[str]:
+    """Consecutive numbered chunks (data sections only) for map-style extraction of long papers."""
+    segs, _ = kept_segments(text)
+    out, cur, size = [], [], 0
+    for s in segs:
+        if cur and size + len(s["text"]) > max_chars:
+            out.append(_render(cur))
+            cur = cur[-overlap:] if overlap else []
+            size = sum(len(x["text"]) for x in cur)
+        cur.append(s)
+        size += len(s["text"])
+    if cur:
+        out.append(_render(cur))
+    return out
+
+
+def data_chars(text: str) -> int:
+    return sum(len(s["text"]) for s in kept_segments(text)[0])
 
 
 # ----------------------------------------------------------------------------- resolution
@@ -173,28 +267,13 @@ def ids_of(spans: list[dict]) -> list[str]:
     return [s["sid"] for s in spans]
 
 
-# ----------------------------------------------------------------------------- legacy + summary
-def verify_quote(quote: str, source: str, threshold: int = 90) -> dict:
-    """Kept for backward compatibility (old runs stored single verbatim quotes)."""
-    q, src = norm(quote), norm(source)
-    if not q:
-        return {"status": "no_quote", "score": 0, "offset": None}
-    idx = src.find(q)
-    if idx >= 0:
-        return {"status": "exact", "score": 100, "offset": idx}
-    if fuzz is not None and len(q) >= 8:
-        al = fuzz.partial_ratio_alignment(q, src, score_cutoff=0)
-        if al and al.score >= threshold:
-            return {"status": "fuzzy", "score": round(al.score, 1), "offset": al.dest_start}
-    return {"status": "not_found", "score": 0, "offset": None}
-
-
+# ----------------------------------------------------------------------------- summary
 def grounding_summary(items: list[dict]) -> dict:
-    """items: evidence dicts with a `check` sub-dict (new or legacy statuses)."""
+    """items: evidence dicts with a `check` sub-dict (status located | partial | none)."""
     from collections import Counter
     c = Counter(it.get("check", {}).get("status", "none") for it in items)
     n = len(items)
-    ok = c["located"] + c["partial"] + c["exact"] + c["fuzzy"]
+    ok = c["located"] + c["partial"]
     out = dict(c)
     out["n"] = n
     out["located_rate"] = round(ok / n, 3) if n else None
@@ -218,10 +297,9 @@ def attach(item: dict, cites, text: str, claim: str, src_node: str) -> dict:
     return {"claim": claim, "source": src_node, "spans": r["spans"], "check": r["check"]}
 
 
-def cites_of(d: dict):
-    """What the model cited: new `evidence` ids, or a legacy `quote` string."""
+def cites_of(d: dict) -> list:
+    """What the model cited: sentence ids (or, from some local models, sentence text)."""
     ev = d.get("evidence")
-    if ev:
-        return ev if isinstance(ev, list) else [ev]
-    q = d.get("quote")
-    return [q] if q else []
+    if not ev:
+        return []
+    return ev if isinstance(ev, list) else [ev]

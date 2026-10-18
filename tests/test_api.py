@@ -35,9 +35,12 @@ def test_unsupported_provider():
         LLM(cfg, "agent", CostTracker(1), None)
 
 def test_example_configs():
-    for path in (ROOT / "configs").glob("*.yaml"):
-        if path.name in {"models.yaml", "local_endpoints.example.yaml", "local_endpoints.yaml"}:
-            continue
+    runs = [p for kind in ("benchmark", "review") for p in (ROOT / "configs" / kind).rglob("*.yaml") if p.name != "topic.yaml"]
+    assert runs
+    for path in runs:
         cfg = load_config(path)
+        assert Path(role_cfg(cfg, "agent")["api_env"]).parent == ROOT
+        assert cfg["run_dir"] == "runs/" + str(path.relative_to(ROOT / "configs").with_suffix(""))   # derived
+        assert ROOT / cfg["local"]["endpoints_file"] == ROOT / "local_endpoints.yaml"   # project root
         for role in cfg["roles"]:
             assert role_cfg(cfg, role)["provider"] in {"openai", "gemini", "local"}

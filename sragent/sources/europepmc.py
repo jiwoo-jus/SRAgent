@@ -18,28 +18,77 @@ def pmcid_for(pmid: str = "", doi: str = "") -> str:
     return res[0].get("pmcid", "") if res else ""
 
 
-def _walk(el, out: list[str], depth=0):
+def _txt(el) -> str:
+    return re.sub(r"\s+", " ", "".join(el.itertext())).strip()
+
+
+def _walk(el, out: list[str], cur: list[str]):
+    """JATS -> text. Tables and figures get their own section ('Table 2: caption'), placed where they
+    occur, and the surrounding section heading is restored afterwards so sentence locations stay right."""
     tag = el.tag.split("}")[-1]
-    if tag in {"ref-list", "xref", "fn-group", "ack", "license", "permissions", "funding-group"}:
-        if tag != "xref":
-            return
-    if tag == "title" and depth > 0:
-        t = "".join(el.itertext()).strip()
-        if t:
-            out.append(f"\n## {t}\n")
+    if tag in {"ref-list", "fn-group", "ack", "license", "permissions", "funding-group", "back"}:
         return
-    if tag in {"p", "td", "th", "caption"}:
-        t = re.sub(r"\s+", " ", "".join(el.itertext())).strip()
-        if t:
-            out.append(t + ("\n" if tag != "td" and tag != "th" else " | "))
+    if tag == "sec":
+        t = el.find("{*}title") if el.find("{*}title") is not None else el.find("title")
+        title = _txt(t) if t is not None else ""
+        if title:
+            out.append(f"\n## {title}\n")
+        cur.append(title or (cur[-1] if cur else ""))
+        for ch in el:
+            if ch.tag.split("}")[-1] != "title":
+                _walk(ch, out, cur)
+        cur.pop()
+        if cur and cur[-1]:
+            out.append(f"\n## {cur[-1]}\n")
         return
-    if tag == "tr":
-        out.append("\n")
+    if tag in {"table-wrap", "fig"}:
+        lab = el.find(".//{*}label") if el.find(".//{*}label") is not None else el.find(".//label")
+        cap = el.find(".//{*}caption") if el.find(".//{*}caption") is not None else el.find(".//caption")
+        name = (_txt(lab) if lab is not None else ("Table" if tag == "table-wrap" else "Figure"))
+        out.append(f"\n## {name}: {(_txt(cap) if cap is not None else '')[:120]}\n")
+        if cap is not None:
+            out.append(_txt(cap) + "\n")
+        for tr in el.iter():
+            if tr.tag.split("}")[-1] == "tr":
+                cells = [_txt(c) for c in tr if c.tag.split("}")[-1] in ("td", "th")]
+                if any(cells):
+                    out.append(" | ".join(cells) + "\n")
+        for fn in el.iter():
+            if fn.tag.split("}")[-1] in ("table-wrap-foot",):
+                out.append(_txt(fn) + "\n")
+        if tag == "fig":
+            out.append("(Figure image not read; only the caption is available.)\n")
+        if cur and cur[-1]:
+            out.append(f"\n## {cur[-1]}\n")
+        return
+    if tag == "supplementary-material":
+        return
+    if tag in {"p", "caption"}:
+        t = _txt(el)
+        if t:
+            out.append(t + "\n")
+        return
     for ch in el:
-        _walk(ch, out, depth + 1)
+        _walk(ch, out, cur)
 
 
-def fulltext(pmcid: str, max_chars: int = 60000) -> str:
+def supplements(root) -> list[dict]:
+    out = []
+    for sm in root.iter():
+        if sm.tag.split("}")[-1] == "supplementary-material":
+            href = next((v for k, v in sm.attrib.items() if k.endswith("href")), "")
+            for m in sm.iter():
+                if m.tag.split("}")[-1] == "media":
+                    href = href or next((v for k, v in m.attrib.items() if k.endswith("href")), "")
+            lab = next((_txt(x) for x in sm.iter() if x.tag.split("}")[-1] in ("label", "title")), "")
+            out.append({"label": lab[:80], "file": href, "caption": _txt(sm)[:200]})
+    return out
+
+
+LAST_SUPPLEMENTS: dict[str, list] = {}
+
+
+def fulltext(pmcid: str, max_chars: int = 400000) -> str:
     if not pmcid:
         return ""
     xml = http.get(f"{BASE}/{pmcid}/fullTextXML", as_json=False)
@@ -56,14 +105,13 @@ def fulltext(pmcid: str, max_chars: int = 60000) -> str:
     ab = root.find(".//abstract")
     if ab is not None:
         parts.append("\n## Abstract\n")
-        _walk(ab, parts, 1)
+        _walk(ab, parts, ["Abstract"])
     body = root.find(".//body")
     if body is not None:
-        _walk(body, parts, 0)
-    # tables/figure captions in floats-group
-    fg = root.find(".//floats-group")
+        _walk(body, parts, [""])
+    fg = root.find(".//floats-group")   # tables / figures stored outside the body
     if fg is not None:
-        parts.append("\n## Tables and figures\n")
-        _walk(fg, parts, 1)
+        _walk(fg, parts, [""])
+    LAST_SUPPLEMENTS[pmcid] = supplements(root)
     text = re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
     return text[:max_chars]

@@ -16,7 +16,8 @@ _lock = threading.Lock()
 _last: dict[str, float] = {}
 # minimal spacing between requests per host (seconds)
 RATE = {"eutils.ncbi.nlm.nih.gov": 0.37, "rxnav.nlm.nih.gov": 0.06, "pubchem.ncbi.nlm.nih.gov": 0.21,
-        "www.ebi.ac.uk": 0.1, "api.crossref.org": 0.1}
+        "www.ebi.ac.uk": 0.1, "api.crossref.org": 0.1,
+        "api.openalex.org": 0.12, "api.unpaywall.org": 0.12}
 UA = "sragent/0.1 (systematic review research prototype)"
 
 
@@ -44,6 +45,8 @@ def get(url: str, params: dict | None = None, *, as_json: bool = True, timeout: 
             r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": UA})
             if r.status_code == 404:
                 body = None
+            elif r.status_code == 429 and "budget" in r.text.lower():
+                raise RuntimeError(f"{host} daily budget used up (429): {r.text[:120]}")
             elif r.status_code in (429, 500, 502, 503, 504):
                 raise requests.HTTPError(f"{r.status_code}")
             else:
