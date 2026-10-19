@@ -156,8 +156,9 @@ class App:
         secrets = load_secrets(self.api_env_abs(), None)
         api = []
         for m in self.catalog.get("api", []):
-            key = {"openai": "openai_api_key", "gemini": "gemini_api_key"}.get(m["provider"])
-            api.append({**m, "key_available": bool(secrets.get(key)), "kind": "api"})
+            keys = {"openai": ["openai_api_key"], "gemini": ["gemini_api_key"],
+                    "anthropic": ["anthropic_api_key", "claude_api_key"]}.get(m["provider"], [])
+            api.append({**m, "key_available": any(secrets.get(k) for k in keys), "kind": "api"})
         cur = {r: {k: role_cfg(self.cfg, r).get(k) for k in ("provider", "model", "reasoning_effort")}
                for r in ("agent", "judge", "reviewer", "judge2")}
         settings = self._settings()

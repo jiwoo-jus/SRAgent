@@ -4,6 +4,7 @@
 configs/
   models/                     WHICH LLMs do the work (shared by every run)
     gemini.yaml                 Gemini for every role
+    claude.yaml                 Claude: Haiku agent/reviewer, Sonnet judge
     local.yaml                  your own vLLM servers (listed in ../../local_endpoints.yaml)
   benchmark/                  topics WITH a known answer: to measure the agent
     emicizumab_pk/
@@ -45,6 +46,7 @@ Other runs are made from these when needed, e.g. the second evaluation condition
 | File | Roles |
 |---|---|
 | `gemini.yaml` | Gemini for every role (one API key). Agent gemini-3.8-flash, judge gemini-3.1-pro-preview, second judge gemma-4-31b-it. |
+| `claude.yaml` | Claude, lowest-cost setup (one Anthropic API key, `anthropic_api_key` in `api_env.yaml`). Agent and reviewer claude-haiku-5-5, judge claude-sonnet-5-5, second judge gemma-4-31b-it (needs the Gemini key). |
 | `local.yaml` | Your own vLLM servers for every role (free). The servers and the roles each may serve are listed in `local_endpoints.yaml` in the project root (next to `api_env.yaml`); `sragent local-endpoints` edits that list. |
 
 Roles: **agent** does the review; **verifier** (optional) checks feedback against the evidence and re-checks revised outputs, and is the agent unless set; **judge**, **judge2** and **reviewer** are used only by `sragent eval`. The web interface offers every API model named in these files (with its price) plus the local endpoint list, so a price is written in one place only.

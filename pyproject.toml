@@ -9,6 +9,7 @@ description = "Human-in-the-loop, evidence-linked agent for systematic reviews (
 requires-python = ">=3.10"
 dependencies = [
   "openai>=1.40",
+  "anthropic>=1.0",
   "pyyaml>=6",
   "requests>=2.31",
   "rapidfuzz>=3.0",

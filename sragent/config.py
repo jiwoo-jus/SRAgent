@@ -29,13 +29,13 @@ DEFAULTS: dict[str, Any] = {
     "ncbi_api_key": "",           # optional, raises E-utilities rate limit
     "models_dir": "configs/models",   # model setups; the web interface offers the models found in them
     "llm_defaults": {
-        "provider": "openai",     # openai | gemini | local | mock (tests)
+        "provider": "openai",     # openai | gemini | anthropic | local | mock (tests)
         "model": "gpt-6.1-sol",
         "api_env": "api_env.yaml",
         "base_url": None,         # optional API endpoint override (local servers are listed in local.endpoints_file)
         "temperature": 0.0,
         "max_tokens": 8192,
-        "reasoning_effort": None, # openai reasoning models: low | medium | high
+        "reasoning_effort": None, # openai/gemini: low | medium | high; anthropic: low | medium | high | xhigh | max
         "extra_body": {},         # optional provider request parameters (e.g. Qwen chat_template_kwargs)
         "timeout": 600,
         "max_retries": 4,
@@ -217,6 +217,7 @@ def load_secrets(api_env: str | None, config_dir: str | None = None) -> dict:
     env_map = {
         "openai_api_key": "OPENAI_API_KEY",
         "gemini_api_key": "GEMINI_API_KEY",
+        "anthropic_api_key": "ANTHROPIC_API_KEY",
         "local_api_key": "LOCAL_API_KEY",
     }
     for k, env in env_map.items():

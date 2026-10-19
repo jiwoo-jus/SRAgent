@@ -1,10 +1,12 @@
 """Provider-agnostic LLM client with caching, cost tracking and a hard budget.
 
-All providers are reached through the OpenAI-compatible Chat Completions API:
-  * openai : api.openai.com
-  * gemini : Google's OpenAI-compatible endpoint
-  * local  : reloadable vLLM endpoints, optionally reached through SSH tunnels (local.py)
-  * mock   : deterministic in-process stub for offline tests
+Providers:
+  * openai    : api.openai.com (Chat Completions)
+  * gemini    : Google's OpenAI-compatible endpoint
+  * anthropic : Claude through the Anthropic SDK (Messages API); messages are written in the
+                Chat Completions format everywhere else and converted here
+  * local     : reloadable vLLM endpoints, optionally reached through SSH tunnels (local.py)
+  * mock      : deterministic in-process stub for offline tests
 
 Every call is cached on disk (SQLite) keyed by (provider, model, messages, params),
 so re-running an experiment never pays twice.
@@ -24,6 +26,10 @@ from typing import Any, Callable
 from .config import load_secrets, role_cfg
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+JSON_ONLY = "Reply with a single JSON object only, without code fences or commentary."
+# Errors that retrying cannot fix (account, key or permission problems).
+FATAL_ERRORS = ("insufficient_quota", "credit_balance", "credit balance", "invalid_api_key",
+                "PERMISSION_DENIED", "authentication_error", "permission_error")
 
 
 class BudgetExceeded(RuntimeError):
@@ -163,7 +169,7 @@ class LLM:
         self.role = role
         self.c = role_cfg(cfg, role)
         self.provider = self.c["provider"]
-        if self.provider not in {"openai", "gemini", "local", "mock"}:
+        if self.provider not in {"openai", "gemini", "anthropic", "local", "mock"}:
             raise ValueError(f"Unsupported API provider: {self.provider}")
         self.model = self.c["model"]
         self.tracker = tracker
@@ -176,6 +182,15 @@ class LLM:
             from .local import LocalPool
             self.local_pool = local_pool or LocalPool(cfg)
             self.local_key = load_secrets(self.c.get("api_env"), cfg.get("_config_dir")).get("local_api_key")
+        elif self.provider == "anthropic":
+            import anthropic
+            secrets = load_secrets(self.c.get("api_env"), cfg.get("_config_dir"))
+            key = secrets.get("anthropic_api_key") or secrets.get("claude_api_key")
+            if not key:
+                raise RuntimeError(f"No API key for provider 'anthropic' (anthropic_api_key). Check api_env path "
+                                   f"({self.c.get('api_env')}) or the ANTHROPIC_API_KEY environment variable.")
+            self.client = anthropic.Anthropic(api_key=key, base_url=self.c.get("base_url"),
+                                              timeout=self.c["timeout"], max_retries=0)
         elif self.provider != "mock":
             from openai import OpenAI
             secrets = load_secrets(self.c.get("api_env"), cfg.get("_config_dir"))
@@ -194,6 +209,9 @@ class LLM:
 
     def _cost(self, pin: int, pout: int) -> float:
         p = self.c.get("pricing") or {}
+        long = p.get("long_context")   # e.g. Claude Haiku 5.5: higher rates once a prompt exceeds 100K tokens
+        if long and pin > int(long.get("threshold_tokens", 0)):
+            p = long
         return pin / 1e6 * float(p.get("input_per_m", 0)) + pout / 1e6 * float(p.get("output_per_m", 0))
 
     def chat(self, messages: list[dict], *, json_out: bool = True, tag: str = "",
@@ -242,9 +260,9 @@ class LLM:
                 last_err = e
                 if "per_day" in str(e).lower() or "PerDay" in str(e):
                     raise QuotaExhausted(f"{self.name}: daily request quota used up: {str(e)[:300]}") from e
-                if any(k in str(e) for k in ("insufficient_quota", "credit_balance", "invalid_api_key", "PERMISSION_DENIED")):
+                if any(k in str(e) for k in FATAL_ERRORS):
                     raise RuntimeError(f"{self.name}: account/key problem, not retrying: {e}") from e
-                if "context" in str(e).lower() and "length" in str(e).lower():
+                if ("context" in str(e).lower() and "length" in str(e).lower()) or "prompt is too long" in str(e):
                     raise
                 time.sleep(min(60, 2 ** attempt * 2))
         raise RuntimeError(f"LLM call failed after retries ({self.name}, tag={tag}): {last_err}")
@@ -303,6 +321,8 @@ class LLM:
         if self.provider == "mock":
             text = self.mock_fn(messages, "json" if json_out else "text")
             return text, sum(len(m["content"]) // 4 for m in messages), len(text) // 4
+        if self.provider == "anthropic":
+            return self._anthropic_call(messages, json_out, max_tokens)
         kw: dict[str, Any] = {"model": self.model, "messages": messages}
         reasoning = self.c.get("reasoning_effort")
         if self.provider == "openai" and reasoning:
@@ -336,6 +356,36 @@ class LLM:
         pout = max(getattr(u, "completion_tokens", 0) or 0, total - pin)  # includes thinking tokens
         return text, pin, pout
 
+    def _anthropic_call(self, messages, json_out, max_tokens):
+        """Claude Messages API. Thinking is left at the model default (adaptive) and its depth is set
+        with reasoning_effort (low | medium | high | xhigh | max). temperature is not sent: current
+        Claude models (Haiku 5.5, Sonnet 5.5, Opus 5.5) reject non-default sampling values."""
+        system, msgs = _to_anthropic(messages)
+        if json_out and self.c.get("json_mode", True):
+            system = f"{system}\n\n{JSON_ONLY}" if system else JSON_ONLY
+        kw: dict[str, Any] = {"model": self.model, "max_tokens": max_tokens, "messages": msgs}
+        if system:
+            kw["system"] = system
+        if self.c.get("reasoning_effort"):
+            kw["output_config"] = {"effort": self.c["reasoning_effort"]}
+        if self.c.get("extra_body"):
+            kw["extra_body"] = self.c["extra_body"]
+        fallbacks = self.c.get("fallbacks")
+        if fallbacks:
+            # Server-side refusal fallback: "default" routes by refusal category; a list names the models.
+            beta = "server-side-fallback-2026-07-01" if fallbacks == "default" else "server-side-fallback-2026-06-01"
+            r = self.client.beta.messages.create(betas=[beta], fallbacks=fallbacks, **kw)
+        else:
+            r = self.client.messages.create(**kw)
+        if r.stop_reason == "refusal":
+            d = r.stop_details
+            raise RuntimeError(f"{self.name} declined the request (refusal, category "
+                               f"{getattr(d, 'category', None)}): {getattr(d, 'explanation', '')}")
+        text = "".join(b.text for b in r.content if b.type == "text")
+        u = r.usage
+        pin = (u.input_tokens or 0) + (u.cache_creation_input_tokens or 0) + (u.cache_read_input_tokens or 0)
+        return text, pin, u.output_tokens or 0   # output_tokens includes thinking
+
     def map(self, fn: Callable, items: list, concurrency: int | None = None) -> list:
         """Run fn over items with a thread pool (keeps order)."""
         n = concurrency or self.c.get("concurrency", 4)
@@ -349,6 +399,32 @@ class LLM:
                 if self.local_pool is not None:
                     self.local_pool.close()
                 raise
+
+
+def _to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
+    """Chat Completions messages -> (system, Messages API messages). System messages become the
+    top-level system prompt; image_url parts become image blocks."""
+    system, out = [], []
+    for m in messages:
+        if m["role"] == "system":
+            system.append(m["content"] if isinstance(m["content"], str)
+                          else "".join(p.get("text", "") for p in m["content"]))
+            continue
+        content = m["content"]
+        if isinstance(content, list):
+            blocks = []
+            for part in content:
+                if part.get("type") == "image_url":
+                    url = part["image_url"]["url"]
+                    hit = re.match(r"data:([^;]+);base64,(.*)", url, re.S)
+                    src = ({"type": "base64", "media_type": hit.group(1), "data": hit.group(2)} if hit
+                           else {"type": "url", "url": url})
+                    blocks.append({"type": "image", "source": src})
+                else:
+                    blocks.append(part)
+            content = blocks
+        out.append({"role": m["role"], "content": content})
+    return "\n\n".join(system), out
 
 
 class LLMHub:

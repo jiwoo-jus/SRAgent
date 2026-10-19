@@ -1,0 +1,32 @@
+# Model setup: Claude for the review work, lowest-cost combination (one Anthropic API key).
+#   agent claude-haiku-5-5 · reviewer claude-haiku-5-5 · judge claude-sonnet-5-5 ·
+#   second judge gemma-4-31b-it (different lineage from the judge; needs gemini_api_key)
+# Keys are read from api_env.yaml in the project root (anthropic_api_key, or claude_api_key).
+# Never commit api_env.yaml. Claude models ignore temperature (sampling is fixed on current models).
+llm_defaults:
+  provider: anthropic
+  model: claude-haiku-5-5
+  api_env: ../../api_env.yaml
+  reasoning_effort: low           # Haiku 5.5 defaults to medium; raise it if screening/extraction quality slips
+  max_tokens: 16000
+  concurrency: 6
+  # USD per 1M tokens (check current price pages; used for the budget guard).
+  # Haiku 5.5: $0.10/$0.50 for prompts up to 100K tokens, $0.50/$2.50 beyond.
+  pricing:
+    input_per_m: 0.10
+    output_per_m: 0.50
+    long_context: {threshold_tokens: 100000, input_per_m: 0.50, output_per_m: 2.50}
+
+roles:
+  agent: {}                       # does the review work
+  reviewer: {}                    # simulated human auditor for Claim 1
+  judge:                          # LLM-as-judge (evaluation only)
+    model: claude-sonnet-5-5
+    reasoning_effort: medium
+    fallbacks: default            # server-side refusal fallback: a declined request is re-run on another model
+    pricing: {input_per_m: 2.00, output_per_m: 10.00}
+  judge2:                         # second judge (inter-judge agreement)
+    provider: gemini
+    model: gemma-4-31b-it
+    reasoning_effort: null
+    pricing: {input_per_m: 0.10, output_per_m: 0.30}   # conservative placeholder
