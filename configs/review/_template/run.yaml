@@ -1,10 +1,19 @@
 # Review run template: <your_topic> · Gemini · all records · human in the loop.
 # Copy the whole _template folder to configs/review/<your_topic>/ and fill in topic.yaml.
 #   sragent ui --config configs/review/<your_topic>/run.yaml
-# Outputs go to runs/review/<your_topic>/run/. For your own GPUs include ../../models/local.yaml instead.
+# Outputs go to runs/review/<your_topic>/run/. Models are chosen below by name (configs/models.yaml);
+# for your own GPUs write provider: local and model: auto under llm_defaults (configs/README.md).
 include:
   - topic.yaml
-  - ../../models/gemini.yaml
+llm_defaults:                # models by name; provider and price come from configs/models.yaml
+  model: gemini-3.8-flash      # the agent, and every role and stage that does not say otherwise
+  api_env: ../../../api_env.yaml
+  reasoning_effort: low        # ~7x fewer thinking tokens than the default
+  max_tokens: 16000
+  concurrency: 6
+roles:                         # evaluation roles (sragent eval)
+  judge: {model: gemini-3.1-pro-preview}
+  judge2: {model: gemma-4-31b-it, reasoning_effort: null}   # second judge, another lineage
 cache_dir: .cache
 budget_usd: 10.0           # hard cap for this run folder
 contact_email: ""          # recommended: needed for Unpaywall open-access full texts

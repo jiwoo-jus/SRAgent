@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from ..config import DEFAULTS, default_run_dir, is_benchmark, load_config, role_cfg
+from ..config import DEFAULTS, LLM_STAGES, default_run_dir, is_benchmark, load_catalog, load_config, role_cfg, stage_cfg
 from ..config_lock import pending
 
 KINDS = ("review", "benchmark")
@@ -69,7 +69,7 @@ class Library:
     def __init__(self, root: str | os.PathLike):
         self.root = Path(root).resolve()
         self.base = self.root.parent
-        self.models_dir = self.root / "models"
+        self.catalog_path = self.root / "models.yaml"   # the model catalog (provider and price per model)
 
     # ------------------------------------------------------------ paths
     def rel(self, p: str | os.PathLike) -> str:
@@ -94,8 +94,8 @@ class Library:
         return p
 
     def kind_of(self, p: Path) -> str:
-        if p.parent == self.models_dir:
-            return "model"
+        if p == self.catalog_path:
+            return "catalog"
         if p.name == "topic.yaml":
             return "topic"
         parts = p.relative_to(self.root).parts
@@ -142,21 +142,26 @@ class Library:
                                "question": t.get("question", "") if isinstance(t, dict) else "",
                                "source": ((t.get("records") or {}).get("source", "") if isinstance(t, dict) else ""),
                                "template": "_template" in parts})
-            elif k == "model":
-                models.append({"path": self.rel(p), "name": p.stem, **self._model_summary(p)})
+            elif k == "catalog":
+                continue
             else:
                 other.append({"path": self.rel(p)})
-        return {"root": self.rel(self.root), "runs": runs, "topics": topics, "models": models, "other": other}
-
-    def _model_summary(self, p: Path) -> dict:
         try:
-            m = yaml.safe_load(p.read_text()) or {}
-            d = m.get("llm_defaults") or {}
-            roles = {r: {**d, **((m.get("roles") or {}).get(r) or {})} for r in ("agent", "judge")}
-            return {"agent": f"{roles['agent'].get('provider', '')}:{roles['agent'].get('model', '')}",
-                    "judge": f"{roles['judge'].get('provider', '')}:{roles['judge'].get('model', '')}"}
-        except (yaml.YAMLError, AttributeError) as e:
-            return {"error": str(e)[:200]}
+            models = self.catalog_models()
+            cat_error = None
+        except ValueError as e:
+            models, cat_error = [], str(e)
+        return {"root": self.rel(self.root), "runs": runs, "topics": topics, "models": models, "other": other,
+                "catalog": self.rel(self.catalog_path), "catalog_error": cat_error}
+
+    def catalog_models(self) -> list[dict]:
+        """Every model in the catalog with its provider and price (raises ValueError if the file is invalid)."""
+        out = []
+        for name, e in load_catalog(self.catalog_path).items():
+            pr = e.get("pricing") or {}
+            out.append({"name": name, "provider": e["provider"], "input_per_m": pr.get("input_per_m"),
+                        "output_per_m": pr.get("output_per_m"), "long_context": bool(pr.get("long_context"))})
+        return out
 
     # ------------------------------------------------------------ read / check / save
     def read(self, path: str) -> dict:
@@ -185,14 +190,29 @@ class Library:
             self._check_topic(data, errors, warnings)
             if isinstance(data.get("topic"), dict):
                 out["locked"] = self._topic_locked(p, data["topic"])
-        elif kind == "model":
-            extra = set(data) - {"llm_defaults", "roles", "local", "stage_models"}
-            if extra:
-                warnings.append("a model file only holds llm_defaults, roles, stage_models and local; also found: "
-                                + ", ".join(sorted(extra)))
-            for r, rc in {"llm_defaults": data.get("llm_defaults") or {}, **(data.get("roles") or {})}.items():
-                if isinstance(rc, dict) and rc.get("provider") not in (None, "openai", "gemini", "anthropic", "local", "mock"):
-                    errors.append(f"{r}.provider: unknown provider {rc.get('provider')!r}")
+        elif kind == "catalog":
+            tmp = p.parent / f".{p.stem}.check-{os.getpid()}-{time.time_ns()}.yaml"
+            try:
+                tmp.write_text(text)
+                names = set(load_catalog(tmp))
+            except ValueError as e:
+                errors.append(str(e).replace(str(tmp), self.rel(p)))
+                names = None
+            finally:
+                tmp.unlink(missing_ok=True)
+            if names is not None:   # models the run files use but the new text no longer lists
+                used = {}
+                for rp in self._yaml_files():
+                    if self.kind_of(rp) == "run":
+                        try:
+                            c = load_config(rp)
+                        except Exception:
+                            continue
+                        for m in self._models_of(c):
+                            used.setdefault(m, []).append(rp.stem)
+                gone = {m: r for m, r in used.items() if m not in names and m in (load_catalog(p) if p.exists() else {})}
+                for m, r in gone.items():
+                    errors.append(f"{m} is still used by {', '.join(sorted(set(r))[:4])}; removing it leaves them without a price")
         elif kind == "run":
             self._check_run(p, text, data, errors, warnings, out)
         return {**out, "ok": not errors, "errors": errors, "warnings": warnings}
@@ -290,6 +310,11 @@ class Library:
             warnings.append("a topic without known answers belongs under configs/review/")
         if not bench and (topic.get("records") or {}).get("source") == "pubmed" and not cfg.get("contact_email"):
             warnings.append("contact_email is empty: Unpaywall open-access full texts need it")
+        cat = cfg.get("_catalog") or {}
+        unpriced = sorted({m for m in self._models_of(cfg) if m not in cat})
+        for m in unpriced:
+            warnings.append(f"{m} is not in {self.rel(self.catalog_path)}: its calls are counted as free by the "
+                            "budget guard and the estimates (add it there, or write its pricing)")
         a, j = role_cfg(cfg, "agent"), role_cfg(cfg, "judge")
         rd = Path(cfg["run_dir"]).resolve()
         ch = pending(cfg, rd)
@@ -302,6 +327,18 @@ class Library:
                           "status": run_status(rd), "question": topic.get("question", "")}
         shown = {k: v for k, v in cfg.items() if not k.startswith("_")}
         out["resolved"] = yaml.safe_dump(shown, sort_keys=False, allow_unicode=True, width=110)
+
+    @staticmethod
+    def _models_of(cfg: dict) -> set:
+        """Names of the API models a run file uses (roles it uses and every stage), without priced ones it writes itself."""
+        out = set()
+        for c in [role_cfg(cfg, r) for r in ("agent", "judge", "reviewer", "judge2", "verifier")] + \
+                 [stage_cfg(cfg, st) for st in LLM_STAGES]:
+            pr = c.get("pricing") or {}
+            if c.get("provider") not in ("local", "mock") and c.get("model") and \
+                    (c["model"] in (cfg.get("_catalog") or {}) or not (pr.get("input_per_m") or pr.get("output_per_m"))):
+                out.add(c["model"])
+        return out
 
     def save(self, path: str, text: str, mtime: float | None = None, create: bool = False) -> dict:
         p = self.resolve(path, must_exist=False)
@@ -344,13 +381,29 @@ class Library:
         return "\n".join(lines[:i] + block + lines[j:]) + "\n"
 
     # ------------------------------------------------------------ new files
-    def model_files(self) -> list[str]:
-        return [p.stem for p in sorted(self.models_dir.glob("*.yaml"))]
-
-    def _models_include(self, folder: Path, models: str) -> str:
-        if models not in self.model_files():
-            raise ValueError(f"no model file configs/models/{models}.yaml")
-        return Path(os.path.relpath(self.models_dir / f"{models}.yaml", folder)).as_posix()
+    def _models_block(self, kind: str, folder: Path, b: dict) -> tuple[list[str], str]:
+        """llm_defaults (the agent) and, for a benchmark, the judge: chosen by name from the catalog."""
+        names = {m["name"] for m in self.catalog_models()}
+        agent = b.get("agent_model") or ""
+        effort = b.get("agent_effort") or "low"
+        env = Path(os.path.relpath(self.base / "api_env.yaml", folder)).as_posix()
+        if agent == "local":
+            lines = ["llm_defaults:                # your vLLM servers (local_endpoints.yaml); free",
+                     "  provider: local", "  model: auto", f"  api_env: {env}   # optional local_api_key",
+                     "  reasoning_effort: null", "  max_tokens: 16000", "  concurrency: 32"]
+        else:
+            if agent not in names:
+                raise ValueError(f"choose an agent model from {self.rel(self.catalog_path)}")
+            lines = ["llm_defaults:                # models by name; provider and price come from configs/models.yaml",
+                     f"  model: {agent}      # the agent, and every role and stage that does not say otherwise",
+                     f"  api_env: {env}", f"  reasoning_effort: {effort}", "  max_tokens: 16000", "  concurrency: 6"]
+        judge = b.get("judge_model") or ""
+        if kind == "benchmark" and judge:
+            if judge not in names:
+                raise ValueError(f"choose a judge model from {self.rel(self.catalog_path)}")
+            lines += ["roles:                         # evaluation roles (sragent eval)",
+                      f"  judge: {{model: {judge}, reasoning_effort: medium}}"]
+        return lines, ("local" if agent == "local" else agent)
 
     @staticmethod
     def _name(s: str, what: str) -> str:
@@ -360,11 +413,12 @@ class Library:
         return s
 
     def run_text(self, kind: str, folder: Path, b: dict) -> str:
-        models = b.get("models") or "gemini"
+        model_lines, models = self._models_block(kind, folder, b)
         mode = b.get("human_mode") or "human_in_the_loop"
         if mode not in ("human_in_the_loop", "agent_only"):
             raise ValueError("human_mode is human_in_the_loop or agent_only")
-        unclear = b.get("fulltext_unclear") or ("include" if mode == "agent_only" else "await")
+        # still unclear after the full text: a person decides in human_in_the_loop; agent_only needs a rule
+        unclear = (b.get("fulltext_unclear") or "include") if mode == "agent_only" else "await"
         if mode == "agent_only" and unclear == "await":
             raise ValueError("with agent_only, still-unclear full texts must be included or excluded (no person decides)")
         mr = b.get("max_records")
@@ -373,7 +427,7 @@ class Library:
             raise ValueError("max_records (a sample) is for benchmark topics only")
         people = "agent only" if mode == "agent_only" else "human in the loop"
         lines = [f"# {kind.capitalize()} run: {folder.name} · {models} · {mr or 'all'} records · {people}.",
-                 "include:", "  - topic.yaml", f"  - {self._models_include(folder, models)}",
+                 "include:", "  - topic.yaml", *model_lines,
                  "cache_dir: .cache",
                  f"budget_usd: {float(b.get('budget_usd') or 10.0):g}           # hard cost cap for this run folder",
                  f"contact_email: {_q(b.get('contact_email') or '')}          # Unpaywall open-access full texts need it",

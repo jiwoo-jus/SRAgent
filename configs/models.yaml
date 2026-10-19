@@ -1,0 +1,36 @@
+# Model catalog: facts about each model, written once and shared by every run file.
+# A run file chooses models by name (llm_defaults.model, roles.<role>.model, stage_models.<stage>.model);
+# the provider and price below are filled in from here. Choices (reasoning effort, max_tokens,
+# concurrency, api_env, fallbacks) belong in the run file, not here.
+#
+#   provider   openai | gemini | anthropic | local
+#   pricing    USD per 1M tokens {input_per_m, output_per_m}; optional long_context
+#              {threshold_tokens, input_per_m, output_per_m} for prompts above the threshold.
+#              Used for the budget guard and every cost estimate; check the current price pages.
+#   base_url   optional API endpoint override
+#
+# The web interface offers every model listed here (Run page, New review form). Local vLLM models need no
+# entry: write provider: local in the run file; the served models come from local_endpoints.yaml.
+models:
+  # Gemini API (gemini_api_key)
+  gemini-3.8-flash:
+    provider: gemini
+    pricing: {input_per_m: 0.75, output_per_m: 3.75}
+  gemini-3.1-pro-preview:
+    provider: gemini
+    pricing: {input_per_m: 2.00, output_per_m: 12.00}
+  gemma-4-31b-it:                 # open model through the Gemini API (a second judge of another lineage)
+    provider: gemini
+    pricing: {input_per_m: 0.10, output_per_m: 0.30}
+    note: conservative placeholder price
+
+  # Anthropic API (anthropic_api_key, or claude_api_key)
+  claude-haiku-5-5:               # $0.10/$0.50 for prompts up to 100K tokens, $0.50/$2.50 beyond
+    provider: anthropic
+    pricing:
+      input_per_m: 0.10
+      output_per_m: 0.50
+      long_context: {threshold_tokens: 100000, input_per_m: 0.50, output_per_m: 2.50}
+  claude-sonnet-5-5:
+    provider: anthropic
+    pricing: {input_per_m: 2.00, output_per_m: 10.00}

@@ -25,12 +25,12 @@ Code for each step is in `sragent/stages/`. `sragent/pipeline.py` runs them in o
 ## Configs: benchmark or real review
 
 ```
-configs/models/       which LLMs do the work: gemini.yaml, claude-haiku-5-5_claude-sonnet-5-5_gemma-4-31b-it.yaml (Claude), local.yaml
+configs/models.yaml   the model catalog: provider and price of each model (Gemini, Claude), written once
 configs/benchmark/    topics WITH a known answer: measure the agent (sragent eval works)
 configs/review/       topics WITHOUT a known answer: real reviews (copy review/_template/)
 ```
 
-A run file's path is its name: `configs/<kind>/<topic>/<run>.yaml` writes to `runs/<kind>/<topic>/<run>/`. `sragent runs` lists every run file and the state of its outputs.
+A run file's path is its name: `configs/<kind>/<topic>/<run>.yaml` writes to `runs/<kind>/<topic>/<run>/`. It chooses its models by name (the agent, the evaluation judges, and optionally a model per stage); their provider and price come from the catalog. `sragent runs` lists every run file and the state of its outputs.
 
 The benchmark topic is the pharmacokinetics of emicizumab in humans, with the known answer of the SYNERGY review `Donners_2021` (15 included studies). Known answers are kept out of the agent's store.
 
@@ -50,7 +50,7 @@ python -m pip install -e ".[dev]"
 cp api_env.example.yaml api_env.yaml
 ```
 
-Fill in `api_env.yaml` (or set `OPENAI_API_KEY`, `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`) and set model IDs in `configs/models/`. Requires Python 3.10 or newer. Run commands from the project root so relative paths resolve.
+Fill in `api_env.yaml` (or set `OPENAI_API_KEY`, `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`) and choose models by name in the run file (`configs/models.yaml` lists them with their prices). Requires Python 3.10 or newer. Run commands from the project root so relative paths resolve.
 
 ## Run
 
@@ -85,7 +85,7 @@ The same pipeline runs on your own vLLM servers.
 sragent local-endpoints --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --probe
 ```
 
-`local-endpoints` takes any run file. To run on local servers, copy a run file and include `../../models/local.yaml` instead of `gemini.yaml`.
+`local-endpoints` takes any run file. To run on local servers, copy a run file and write `llm_defaults: {provider: local, model: auto, reasoning_effort: null, concurrency: 32}` in it.
 
 `local-endpoints` only registers servers that are already running and does not start vLLM. Use `--urls` instead of `--nodes` for a server you reach through your own tunnel. Rerun it with the full new list at any time and active runs pick it up. `local_endpoints.yaml` in the project root is the server list; it also shows how to give nodes to roles (`--roles`, `--add`). See GUIDE.md section 4 for the settings.
 
@@ -101,7 +101,7 @@ Tests run offline (network access is blocked) and use no API credits.
 
 ```
 sragent/    pipeline, stages, sources, feedback, evaluation, web interface, LLM and local-model clients
-configs/    model setups, benchmark and review topics with their run files (see configs/README.md)
+configs/    the model catalog, benchmark and review topics with their run files (see configs/README.md)
 data/       bundled SYNERGY records for the example
 docs/       screenshots of the web interface
 tests/      offline tests

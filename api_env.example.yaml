@@ -1,6 +1,6 @@
 # Copy to api_env.yaml and fill in the providers you use.
 openai_api_key: ""
 gemini_api_key: ""
-anthropic_api_key: ""   # Claude (configs/models/claude-haiku-5-5_claude-sonnet-5-5_gemma-4-31b-it.yaml); claude_api_key is also accepted
+anthropic_api_key: ""   # Claude models (configs/models.yaml); claude_api_key is also accepted
 # Optional: only needed if the local server requires an API key.
 local_api_key: ""

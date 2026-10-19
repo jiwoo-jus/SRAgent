@@ -165,26 +165,21 @@ class App:
 
     # ------------------------------------------------------------ catalog
     def _load_catalog(self) -> dict:
-        """API models offered in the Run panel: every (provider, model, price) named in a model setup file
-        (configs/models/*.yaml), with the roles that file gives it. Local models come from the endpoint list."""
-        from ..config import deep_merge
-        found: dict[tuple, dict] = {}
-        for f in sorted(Path(self.cfg["models_dir"]).expanduser().glob("*.yaml")):
-            setup = yaml.safe_load(open(f)) or {}
-            base = setup.get("llm_defaults") or {}
-            for role in ("agent", "judge", "reviewer", "judge2"):
-                rc = deep_merge(base, (setup.get("roles") or {}).get(role) or {})
-                if rc.get("provider") in (None, "local") or not rc.get("model"):
-                    continue
-                key = (rc["provider"], rc["model"])
-                pr = rc.get("pricing") or {}
-                m = found.setdefault(key, {"id": rc["model"], "provider": rc["provider"], "roles": [],
-                                           "input_per_m": float(pr.get("input_per_m", 0)),
-                                           "output_per_m": float(pr.get("output_per_m", 0)),
-                                           "note": f"{role} in {f.name}"})
-                if role not in m["roles"]:
-                    m["roles"].append(role)
-        return {"api": list(found.values())}
+        """API models offered in the web interface: every model in the model catalog (configs/models.yaml),
+        with its price. Local models come from the endpoint list."""
+        uses = {}
+        for r in ("agent", "judge", "reviewer", "judge2"):
+            uses.setdefault(role_cfg(self.cfg, r).get("model"), []).append(r)
+        api = []
+        for name, e in (self.cfg.get("_catalog") or {}).items():
+            if e.get("provider") == "local":
+                continue
+            pr = e.get("pricing") or {}
+            api.append({"id": name, "provider": e["provider"], "roles": None,
+                        "input_per_m": float(pr.get("input_per_m", 0)), "output_per_m": float(pr.get("output_per_m", 0)),
+                        "note": ("used by this run file for " + ", ".join(uses[name]) if name in uses else "in the model catalog")
+                                + (" · long prompts cost more" if pr.get("long_context") else "")})
+        return {"api": api}
 
     def api_env_abs(self) -> str | None:
         rc = role_cfg(self.cfg, "agent")
@@ -770,7 +765,10 @@ class Workspace:
                 pass
         out["current"] = cur
         out["default"] = self.lib.rel(self.default) if self.default else None
-        out["model_files"] = self.lib.model_files()
+        try:
+            out["catalog_models"] = self.lib.catalog_models()
+        except ValueError:
+            out["catalog_models"] = []
         return out
 
 

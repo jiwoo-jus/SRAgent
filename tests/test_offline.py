@@ -238,11 +238,10 @@ def test_ui_app_state_and_estimate(tmp_path):
     pipeline.run(ctx)
     cfgp = tmp_path / "ui.yaml"
     cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_")}
-    cfg["models_dir"] = "models"                                # paths in a config file: relative to it
+    cfg["models_file"] = "models.yaml"                          # paths in a config file: relative to it
     cfg["local"] = {**cfg["local"], "endpoints_file": "local_endpoints.yaml"}
     cfgp.write_text(yaml.safe_dump(cfg))
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "gemini.yaml").write_text((ROOT / "configs/models/gemini.yaml").read_text())
+    (tmp_path / "models.yaml").write_text((ROOT / "configs/models.yaml").read_text())
     (tmp_path / "local_endpoints.yaml").write_text(yaml.safe_dump({"endpoints": [{"url": "http://node:8000/v1"}]}))
     app = App(str(cfgp))
     s = app.state()
@@ -250,8 +249,8 @@ def test_ui_app_state_and_estimate(tmp_path):
     e = app.estimate({"action": "run", "until": "report", "agent": {"provider": "gemini", "model": "gemini-3.8-flash", "effort": "low"}})
     assert e["total_usd"] == 0  # everything already done
     m = app.models()
-    flash = next(x for x in m["api"] if x["id"] == "gemini-3.8-flash")   # from the model setup files
-    assert flash["input_per_m"] == 0.75 and "agent" in flash["roles"]
+    flash = next(x for x in m["api"] if x["id"] == "gemini-3.8-flash")   # from the model catalog
+    assert flash["input_per_m"] == 0.75 and flash["provider"] == "gemini"
     assert m["local"]["endpoints"] == 1 and m["local"]["models"] == ["auto"]
     job = yaml.safe_load(app._write_job_config({"action": "rerun", "agent": {"provider": "local", "model": "auto"}}).read_text())
     assert job["local"]["endpoints_file"] == str((tmp_path / "local_endpoints.yaml").resolve())
@@ -455,8 +454,6 @@ def test_config_lock(tmp_path):
     # the web interface: the run refuses to load, then is accepted with a reason
     cfgp = tmp_path / "ui.yaml"
     ui = {k: v for k, v in cfg.items() if not k.startswith("_")}
-    ui["models_dir"] = "models"
-    (tmp_path / "models").mkdir()
     cfgp.write_text(yaml.safe_dump(ui))
     app = App(str(cfgp))
     with pytest.raises(config_lock.ConfigChanged):

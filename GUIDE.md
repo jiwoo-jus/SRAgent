@@ -44,7 +44,7 @@ sragent ui --config configs/review/<your_topic>/run.yaml          # or open one 
 sragent run    --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml
 sragent eval   --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --suite all
 
-# the same on your own vLLM servers (free; section 4): a run file that includes ../../models/local.yaml
+# the same on your own vLLM servers (free; section 4): a run file with llm_defaults: {provider: local, model: auto}
 sragent local-endpoints --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --probe
 ```
 
@@ -65,11 +65,7 @@ SRAgent/
   environment.yml                client env (CPU; vLLM runs in your server environment)
   pyproject.toml                 installs the `sragent` command
   configs/                       see configs/README.md
-    models/                      WHICH LLMs do the work (agent, judge, reviewer, judge2)
-      gemini.yaml                  Gemini for every role
-      claude-haiku-5-5_claude-sonnet-5-5_gemma-4-31b-it.yaml
-                                   Claude: Haiku agent, Sonnet judge, Gemma second judge
-      local.yaml                   your own vLLM servers (endpoint pool settings; servers in local_endpoints.yaml)
+    models.yaml                  the model catalog: provider and price of each model (run files choose by name)
     benchmark/                   topics WITH a known answer: measure the agent (`sragent eval`)
       emicizumab_pk/
         topic.yaml                   question, seed criteria, records, extraction fields, RoB domains
@@ -127,7 +123,7 @@ Python 3.10+ works. Dependencies are small (openai, pyyaml, requests, rapidfuzz,
 
 ### 3.2 API keys
 
-Keys are read from `api_env.yaml`, never from the configs. The model files point to it with `api_env: ../../api_env.yaml` (paths in a config file are relative to that file, so the file sits in the project root). The loader tolerates the mixed `key: "value"` and `KEY= value` lines in your file. Environment variables `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `LOCAL_API_KEY` override the file. `api_env.example.yaml` lists the keys.
+Keys are read from `api_env.yaml`, never from the configs. Run files point to it with `api_env: ../../../api_env.yaml` (paths in a config file are relative to that file, so the file sits in the project root). The loader tolerates the mixed `key: "value"` and `KEY= value` lines in your file. Environment variables `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `LOCAL_API_KEY` override the file. `api_env.example.yaml` lists the keys.
 
 Add `api_env.yaml` to `.gitignore` (already done in this repo). Other keys read from the same file:
 
@@ -155,7 +151,7 @@ sragent local-endpoints --config configs/benchmark/emicizumab_pk/gemini_agentonl
 sragent run --config configs/benchmark/emicizumab_pk/local_agentonly.yaml
 ```
 
-`local-endpoints` takes any run file (it only reads the endpoint list path). To run on local servers, copy a run file and include `../../models/local.yaml` instead of `gemini.yaml`; its outputs go to `runs/.../local_agentonly/`.
+`local-endpoints` takes any run file (it only reads the endpoint list path). To run on local servers, copy a run file (e.g. as `local_agentonly.yaml`) and write `llm_defaults: {provider: local, model: auto, reasoning_effort: null, concurrency: 32}` in it; its outputs go to `runs/.../local_agentonly/`.
 
 * `--nodes` rewrites `local_endpoints.yaml` (project root) with one entry per SSH host. `--add` appends to the current list instead, and `--roles agent` (or `judge`, `reviewer`, `judge2`) restricts the new entries to those roles; the file's comment header is kept. SRAgent opens its own SSH tunnel to each node (`BatchMode`, the host key must already be known) and closes only the tunnels it started.
 * `--urls http://127.0.0.1:18002/v1 ...` registers servers you reach through your own tunnel instead.
@@ -166,7 +162,7 @@ The file format is explained in the comments of `local_endpoints.yaml`: `ssh_hos
 
 ### 4.2 Backend settings
 
-`configs/models/local.yaml` sets `provider: local` and `model: auto`, plus the pool settings under `local:`:
+A local run file sets `provider: local` and `model: auto` under `llm_defaults`; the pool settings under `local:` have defaults (`sragent/config.py`) and are written only to change them:
 
 * `poll_interval` and `retry_interval` (cool-down after a failed endpoint), `probe_timeout`, and `wait_timeout` (`null` waits for endpoints until you cancel).
 * `concurrency` is the number of parallel requests from this process; `max_concurrency` per endpoint limits the active requests on each server.
@@ -177,7 +173,7 @@ The file format is explained in the comments of `local_endpoints.yaml`: `ssh_hos
 
 ### 4.3 Judge choice in local mode
 
-By default the judge, reviewer and judge2 roles also use the local model (free). For the paper, a judge from a **different model family** than the agent is better (it reduces self-preference). A cheap compromise is a local agent, a Gemini Pro judge and `gemma-4-31b-it` as judge2 (an open model reachable with the same Gemini key, almost free; it is what the v2 run used). Override `roles.judge` and `roles.judge2` in your run file as in `configs/models/gemini.yaml`. The judge validation suite (section 10.5) tells you whether the local judge agrees with an API judge, so you can measure this instead of guessing.
+By default the judge, reviewer and judge2 roles also use the local model (free). For the paper, a judge from a **different model family** than the agent is better (it reduces self-preference). A cheap compromise is a local agent, a Gemini Pro judge and `gemma-4-31b-it` as judge2 (an open model reachable with the same Gemini key, almost free; it is what the v2 run used). Set `roles.judge` and `roles.judge2` in your run file as in `configs/benchmark/emicizumab_pk/gemini_agentonly.yaml` (the models must be in the catalog). The judge validation suite (section 10.5) tells you whether the local judge agrees with an API judge, so you can measure this instead of guessing.
 
 ---
 
@@ -264,7 +260,7 @@ sragent ui --config configs/review/<your_topic>/run.yaml      # or straight into
 #   ssh -N -L <port>:localhost:<port> <user>@<the same login node>   (or VS Code's Ports panel)
 ```
 
-The **Configs** page lists every run file under `configs/` with its models, people mode, status and spend; click one to open that review (the address carries it: `/?config=<run file>`, so several reviews can be open in different tabs). It also lists the topic files and model setups, edits any of them with a check on every change (a run file is loaded with its includes, as `sragent run` would), and creates a new review (a topic folder with its `topic.yaml` and first run file) or another run file for a topic from a short form. Jobs from all open run files share one queue: one job runs at a time. A review whose fixed settings were edited after it started opens on a panel that shows the changes, with three ways on: set them back, copy as a new run file, or accept the change with a reason (configs/README.md, rule 6).
+The **Configs** page lists every run file under `configs/` with its models, people mode, status and spend; click one to open that review (the address carries it: `/?config=<run file>`, so several reviews can be open in different tabs). It also lists the topic files and the model catalog, edits any of them with a check on every change (a run file is loaded with its includes, as `sragent run` would), and creates a new review (a topic folder with its `topic.yaml` and first run file) or another run file for a topic from a short form. Jobs from all open run files share one queue: one job runs at a time. A review whose fixed settings were edited after it started opens on a panel that shows the changes, with three ways on: set them back, copy as a new run file, or accept the change with a reason (configs/README.md, rule 6).
 
 It runs on your machine only (standard library web server, no extra install, no external scripts or fonts). A sidebar shows the run, its review question, the human-involvement mode, the cost so far and any running job (with **Stop**); on a phone it folds into a menu. Every view has its own address (`#/todo`, `#/studies/<rid>`, ...), so the browser's back button, reloads and bookmarks work. Light and dark themes follow the system setting; the button next to the cost overrides it. Every page starts with one **Next step** banner that says, in plain words, the single most useful thing to do now, with a button that takes you there. You never have to work out the order yourself.
 
@@ -298,7 +294,7 @@ Screenshots of the main results (`benchmark/emicizumab_pk/gemini_agentonly`, age
 
 ![Overview](docs/ui_steps.png)
 
-![Configs: every run file, topic and model setup](docs/ui_configs.png)
+![Configs: every run file, topic and the model catalog](docs/ui_configs.png)
 
 ![To-do: eligibility table (human in the loop)](docs/ui_todo_eligibility.png)
 
@@ -392,11 +388,11 @@ The evidence view has a *comment / ask the agent* box under every item. Opened f
 
 ### 8.1 Inputs
 
-A run is one file in `configs/<benchmark|review>/<topic>/` that includes the folder's **topic file** (`topic.yaml`: question, seed eligibility text, record source, extraction fields, quality domains) and a **model file** (`configs/models/`: provider, model, reasoning effort and price per role), and adds run settings (`run_dir`, `budget_usd`, `pipeline`, `feedback`, `eval`). How to write each file, templates, and every key with its default are in **`configs/README.md`**; the defaults themselves are `DEFAULTS` in `sragent/config.py`.
+A run is one file in `configs/<benchmark|review>/<topic>/` that includes the folder's **topic file** (`topic.yaml`: question, seed eligibility text, record source, extraction fields, quality domains), chooses its **models by name** (`llm_defaults`, `roles`, `stage_models`: model and reasoning effort per role and stage; provider and price come from the **model catalog** `configs/models.yaml`), and adds run settings (`run_dir`, `budget_usd`, `pipeline`, `feedback`, `eval`). How to write each file, templates, and every key with its default are in **`configs/README.md`**; the defaults themselves are `DEFAULTS` in `sragent/config.py`.
 
 **Your own full texts.** `runs/<name>/fulltext/<id>.pdf` or `<id>.txt` (section 7.2); they take precedence over Europe PMC.
 
-**Model list for the UI.** The Run tab offers every API model named in `configs/models/*.yaml` (with the price written there and the roles the file gives it) plus the local endpoint list (section 4), for each stage (`stage_models`, configs/README.md). To offer another model, add it to a model file.
+**Model list for the UI.** The Run tab and the New review form offer every model in the catalog `configs/models.yaml` (with its price) plus the local endpoint list (section 4), for each stage (`stage_models`, configs/README.md). To offer another model, add it to the catalog.
 
 ### 8.2 Outputs (in `run_dir`)
 
@@ -725,9 +721,9 @@ What was done to save budget, and what it bought.
 
 | Symptom | Fix |
 |---|---|
-| `No API key for provider` | check the `api_env` path in the model file (`configs/models/`), or set `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` |
+| `No API key for provider` | check the `api_env` path in the run file (`llm_defaults.api_env`, relative to the run file), or set `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` |
 | `settings that define this review were changed after it started` | set the listed settings back, make a new run file for the new design, or `sragent accept-config --config C --reason "..."` (or Accept in the web interface) |
-| `account/key problem, not retrying` (insufficient_quota) | add credit or switch the role to another provider (e.g. use `configs/models/gemini.yaml`) |
+| `account/key problem, not retrying` (insufficient_quota) | add credit or switch the role to a model of another provider (a name from `configs/models.yaml`) |
 | `Budget ... exhausted` | raise `budget_usd`; finished work is saved, rerun resumes |
 | `Waiting for an available endpoint` | check the servers with `sragent local-endpoints --config C --probe`; register the running ones with `--nodes` or `--urls` |
 | `Multiple served models` | set `model:` for that endpoint (or `--model` in `local-endpoints`) to the served model ID |

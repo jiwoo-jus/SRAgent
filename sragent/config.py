@@ -1,10 +1,12 @@
 """Configuration loading.
 
 A run is configured by one YAML file in configs/<benchmark|review>/<topic>/ that includes the folder's
-topic.yaml and a model setup (configs/models/). LLM credentials are never stored in configs; they are read from an
-`api_env.yaml` file (or from environment variables) whose path is given in `llm_defaults.api_env`.
+topic.yaml and chooses its models (llm_defaults, roles, stage_models). Facts about each model (provider,
+price) are written once, in the model catalog configs/models.yaml, and filled in by model name.
+LLM credentials are never stored in configs; they are read from an `api_env.yaml` file (or from environment
+variables) whose path is given in `llm_defaults.api_env`.
 
-Paths to other config files (include, api_env, local.endpoints_file, models_dir) are relative to the
+Paths to other config files (include, api_env, local.endpoints_file, models_file) are relative to the
 file they are written in. Data paths (run_dir, cache_dir, pipeline.fulltext_dir, and the topic's
 records.data_dir, records.file, protocol_file) are relative to the project root, where `sragent` is run.
 
@@ -27,7 +29,7 @@ DEFAULTS: dict[str, Any] = {
     "budget_usd": 5.0,
     "contact_email": "",          # sent to NCBI, Unpaywall and OpenAlex (Unpaywall requires it)
     "ncbi_api_key": "",           # optional, raises E-utilities rate limit
-    "models_dir": "configs/models",   # model setups; the web interface offers the models found in them
+    "models_file": "configs/models.yaml",   # model catalog: provider and price per model name (project root)
     "llm_defaults": {
         "provider": "openai",     # openai | gemini | anthropic | local | mock (tests)
         "model": "gpt-6.1-sol",
@@ -52,7 +54,7 @@ DEFAULTS: dict[str, Any] = {
     },
     # model and effort per pipeline stage, over the agent role: {stage: {model, reasoning_effort, provider, ...}}.
     # Stages: plan search screen fulltext snowball extract rob synthesize, and feedback (feedback handling,
-    # revisions, sync). Unset = the agent role. The price comes from the model files when not written.
+    # revisions, sync). Unset = the agent role. Provider and price come from the model catalog when not written.
     # A stage's model is fixed once the stage has started (config_lock.py).
     "stage_models": {},
     # role-specific overrides of llm_defaults
@@ -125,7 +127,7 @@ def _resolve_paths(user: dict, base: Path) -> None:
         if isinstance(d, dict) and d.get(key):
             f = Path(d[key]).expanduser()
             d[key] = str(f if f.is_absolute() else (base / f).resolve())
-    fix(user, "models_dir")
+    fix(user, "models_file")
     fix(user.get("local"), "endpoints_file")
     fix(user.get("llm_defaults"), "api_env")
     for role in (user.get("roles") or {}).values():
@@ -153,6 +155,7 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
         cfg["_config_dir"] = str(p.parent.resolve())
     if overrides:
         cfg = deep_merge(cfg, overrides)
+    cfg["_catalog"] = load_catalog(cfg.get("models_file"))
     if cfg["run_dir"] is None:
         cfg["run_dir"] = default_run_dir(path)
     p = cfg["pipeline"]
@@ -184,8 +187,51 @@ def is_benchmark(cfg: dict) -> bool:
 
 
 def role_cfg(cfg: dict, role: str) -> dict:
-    """LLM settings for a role = llm_defaults overridden by roles[role] (a role's own price replaces the default's)."""
-    return _over_agent(cfg["llm_defaults"], cfg.get("roles", {}).get(role, {}) or {})
+    """LLM settings for a role = llm_defaults overridden by roles[role]; the provider and price of its model
+    come from the model catalog unless the role writes its own."""
+    return _with_model(cfg, cfg["llm_defaults"], cfg.get("roles", {}).get(role, {}) or {})
+
+
+# ---------------------------------------------------------------- model catalog
+
+CATALOG_FACTS = ("provider", "pricing", "base_url")   # facts about a model, filled in from configs/models.yaml
+PROVIDERS = ("openai", "gemini", "anthropic", "local", "mock")
+
+
+def load_catalog(path: str | os.PathLike | None) -> dict:
+    """{model name: {provider, pricing, base_url}} from the catalog file ({} when there is none)."""
+    if not path:
+        return {}
+    p = Path(path).expanduser()
+    if not p.is_file():
+        return {}
+    data = yaml.safe_load(p.read_text()) or {}
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, dict):
+        raise ValueError(f"{p}: write the models under `models:`, e.g. models: {{claude-haiku-5-5: {{provider: anthropic, pricing: ...}}}}")
+    out = {}
+    for name, e in models.items():
+        if not isinstance(e, dict) or e.get("provider") not in PROVIDERS:
+            raise ValueError(f"{p}: models.{name}.provider must be one of {', '.join(PROVIDERS[:-1])}")
+        bad = set(e) - set(CATALOG_FACTS) - {"note"}
+        if bad:
+            raise ValueError(f"{p}: models.{name}: only {', '.join(CATALOG_FACTS)} and note belong in the catalog "
+                             f"(choices such as {', '.join(sorted(bad))} go in the run file)")
+        pr = e.get("pricing")
+        if e["provider"] != "local" and not (isinstance(pr, dict) and "input_per_m" in pr and "output_per_m" in pr):
+            raise ValueError(f"{p}: models.{name}.pricing needs input_per_m and output_per_m (USD per 1M tokens)")
+        out[str(name)] = {k: copy.deepcopy(e[k]) for k in CATALOG_FACTS if k in e}
+    return out
+
+
+def _with_model(cfg: dict, base: dict, ov: dict) -> dict:
+    """base overridden by ov; then the catalog's facts about the resulting model, except those ov writes."""
+    sc = _over_agent(base, ov)
+    facts = (cfg.get("_catalog") or {}).get(sc.get("model")) or {}
+    for k, v in facts.items():
+        if k not in ov:
+            sc[k] = copy.deepcopy(v)
+    return sc
 
 
 # ---------------------------------------------------------------- per-stage models
@@ -209,28 +255,13 @@ def stage_of_tag(tag: str) -> str:
     return "feedback"
 
 
-def model_prices(models_dir: str | os.PathLike | None) -> dict:
-    """(provider, model) -> pricing for every model named in the model setup files."""
-    out: dict = {}
-    for f in sorted(Path(models_dir or "configs/models").expanduser().glob("*.yaml")):
-        try:
-            m = yaml.safe_load(f.read_text()) or {}
-        except (OSError, yaml.YAMLError):
-            continue
-        base = m.get("llm_defaults") or {}
-        for rc in [base] + [_over_agent(base, r or {}) for r in (m.get("roles") or {}).values() if isinstance(r, dict)]:
-            if rc.get("model") and rc.get("pricing") and rc.get("provider"):
-                out.setdefault((rc["provider"], rc["model"]), rc["pricing"])
-    return out
-
-
 def _resolve_stage_models(cfg: dict) -> None:
-    """Check stage_models and fill in each stage's provider and price (from the model files when not written)."""
+    """Check stage_models (each stage's provider and price come from the model catalog when not written)."""
     sm = cfg.get("stage_models") or {}
     if not isinstance(sm, dict):
         raise ValueError("stage_models must map a stage to its settings, e.g. extract: {model: ..., reasoning_effort: medium}")
     agent = role_cfg(cfg, "agent")
-    prices = None
+    catalog = cfg.get("_catalog") or {}
     for stage, ov in list(sm.items()):
         if stage not in LLM_STAGES:
             hint = " (the report makes no LLM calls)" if stage == "report" else ""
@@ -244,15 +275,11 @@ def _resolve_stage_models(cfg: dict) -> None:
         if bad:
             raise ValueError(f"stage_models.{stage}: unknown keys {', '.join(sorted(bad))}")
         ov = dict(ov)
-        if ov.get("model") and ov["model"] != agent.get("model") and not ov.get("pricing"):
-            prices = prices if prices is not None else model_prices(cfg.get("models_dir"))
-            found = [(p, m) for (p, m) in prices if m == ov["model"] and (not ov.get("provider") or p == ov["provider"])]
-            if not found:
-                raise ValueError(f"stage_models.{stage}: no price known for {ov['model']}; name it in a file in "
-                                 f"configs/models/ or write pricing: {{input_per_m: ..., output_per_m: ...}}")
-            ov.setdefault("provider", found[0][0])
-            ov["pricing"] = prices[(ov["provider"], ov["model"])]
-        sc = _over_agent(agent, ov)
+        if ov.get("model") and ov["model"] != agent.get("model") and ov["model"] not in catalog and not ov.get("pricing") \
+                and ov.get("provider", agent.get("provider")) != "local":
+            raise ValueError(f"stage_models.{stage}: {ov['model']} is not in the model catalog "
+                             f"({cfg.get('models_file')}); add it there or write pricing: {{input_per_m: ..., output_per_m: ...}}")
+        sc = _with_model(cfg, agent, ov)
         eff = sc.get("reasoning_effort")
         ok = EFFORTS.get(sc.get("provider"))
         if eff is not None and ok and eff not in ok:
@@ -266,7 +293,7 @@ def stage_cfg(cfg: dict, stage: str | None) -> dict:
     """LLM settings for the agent in one pipeline stage = the agent role overridden by stage_models[stage]."""
     agent = role_cfg(cfg, "agent")
     ov = (cfg.get("stage_models") or {}).get(stage or "") or {}
-    return _over_agent(agent, ov) if ov else agent
+    return _with_model(cfg, agent, ov) if ov else agent
 
 
 def _over_agent(agent: dict, ov: dict) -> dict:

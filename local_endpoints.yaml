@@ -1,4 +1,4 @@
-# Live list of vLLM servers (used by configs/models/local.yaml). Running clients reload it on every request,
+# Live list of vLLM servers (used by run files with llm_defaults.provider: local). Running clients reload it on every request,
 # so it can be edited while a run is active. Each entry is one independently reachable vLLM server
 # (not a tensor-parallel worker).
 #
