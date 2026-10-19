@@ -1,0 +1,243 @@
+{
+ "change_set": {
+  "changes": [
+   [
+    "ext:G01",
+    "target"
+   ],
+   [
+    "syn:S1",
+    "dependent"
+   ],
+   [
+    "syn:S3",
+    "dependent"
+   ]
+  ],
+  "kind": null,
+  "status": "accepted",
+  "verdict": "supported"
+ },
+ "review": {
+  "criteria": {
+   "I1": {
+    "stage": "title_abstract",
+    "text": "about emicizumab",
+    "type": "inclusion"
+   },
+   "I2": {
+    "stage": "title_abstract",
+    "text": "human data",
+    "type": "inclusion"
+   },
+   "I3": {
+    "stage": "title_abstract",
+    "text": "PK data",
+    "type": "inclusion"
+   },
+   "P1": {
+    "stage": "full_text",
+    "text": "full text in English",
+    "type": "practical"
+   }
+  },
+  "extraction": {
+   "G01": {
+    "fields": {
+     "comparator": "NR",
+     "condition": "NR",
+     "efficacy_safety": "efficacy_safety value 12 participants",
+     "exposure_response": "exposure_response value 12 participants",
+     "intervention": "NR",
+     "pk_methods": "pk_methods value 12 participants",
+     "pk_results": "pk_results value 12 participants",
+     "population": "population value 12 participants",
+     "sample_size": "sample_size value 12 participants",
+     "study_design": "study_design value 12 participants (corrected)"
+    },
+    "status": "active"
+   },
+   "G02": {
+    "fields": {
+     "comparator": "NR",
+     "condition": "NR",
+     "efficacy_safety": "efficacy_safety value 60 children",
+     "exposure_response": "exposure_response value 60 children",
+     "intervention": "NR",
+     "pk_methods": "pk_methods value 60 children",
+     "pk_results": "pk_results value 60 children",
+     "population": "population value 60 children",
+     "sample_size": "sample_size value 60 children",
+     "study_design": "study_design value 60 children"
+    },
+    "status": "active"
+   }
+  },
+  "included": [
+   "G01",
+   "G02"
+  ],
+  "open_flags": {},
+  "prisma": {
+   "awaiting_classification": 0,
+   "awaiting_fulltext_review": 0,
+   "duplicates": 0,
+   "excluded_by_rules": 1,
+   "excluded_fulltext": 1,
+   "excluded_fulltext_reasons": {
+    "I2": 1
+   },
+   "excluded_title_abstract": 2,
+   "fulltext_assessed": 3,
+   "identified": 7,
+   "included": 2,
+   "reports_not_retrieved": 1,
+   "reports_sought": 4,
+   "reports_unreadable": 0,
+   "screened": 7
+  },
+  "provenance": {
+   "pdf_provision:supplied": 3
+  },
+  "records": {
+   "G01": {
+    "because": [],
+    "by": "agent",
+    "criteria": {
+     "I1": "met",
+     "I2": "met",
+     "I3": "met"
+    },
+    "decision": "include",
+    "stage": "full_text",
+    "status": "active"
+   },
+   "G02": {
+    "because": [],
+    "by": "agent",
+    "criteria": {
+     "I1": "met",
+     "I2": "met",
+     "I3": "met"
+    },
+    "decision": "include",
+    "stage": "full_text",
+    "status": "active"
+   },
+   "G03": {
+    "because": [],
+    "by": "agent",
+    "criteria": {
+     "I1": "met",
+     "I2": "met",
+     "I3": "unclear"
+    },
+    "decision": "fulltext_unavailable",
+    "stage": "retrieval",
+    "status": "active"
+   },
+   "G04": {
+    "because": [
+     "I3"
+    ],
+    "by": "agent",
+    "criteria": {
+     "I1": "met",
+     "I2": "met",
+     "I3": "not_met"
+    },
+    "decision": "exclude",
+    "stage": "title_abstract",
+    "status": "active"
+   },
+   "G05": {
+    "because": [
+     "I1",
+     "I3"
+    ],
+    "by": "agent",
+    "criteria": {
+     "I1": "not_met",
+     "I2": "met",
+     "I3": "not_met"
+    },
+    "decision": "exclude",
+    "stage": "title_abstract",
+    "status": "active"
+   },
+   "G06": {
+    "because": [
+     "I2"
+    ],
+    "by": "agent",
+    "criteria": {
+     "I1": "met",
+     "I2": "not_met",
+     "I3": "met"
+    },
+    "decision": "exclude",
+    "stage": "full_text",
+    "status": "active"
+   },
+   "G07": {
+    "because": [
+     "rule:conference_abstract"
+    ],
+    "by": "rule",
+    "criteria": {},
+    "decision": "exclude",
+    "stage": "title_abstract",
+    "status": "active"
+   }
+  },
+  "rob": {
+   "G01": {
+    "domains": {
+     "dosing_documentation": "low",
+     "missing_data": "low",
+     "participant_selection": "low",
+     "pk_analysis": "low",
+     "sampling_and_bioanalysis": "low",
+     "selective_reporting": "low"
+    },
+    "overall": "low",
+    "status": "active"
+   },
+   "G02": {
+    "domains": {
+     "dosing_documentation": "low",
+     "missing_data": "low",
+     "participant_selection": "low",
+     "pk_analysis": "low",
+     "sampling_and_bioanalysis": "low",
+     "selective_reporting": "low"
+    },
+    "overall": "low",
+    "status": "active"
+   }
+  },
+  "synthesis": {
+   "S1": {
+    "cites": [
+     "G01"
+    ],
+    "status": "active",
+    "text": "Statement 1 reports 12 participants in adults. [revised]"
+   },
+   "S2": {
+    "cites": [
+     "G02"
+    ],
+    "status": "active",
+    "text": "Statement 2 reports 12 participants in adults."
+   },
+   "S3": {
+    "cites": [
+     "G01"
+    ],
+    "status": "active",
+    "text": "Statement 3 reports 12 participants in adults. [revised]"
+   }
+  }
+ }
+}

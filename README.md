@@ -95,7 +95,7 @@ sragent local-endpoints --config configs/benchmark/emicizumab_pk/gemini_agentonl
 python -m pytest -q tests/
 ```
 
-Tests run offline (network access is blocked) and use no API credits.
+Tests run offline (network access is blocked) and use no API credits. `tests/test_golden.py` freezes what the review looks like after each of 13 scenarios (the whole pipeline, feedback with and without propagation, a person's decisions, protocol edits, re-runs, an added PDF, agent-only) in `tests/golden/*.json`, as decisions, outputs and change sets rather than store internals. After an intended change of behaviour, rewrite them with `SRAGENT_UPDATE_GOLDEN=1 python -m pytest -q tests/test_golden.py` and review the diff of `tests/golden/` before committing it.
 
 ## Repository layout
 
