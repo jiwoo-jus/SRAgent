@@ -528,9 +528,10 @@ function renderStudies(){
        <button class="btn" onclick="loadStudies()">Refresh</button></div></div>
    <div class="card"><h3>Comment on the whole review</h3>
      <textarea id="revc" oninput="ST.revc=this.value" placeholder="e.g. 'Re-check every population statement for scope' or a note for your co-reviewer">${esc(ST.revc||"")}</textarea>
-     <div class="row"><span class="small mut">Agent model</span>${modelPicker(ST, "agent")}
+     ${judging() ? `<div class="row"><span class="small mut">Agent model</span>${modelPicker(ST, "agent")}
        <button class="primary btn" onclick="reviewComment(true)">Send to the agent</button><button class="btn" onclick="reviewComment(false)">Save as a comment only</button><span id="revcm"></span></div>
-     <div class="hint">Sent comments go through the same check as feedback: the agent finds the output it is about, checks it against the source and proposes a change set that you approve in the To-do list.</div></div>
+     <div class="hint">Sent comments go through the same check as feedback: the agent finds the output it is about, checks it against the source and proposes a change set that you approve in the To-do list.</div>`
+     : `<div class="row"><button class="btn" onclick="reviewComment(false)">Save as a comment</button><span id="revcm"></span></div>${AGENT_ONLY_NOTE}`}</div>
    <div class="card" style="padding:0"><table><tr><th>ID</th><th>Study</th><th>Status</th><th>Source</th><th>Flags</th><th>RoB</th><th>Cited in</th><th>💬</th></tr>${rows}</table>
      ${F.length>400?`<p class="small mut" style="padding:8px">Showing 400 of ${F.length}; narrow the filter.</p>`:""}</div>`;
   if (hadFocus) { const qi = $("#studyq"); qi.focus(); qi.setSelectionRange(qi.value.length, qi.value.length); }
@@ -551,6 +552,10 @@ async function openStudy(rid, keepEdit){
 }
 function backToList(){ ST.rid = null; ST.d = null; loadStudies(); }
 function evList(ev){ return (ev||[]).map(e => `<div class="small"><span class="chip">${esc(e.sid)} · ${esc(e.section)}</span> <span class="mut">“${esc(e.text)}”</span></div>`).join(""); }
+// Agent-only mode: people may only supply requested full texts, so judgment controls are not shown
+// (the server refuses them anyway). Comments can still be saved as annotations.
+function judging(){ return !(S && S.run.human_mode === "agent_only"); }
+const AGENT_ONLY_NOTE = `<div class="hint">Agent-only mode: people may only supply the full texts the agent requested, so re-runs, edits and comments sent to the agent are not available. Comments can be saved as notes.</div>`;
 function sec(title, body, right){ return `<div class="card"><div class="row" style="margin:0 0 6px"><h3 style="flex:1;margin:0">${title}</h3>${right||""}</div>${body}</div>`; }
 function renderStudy(){
   const d = ST.d; if (!d) return;
@@ -573,7 +578,7 @@ function renderStudy(){
   // agent actions
   const steps = [["screen","Screening (eligibility)"]].concat(d.group==="included" ? [["extract","Data extraction"]] : []).concat(d.extraction && d.group==="included" ? [["rob","Risk of bias"]] : []);
   const rr = ST.rr;
-  out.push(sec("Ask the agent", `
+  if (judging()) out.push(sec("Ask the agent", `
     <div class="row"><label class="k">Re-run this step</label>${steps.map(([v,l]) => `<span class="opt ${rr.step===v?"sel":""}" onclick="ST.rr.step='${v}';renderStudy();studyEst()">${l}</span>`).join("")}</div>
     <div class="row"><label class="k">Model</label>${modelPicker(ST.rr, "agent")}</div>
     <div class="row"><label class="k">Note for the agent</label><textarea style="flex:1" placeholder="optional, e.g. 'the table on page 5 has the steady-state troughs'" oninput="ST.rr.note=this.value">${esc(rr.note||"")}</textarea></div>
@@ -598,7 +603,7 @@ function renderStudy(){
         ${s.llm_reason?`<div class="small mut">Agent: ${esc(s.llm_reason)}</div>`:""}
         ${s.title_abstract?`<div class="small mut">Title/abstract stage: ${esc(s.title_abstract.decision)}</div>`:""}
         ${crit?`<table style="margin-top:6px"><tr><th>Criterion</th><th></th><th>Assessment</th><th>Evidence</th></tr>${crit}</table>`:""}${ed}`,
-      E.kind==="screen" ? "" : `<button class="btn" onclick="ST.edit={kind:'screen',decision:'${s.decision}',criterion:'',note:''};renderStudy()">Edit</button>`));
+      E.kind==="screen" || !judging() ? "" : `<button class="btn" onclick="ST.edit={kind:'screen',decision:'${s.decision}',criterion:'',note:''};renderStudy()">Edit</button>`));
   }
   // extraction
   if (d.extraction) {
@@ -612,7 +617,7 @@ function renderStudy(){
       `<table><tr><th>Item</th><th>Value</th><th>Evidence (sentence id · section)</th></tr>${rows}</table>
        ${editing?`${editNote()}<div class="row"><button class="primary btn" onclick="saveEdit()">Save (no LLM)</button><button class="btn" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg"></span></div>
        <div class="hint">The cited sentences stay as the agent's evidence; your value is marked as edited, and the outputs that use it are listed in the To-do list for an optional update.</div>`:""}`,
-      editing ? "" : `<button class="btn" onclick="editExt()">Edit values</button>`));
+      editing || !judging() ? "" : `<button class="btn" onclick="editExt()">Edit values</button>`));
   }
   // rob
   if (d.rob) {
@@ -626,7 +631,7 @@ function renderStudy(){
     out.push(sec(`Risk of bias <span class="small mut">overall <b>${esc(b.overall)}</b> · ${b.confirmed?"confirmed":"draft"} · v${b.version}</span>`,
       `<table><tr><th>Domain</th><th>Judgment</th><th>Rationale</th><th>Evidence</th></tr>${rows}</table>
        ${editing?`${editNote()}<div class="row"><button class="primary btn" onclick="saveEdit()">Save and confirm (no LLM)</button><button class="btn" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg"></span></div>`:""}`,
-      editing ? "" : `<button class="btn" onclick="editRob()">Edit domains</button>`));
+      editing || !judging() ? "" : `<button class="btn" onclick="editRob()">Edit domains</button>`));
   }
   // synthesis
   if (d.synthesis.length) {
@@ -637,7 +642,7 @@ function renderStudy(){
            <div class="row"><label class="small mut">cites</label><input style="flex:1" value="${esc(E.cites)}" oninput="ST.edit.cites=this.value"></div>${editNote()}
            <div class="row"><button class="primary btn" onclick="saveEdit()">Save (no LLM)</button><button class="btn" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg"></span></div>`
         : `${esc(s.text)} <span class="small mut">cites ${esc(s.cites.join(", "))} · self-check ${esc(s.support||"-")}</span>
-           <button class="link small" onclick="editSyn('${s.id}')">edit</button>`}</div>`; }).join("")));
+           ${judging() ? `<button class="link small" onclick="editSyn('${s.id}')">edit</button>` : ""}`}</div>`; }).join("")));
   }
   // proposals
   if (d.proposals.length) {
@@ -657,8 +662,9 @@ function renderStudy(){
       <div>${esc(c.text)}</div>${c.status==="open"?`<button class="link small" onclick="resolveComment('${c.id}')">mark resolved</button>`:`<div class="small mut">${esc(c.resolution||"")}</div>`}</div>`).join("")}
     <div class="row"><label class="small mut">About</label><select id="ctarget" onchange="ST.ctarget=this.value">${targets.map(([v,l]) => `<option value="${v}" ${ST.ctarget===v?"selected":""}>${esc(l)}</option>`).join("")}</select></div>
     <textarea id="ctext" placeholder="Your comment" oninput="ST.rcomment=this.value">${esc(ST.rcomment)}</textarea>
-    <div class="row"><button class="primary btn" onclick="studyComment(true)">Send to the agent</button><button class="btn" onclick="studyComment(false)">Save as a comment only</button><span id="cmsg"></span></div>
-    <div class="hint">"Send to the agent" uses the model chosen under "Ask the agent" above. The agent checks your comment against the source text; if it agrees it proposes a revision (shown above and in the To-do list), if it disagrees it explains why.</div>`));
+    ${judging() ? `<div class="row"><button class="primary btn" onclick="studyComment(true)">Send to the agent</button><button class="btn" onclick="studyComment(false)">Save as a comment only</button><span id="cmsg"></span></div>
+    <div class="hint">"Send to the agent" uses the model chosen under "Ask the agent" above. The agent checks your comment against the source text; if it agrees it proposes a revision (shown above and in the To-do list), if it disagrees it explains why.</div>`
+    : `<div class="row"><button class="btn" onclick="studyComment(false)">Save as a comment</button><span id="cmsg"></span></div>${AGENT_ONLY_NOTE}`}`));
   // history
   out.push(sec(`History <span class="chip">${d.history.length}</span>`, `<table><tr><th>When</th><th>Output</th><th>What</th><th>Who</th><th>Why</th></tr>
      ${d.history.slice().reverse().map(h => `<tr><td class="small" style="white-space:nowrap">${fmtT(h.ts)}</td><td class="small">${esc(h.node)}</td>

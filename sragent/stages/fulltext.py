@@ -14,8 +14,10 @@ after adding files; it converts them and re-screens / re-extracts the affected s
 from __future__ import annotations
 
 import csv
+from functools import lru_cache
 from pathlib import Path
 
+from .. import provenance
 from ..context import Ctx
 from ..sources import europepmc
 
@@ -109,7 +111,6 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
     oa_locs: list[dict] = []
     listed_supp: list[dict] = []
     if local is not None:
-        from .. import provenance
         dig = provenance.file_digest(local)
         if not any(e.get("sha256") == dig["sha256"] for e in provenance.events(ctx.run_dir)):
             provenance.record(ctx, "pdf_provision", "supplied", rid=rid, **dig)
@@ -155,8 +156,7 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
             "oa_locations": [{k: l.get(k) for k in ("url", "pdf", "host", "version", "license", "source", "download_status")}
                              for l in oa_locs][:5],
             "supplements_listed": listed_supp[:10], "supplements_used": supp_used,
-            "local_file": local.name if local else None,
-            "local_mtime": local.stat().st_mtime if local else None}
+            "local_file": local.name if local else None}
     st.upsert(f"ft:{rid}", "fulltext", data, depends_on=[f"rec:{rid}"], reason=f"retrieved ({origin}; {parser or 'abstract'})")
     return data
 
@@ -200,9 +200,23 @@ def write_needed_pdfs(ctx: Ctx) -> Path:
     return p
 
 
+@lru_cache(maxsize=4096)
+def _sha(path: str, size: int, mtime_ns: int) -> str:
+    return provenance.file_sha(Path(path))
+
+
+def content_sha(p: Path) -> str:
+    """The file's SHA-256 (provenance.file_sha), cached while its size and modification time stay the same."""
+    s = p.stat()
+    return _sha(str(p), s.st_size, s.st_mtime_ns)
+
+
 def new_local_files(ctx: Ctx) -> list[str]:
-    """Record ids with a user file that has not been processed yet (new or changed)."""
+    """Record ids with a user file that has not been processed yet: a new file name, or content whose SHA-256
+    is not in provenance.jsonl (every processed file is recorded there). Decided by content, not by the file's
+    modification time, so copying or restoring the run folder does not make processed files look new."""
     st = ctx.store
+    processed = {e["sha256"] for e in provenance.events(ctx.run_dir) if e.get("sha256")}
     out = []
     for n in st.by_type("record"):
         rid = n["id"].split(":", 1)[1]
@@ -210,6 +224,6 @@ def new_local_files(ctx: Ctx) -> list[str]:
         if f is None:
             continue
         ft = (st.get(f"ft:{rid}") or {}).get("data", {})
-        if ft.get("local_file") != f.name or (ft.get("local_mtime") or 0) < f.stat().st_mtime - 1:
+        if ft.get("local_file") != f.name or content_sha(f) not in processed:
             out.append(rid)
     return out

@@ -47,7 +47,7 @@ Other runs are made from these when needed, e.g. the second evaluation condition
 | `gemini.yaml` | Gemini for every role (one API key). Agent gemini-3.8-flash, judge gemini-3.1-pro-preview, second judge gemma-4-31b-it. |
 | `local.yaml` | Your own vLLM servers for every role (free). The servers and the roles each may serve are listed in `local_endpoints.yaml` in the project root (next to `api_env.yaml`); `sragent local-endpoints` edits that list. |
 
-Roles: **agent** does the review; **judge**, **judge2** and **reviewer** are used only by `sragent eval`. The web interface offers every API model named in these files (with its price) plus the local endpoint list, so a price is written in one place only.
+Roles: **agent** does the review; **verifier** (optional) checks feedback against the evidence and re-checks revised outputs, and is the agent unless set; **judge**, **judge2** and **reviewer** are used only by `sragent eval`. The web interface offers every API model named in these files (with its price) plus the local endpoint list, so a price is written in one place only.
 
 ## How to write a config
 
@@ -55,7 +55,7 @@ Roles: **agent** does the review; **judge**, **judge2** and **reviewer** are use
 
 1. **Three kinds of file, one job each.** `topic.yaml` only has `topic:`. A model file only has `llm_defaults:`, `roles:` and (local) `local:`. A run file has `include:` (its folder's `topic.yaml` and one model file) plus run settings.
 2. **Layering.** `include:` files are loaded first, in order; keys in the including file override them. Nested sections merge key by key, so a run file writes only what it changes. Anything not written takes the default from `DEFAULTS` in `sragent/config.py`, which lists every key.
-3. **Roles inherit.** Each role (`agent`, `judge`, `reviewer`, `judge2`) = `llm_defaults` + its own entry under `roles:`. Write in a role only what differs.
+3. **Roles inherit.** Each role (`agent`, `verifier`, `judge`, `reviewer`, `judge2`) = `llm_defaults` + its own entry under `roles:`. Write in a role only what differs.
 4. **Paths.** `include`, `api_env`, `local.endpoints_file` and `models_dir` are relative to the file they are written in. `cache_dir`, `pipeline.fulltext_dir` and the topic's `records.data_dir`, `records.file` and `protocol_file` are relative to the project root (run `sragent` from there). `run_dir` is derived from the run file's path; write it only to override that.
 5. **Naming.** One folder per topic. Benchmark run files are `<models>_<characteristic>.yaml` (e.g. `gemini_agentonly`, `local_agentonly`); a review's run file is `run.yaml`.
 6. **No keys in configs.** API keys live in `api_env.yaml` (project root, git-ignored) or environment variables.

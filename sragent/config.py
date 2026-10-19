@@ -56,6 +56,7 @@ DEFAULTS: dict[str, Any] = {
         "judge": {},      # LLM-as-judge for evaluation
         "reviewer": {},   # simulated human reviewer for Claim 1
         "judge2": {},     # second judge for inter-judge agreement
+        "verifier": {},   # optional: checks feedback against the evidence; empty = the agent does it
     },
     "eval": {                         # `sragent eval` only
         "budget_usd": 8.0,            # per evaluation run (each run has its own usage.jsonl)

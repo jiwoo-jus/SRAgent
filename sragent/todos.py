@@ -102,10 +102,8 @@ def build(ctx: Ctx) -> list[dict]:
             "link": f"/report#screen:{rid}"})
 
     # -- full texts (grouped)
-    need = fulltext.needed_pdfs(ctx)
-    wanted = [x for x in need if x["priority"] == 2 or st.meta.get("pdf_wanted", {}).get(x["rid"])]
     unavailable = set(st.meta.get("pdf_unavailable", []))
-    wanted = [x for x in wanted if x["rid"] not in unavailable]
+    wanted = [x for x in fulltext.needed_pdfs(ctx) if x["rid"] not in unavailable]   # blocked or asked for
     if wanted:
         present = [x for x in wanted if x["present"]]
         todos.append({

@@ -192,6 +192,16 @@ def test_todos_answers_and_user_files(tmp_path):
     ids = {t["id"]: t for t in todos.build(ctx)}
     assert "protocol" in ids and "elig:1003" in ids and any(k.startswith("rob:") for k in ids)
     assert all(t["question"] and t["options"] for t in ids.values())
+    # a record whose full-text review is blocked is requested, unless declared not obtainable
+    n = st.get("screen:1004")
+    before = dict(n["data"])
+    st.upsert(n["id"], "screen", {**before, "decision": "fulltext_unavailable", "stage": "retrieval"}, depends_on=n["depends_on"])
+    req = [t for t in todos.build(ctx) if t["id"] == "fulltexts"]
+    assert req and "1004" in str(req[0])
+    st.meta["pdf_unavailable"] = ["1004"]
+    assert not [t for t in todos.build(ctx) if t["id"] == "fulltexts"]
+    st.meta["pdf_unavailable"] = []
+    st.upsert(n["id"], "screen", before, depends_on=n["depends_on"])
     # answers
     assert todos.apply(ctx, {"todo_id": "protocol", "option": "approve"})["ok"]
     assert todos.apply(ctx, {"todo_id": "elig:1003", "option": "exclude", "extra": {"criterion": "I3"}, "text": "no PK"})["ok"]
@@ -207,12 +217,16 @@ def test_todos_answers_and_user_files(tmp_path):
     # user full text: <run_dir>/fulltext/<rid>.txt is picked up, re-screened and re-extracted
     fdir = fulltext.fulltext_dir(ctx)
     (fdir / "1002.txt").write_text("## Methods\n" + "Emicizumab population PK model in 60 children. " * 60)
-    import os, time as _t
-    os.utime(fdir / "1002.txt", (_t.time() + 5, _t.time() + 5))
     assert fulltext.new_local_files(ctx) == ["1002"]
     res = sync.process_pdfs(ctx)
     assert res["processed"] == ["1002"] and st.get("ft:1002")["data"]["origin"].startswith("user file")
     assert fulltext.new_local_files(ctx) == []
+    # decided by content: a copy (new modification time) is not new; changed content is
+    import os, time as _t
+    os.utime(fdir / "1002.txt", (_t.time() + 60, _t.time() + 60))
+    assert fulltext.new_local_files(ctx) == []
+    (fdir / "1002.txt").write_text("## Methods\n" + "Emicizumab population PK model in 64 children. " * 60)
+    assert fulltext.new_local_files(ctx) == ["1002"]
     assert (fdir / "needed_pdfs.csv").exists()
 
 

@@ -77,13 +77,17 @@ SRAgent/
   sragent/
     llm.py         provider layer (openai | gemini | local | mock), disk cache, cost tracker, budget
     local.py       reloadable vLLM endpoint pool, managed SSH tunnels, `sragent local-endpoints`
-    config.py      config loading with `include:` layering, key loading from api_env.yaml
+    config.py      config loading with `include:` layering, DEFAULTS (every key), key loading from api_env.yaml
+    context.py     the run context (config, run folder, store, LLM clients)
     store.py       ReviewStore = versioned nodes + dependency graph + change log
-    evidence.py    sentence segmentation and located evidence (ids -> section + offsets)
+    evidence.py    sentence segmentation and located evidence (ids -> section + offsets), section-aware packing
     terms.py       term validation via RxNorm, PubChem, ChEMBL, MONDO (OLS4)
+    rules.py       deterministic screening rules (conference abstracts, reviews, off-topic, date range)
+    gold.py        known answers of benchmark topics, kept outside the agent's store (eval_private/gold.json)
+    provenance.py  human-involvement mode (agent_only / human_in_the_loop) and the log of human input
     prompts.py     every prompt in one file
-    sources/       PubMed (E-utilities), Europe PMC full text, Crossref, SYNERGY loader
-    stages/        planning, search, screening, fulltext, extraction, rob, synthesis, report
+    sources/       PubMed, Europe PMC, Crossref, OpenAlex, Unpaywall, SYNERGY loader, cached HTTP
+    stages/        planning, search, screening, fulltext, snowball (citation chasing), extraction, rob, synthesis, report
     feedback.py    feedback -> verify -> revise -> propagate -> propose / accept
     pipeline.py    orchestration (resumable)
     todos.py       the human to-do list (questions, options, applying answers)
@@ -92,9 +96,11 @@ SRAgent/
     studies.py     study list / study page / exports / global history views
     estimate.py    cost estimate of the remaining work per model
     pdf.py         PDF -> page-marked text
+    docparse.py    full-text parsing: Azure Content Understanding, pdftotext, page images, supplements
     ui/            local web interface (server.py, steps.py, static/index.html)
     cli.py         command line
-    eval/          screening_eval, grounding_eval, inject, claim1, claim2, judge_validation, run_all
+    eval/          run_all (one evaluation run), screening_eval, stagewise, grounding_eval, synthesis_eval,
+                   inject, claim1, claim2, judge_validation, stats, common
   tests/           offline tests + a schema-valid mock LLM
   data/            resolved benchmark records (donners_2021_records.jsonl)
   runs/          run outputs (git-ignored); the same path as the run file under configs/
@@ -249,7 +255,7 @@ Other SYNERGY reviews (26 in total) can be used by changing `records.synergy_key
 ### 7.1 The web interface (recommended)
 
 ```bash
-sragent ui --config configs/review/<your_topic>/gemini.yaml   # opens http://127.0.0.1:8765
+sragent ui --config configs/review/<your_topic>/run.yaml      # opens http://127.0.0.1:8765
 # on OSC or a remote machine:  sragent ui --config ... --no-browser, then  ssh -N -L 8765:localhost:8765 <host>
 ```
 
@@ -259,7 +265,7 @@ It runs on your machine only (standard library web server, no extra install). Ev
 |---|---|
 | **Steps** | The Next step banner, then one row per review step with its status (`done`, `to do`, `needs you`), a one-line summary, and **Run up to here**. |
 | **To-do** | Everything that needs you, in the order you should do it. Repetitive decisions are tables with pre-filled suggestions and one Save button, not one card each (see below). |
-| **Run** | What to run (continue the review up to a stage, process added PDFs, update outputs after your decisions, or an evaluation suite), the **agent model** (API models with their list price per 1M tokens; local models from the endpoint list of section 4, free), reasoning effort, max records and a **spending cap**. A cost estimate for exactly that choice updates live. **Test model** makes one tiny call. **Run** starts a background job with a live log; **Stop** ends it cleanly. |
+| **Run** | What to run (continue the review up to a stage, process added PDFs, update outputs after your decisions, or an evaluation suite), the **agent model** (API models with their list price per 1M tokens; local models from the endpoint list of section 4, free), reasoning effort, max records and a **spending cap**. A cost estimate for exactly that choice updates live. **Test model** makes one tiny call. **Run** starts a background job with a live log; **Stop** ends it cleanly. For a real review (no known answer) the record cap and the evaluation are not offered. |
 | **Studies** | Every record with its current status (included / pending / excluded, and by whom: agent, rule or you), the reason, source used, open flags, RoB, which synthesis statements cite it and comments. Filter, search, copy the PMIDs of what is shown, download the table (CSV) or everything (JSON). A box to comment on the whole review. Click a row for the **study page** (7.1b). |
 | **Full texts** | A copyable, comma-separated **PMID list** with **Open in PubMed**, DOIs for records without a PMID, the folder path, the file name for each study (`<PMID>.pdf`), and **Process added PDFs**. Per study: "decide without it" or "not obtainable". |
 | **Activity** | The global history. **LLM jobs**: every agent task started from the interface (runs, re-runs, comments sent to the agent, updates after your edits) with status (queued, running, done, failed, cancelled), model, cost, duration and the full log; queued jobs can be cancelled. **Agent proposals** (all change sets, accept / reject the open ones), **Comments**, **Your decisions**, **Change history** (every version of every output, filter by agent / you / rules or by output id, CSV download) and **LLM calls by stage**. |
@@ -281,11 +287,11 @@ What the To-do page contains, top to bottom
 
 Decisions stay in sync: excluding a study removes it from the PMID list and from risk of bias immediately; "Update now" (or the to-do that appears after any change) brings extraction and synthesis in line.
 
-Screenshots (from a copy of the v2 review): `docs/ui_steps.png`, `docs/ui_todo_eligibility.png`, `docs/ui_fulltexts.png`, `docs/ui_todo_revision.png`, `docs/ui_run.png`, `docs/ui_studies.png`, `docs/ui_study_page.png`, `docs/ui_todo_rob.png`, `docs/ui_activity.png`.
+Screenshots of the main results (`benchmark/emicizumab_pk/gemini_agentonly`, agent-only): `docs/ui_steps.png`, `docs/ui_todo.png` (in agent-only mode the to-do list only asks for full texts), `docs/ui_fulltexts.png`, `docs/ui_run.png`, `docs/ui_studies.png`, `docs/ui_study_page.png`, `docs/ui_activity.png`. The eligibility and risk-of-bias tables appear only in human-in-the-loop mode; `docs/ui_todo_eligibility.png` and `docs/ui_todo_rob.png` show them on a copy of the same review opened that way.
 
 ![Steps](docs/ui_steps.png)
 
-![To-do: eligibility table](docs/ui_todo_eligibility.png)
+![To-do: eligibility table (human in the loop)](docs/ui_todo_eligibility.png)
 
 Every answer goes to `human_decisions.jsonl` (time-stamped, with your note), which is both an audit trail and research data on human-agent interaction. Answers given while a job is running are queued and applied when it finishes, so a job never overwrites your decisions. Answers that need the LLM (fix this, update now, process PDFs) start a job with the model last chosen in the Run tab.
 

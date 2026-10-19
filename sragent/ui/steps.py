@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from .. import provenance
 from ..context import Ctx
 from ..todos import STEPS
 
@@ -28,8 +29,9 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     human_dec = sum(1 for n in screens if n["data"].get("human_decision"))
 
     info = {
-        "plan": (bool(proto), "approved" if st.meta.get("protocol_approved") else "drafted, waiting for your approval"
-                 if proto else "not started", "plan"),
+        "plan": (bool(proto), "approved" if st.meta.get("protocol_approved") else
+                 ("drafted by the agent (agent-only: used as drafted)" if provenance.mode(ctx) == "agent_only"
+                  else "drafted, waiting for your approval") if proto else "not started", "plan"),
         "search": (bool(s), f"{s.get('hits', 0)} PubMed hits; {s.get('n_identified', 0)} records, "
                    f"{s.get('n_duplicates', 0)} duplicates removed" if s else "not started", "search"),
         "screen": (bool(screens) and not any(n["data"]["stage"] == "title_abstract" and n["data"]["decision"] != "exclude" for n in screens),
