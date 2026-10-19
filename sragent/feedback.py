@@ -145,12 +145,11 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
             a.pop("quote", None)
             if cites:
                 attach(a, cites, text, "", "")
-        stage = n["data"]["stage"]
-        decision, because = screening.rule_decision(p, crits, stage)
-        decision = screening.finalize(decision, stage, ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
+        decision, because, stage = screening.rederive(p, {**n["data"], "criteria": crits},
+                                                      ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
         if decision == "include" and st.text_of(sid)[1] != "fulltext":
             decision, because = "fulltext_unavailable", []   # final inclusion only after a full-text review
-        data = {**n["data"], "criteria": crits, "decision": decision, "because": because}
+        data = {**n["data"], "criteria": crits, "decision": decision, "because": because, "stage": stage}
         st.upsert(node_id, t, data, depends_on=n["depends_on"], reason=reason, actor=actor)
     elif t == "rob":
         sid = study_of(node_id)

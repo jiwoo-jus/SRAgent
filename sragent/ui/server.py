@@ -1,7 +1,9 @@
-"""Local web UI:  sragent ui --config configs/<run>.yaml   ->  http://127.0.0.1:8765
+"""Local web UI:  sragent ui [--config configs/<run>.yaml]   ->  http://127.0.0.1:8765
 
-Standard library only (http.server). Long work (pipeline stages, PDF processing, feedback, evaluation)
-runs as a background `sragent` subprocess, one job at a time; further jobs wait in a queue.
+Standard library only (http.server). Every run file under configs/ can be opened (`?config=<path>` in the
+URL; the Configs page lists, edits and creates them); each open run file has its own App.
+Long work (pipeline stages, PDF processing, feedback, evaluation) runs as a background `sragent` subprocess,
+one job at a time across all run files; further jobs wait in a queue.
 Answers given while a job is running are queued too and applied when it finishes, so a job can
 never overwrite a human decision.
 """
@@ -21,28 +23,71 @@ from urllib.parse import parse_qs, urlparse
 
 import yaml
 
-from ..config import is_benchmark, load_config, load_secrets, role_cfg
+from ..config import EFFORTS, LLM_STAGES, STAGE_LABELS, is_benchmark, load_config, load_secrets, role_cfg, stage_cfg
+from ..config_lock import ConfigChanged
 from ..context import Ctx
+from .configs import Library
 
 STATIC = Path(__file__).parent / "static"
+STAGE_JOBS = ("run", "pdfs", "sync")   # pipeline work: every stage uses its own model (stage_models)
 
 
 class App:
+    slot = threading.Lock()   # one job at a time across every open run file
+    running: "App | None" = None
+
     def __init__(self, config_path: str):
         self.config_path = str(Path(config_path).resolve())
-        self.cfg = load_config(self.config_path)
-        self.run_dir = Path(self.cfg["run_dir"]).resolve()
-        self.run_dir.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
-        self._ctx = None
-        self._mtime = None
         self.job = None
         self.queue: list[dict] = []
         self.pending_answers: list[dict] = []
+        self.stale = False
+        self._load()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def _load(self):
+        files = self._config_files()
+        self.cfg = load_config(self.config_path)
+        self._cfg_mtimes = files
+        self.run_dir = Path(self.cfg["run_dir"]).resolve()
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self._ctx = None
+        self._mtime = None
         self.jobs_file = self.run_dir / "ui_jobs" / "jobs.jsonl"
         self.history = self._load_jobs()
         self.catalog = self._load_catalog()
-        threading.Thread(target=self._worker, daemon=True).start()
+        self.stale = False
+
+    def _config_files(self) -> dict[str, float]:
+        """The run file and every file it includes, with their modification times."""
+        out: dict[str, float] = {}
+
+        def walk(p: Path, depth: int = 0):
+            if str(p) in out or depth > 8 or not p.is_file():
+                return
+            out[str(p)] = p.stat().st_mtime
+            try:
+                incs = (yaml.safe_load(p.read_text()) or {}).get("include") or []
+            except (yaml.YAMLError, AttributeError):
+                return
+            for inc in incs if isinstance(incs, list) else []:
+                walk((p.parent / str(inc)).resolve(), depth + 1)
+        walk(Path(self.config_path))
+        return out
+
+    def config_changed(self) -> bool:
+        """True when the run file or one of its includes was edited (in the UI or elsewhere) since loading."""
+        return self.stale or self._config_files() != self._cfg_mtimes
+
+    def idle(self) -> bool:
+        return self.job is None and not self.queue and not self.pending_answers
+
+    def reload(self):
+        """After a config file was saved: re-read the run file (only between jobs)."""
+        with self.lock:
+            if self.idle():
+                self._load()
 
     # ------------------------------------------------------------ context (reloaded when the store changes)
     def ctx(self) -> Ctx:
@@ -98,7 +143,8 @@ class App:
         keep = {k: spec.get(k) for k in ("id", "action", "label", "rid", "target", "step", "status", "created", "started",
                                          "ended", "usd", "returncode", "cmd", "log", "error", "note", "text", "comment_id")}
         a = spec.get("agent") or {}
-        keep["model"] = (a.get("model") if a else "") or role_cfg(self.cfg, "agent").get("model", "")
+        keep["model"] = self.stage_summary() if spec.get("action") in STAGE_JOBS else \
+            ((a.get("model") if a else "") or role_cfg(self.cfg, "agent").get("model", ""))
         with open(self.jobs_file, "a") as f:
             f.write(json.dumps(keep) + "\n")
 
@@ -163,6 +209,7 @@ class App:
                for r in ("agent", "judge", "reviewer", "judge2")}
         settings = self._settings()
         return {"api": api, "local": self._local_endpoints(), "current": cur, "settings": settings,
+                "stages": self.stage_rows(), "efforts": {k: list(v) for k, v in EFFORTS.items()},
                 "benchmark": is_benchmark(self.cfg)}   # known answers: record sampling and evaluation
 
     def _local_endpoints(self) -> dict:
@@ -228,6 +275,19 @@ class App:
                     "range_usd": [0, per.get(opts.get("suite", "all"), 3.5) * 2],
                     "note": "Rough estimate with fresh calls (Gemini Flash agent, Gemini Pro judge); suites that need the "
                             "stage-wise review also build it (about $0.35)."}
+        if action in STAGE_JOBS or not opts.get("agent"):   # each stage with its own model (stage_models)
+            from ..estimate import estimate_stages
+            cfg = self.cfg
+            if opts.get("stage_models") is not None:      # the Run page's table before it is saved
+                from ..config import _resolve_stage_models
+                cfg = {**self.cfg, "stage_models": {k: dict(v) for k, v in opts["stage_models"].items() if v}}
+                try:
+                    _resolve_stage_models(cfg)
+                except ValueError as e:
+                    return {"error": str(e)}
+            est = estimate_stages(calls, cfg, history(self.run_dir.parent))
+            est["spent_so_far"] = round(self.spent(), 4)
+            return est
         m = self.model_entry(opts.get("agent") or {})
         est = estimate(calls, m["id"], m, (opts.get("agent") or {}).get("effort"), history(self.run_dir.parent))
         est["spent_so_far"] = round(self.spent(), 4)
@@ -268,8 +328,9 @@ class App:
         # this file lives in run_dir: keep the endpoint list of the original config directory
         over["local"] = {"endpoints_file": str(endpoint_path(self.cfg).resolve())}
         roles = {}
-        if spec.get("agent"):
-            roles["agent"] = self.role_override(spec["agent"])
+        if spec.get("agent") and spec.get("action") not in STAGE_JOBS:
+            # a model picked for one re-run / feedback / evaluation job; pipeline jobs follow stage_models
+            over["job_agent"] = self.role_override(spec["agent"])
         if spec.get("judge"):
             roles["judge"] = self.role_override(spec["judge"])
         if roles:
@@ -317,9 +378,10 @@ class App:
         while True:
             spec = None
             with self.lock:
-                if self.job is None and self.queue:
+                if self.job is None and self.queue and App.slot.acquire(blocking=False):
                     spec = self.queue.pop(0)
                     self.job = spec
+                    App.running = self
             if spec is None:
                 time.sleep(0.5)
                 continue
@@ -351,6 +413,8 @@ class App:
                 self.history = self.history[-500:] + [spec]
                 self.job = None
                 self._ctx = None
+                App.running = None
+                App.slot.release()
                 self._drain_answers()
 
     def stop(self):
@@ -402,6 +466,9 @@ class App:
             j = dict(self.job) if self.job else None
             last = (self.history or [None])[-1]
         out = {"current": None, "queued": len(self.queue), "last": None}
+        other = App.running
+        if other is not None and other is not self and self.queue:
+            out["waiting_for"] = other.run_dir.name   # queued here; another run file's job holds the slot
         for key, spec in (("current", j), ("last", last)):
             if spec:
                 tail = ""
@@ -498,6 +565,87 @@ class App:
                             "a revision in the To-do list; progress is in Activity.")
         return r
 
+    # ------------------------------------------------------------ models per stage
+    def stage_rows(self) -> list[dict]:
+        """One row per stage: what the run file sets, the model it resolves to, and whether it is fixed."""
+        from .. import config_lock
+        try:
+            started = set(config_lock.started_stages(self.ctx().store))
+        except Exception:
+            started = set()
+        raw = self.cfg.get("stage_models") or {}
+        rows = []
+        for st in LLM_STAGES:
+            c = stage_cfg(self.cfg, st)
+            ov = raw.get(st) or {}
+            rows.append({"stage": st, "label": STAGE_LABELS[st], "set": {k: ov.get(k) for k in ("provider", "model", "reasoning_effort") if k in ov},
+                         "effective": {"provider": c.get("provider"), "model": c.get("model"), "reasoning_effort": c.get("reasoning_effort")},
+                         "pricing": c.get("pricing") or {}, "started": st in started})
+        return rows
+
+    def stage_summary(self) -> str:
+        ms = []
+        for st in LLM_STAGES[:-1]:
+            c = stage_cfg(self.cfg, st)
+            ms.append(f"{c.get('model')}" + (f" ({c.get('reasoning_effort')})" if c.get("reasoning_effort") else ""))
+        uniq = list(dict.fromkeys(ms))
+        return uniq[0] if len(uniq) == 1 else "per stage: " + ", ".join(uniq)
+
+    def set_stage_models(self, stages: dict, lib: Library) -> dict:
+        """Write the per-stage models into the run file (stage_models). Stages that have started keep theirs."""
+        from .. import config_lock
+        with self.lock:
+            if not self.idle():
+                return {"ok": False, "message": "A job is running or queued; change the models when it has finished."}
+        try:
+            p = lib.resolve(self.config_path)
+        except ValueError:
+            return {"ok": False, "message": "This run file is outside configs/; edit its stage_models in the file."}
+        new = {}
+        for st, sel in (stages or {}).items():
+            if st not in LLM_STAGES:
+                return {"ok": False, "message": f"unknown stage {st}"}
+            if not sel:
+                continue
+            e = {}
+            if sel.get("model"):
+                if sel.get("provider") and sel["provider"] != role_cfg(self.cfg, "agent").get("provider"):
+                    e["provider"] = sel["provider"]
+                e["model"] = sel["model"]
+            if "reasoning_effort" in sel:
+                e["reasoning_effort"] = sel["reasoning_effort"]
+            if e:
+                new[st] = e
+        text = p.read_text()
+        out = lib.set_block(text, "stage_models", new,
+                            "agent model and effort per stage; a stage's model is fixed once it has started")
+        chk = lib.check(self.config_path, out)
+        if chk["errors"]:
+            return {"ok": False, "message": "; ".join(chk["errors"])}
+        locked = [c for x in chk.get("locked") or [] for c in x["changes"] if c["key"].startswith("stage_models.")]
+        if locked:
+            return {"ok": False, "message": "These stages have started, so their model is fixed: "
+                    + ", ".join(c["key"].split(".", 1)[1] for c in locked)}
+        r = lib.save(self.config_path, out, p.stat().st_mtime)
+        if r.get("ok"):
+            self.stale = True
+        return {"ok": r.get("ok", False), "message": "Saved in " + lib.rel(p) if r.get("ok") else r.get("message")}
+
+    def accept_config(self, reason: str) -> dict:
+        """Accept edited review-defining settings on purpose (recorded in provenance.jsonl and the report)."""
+        from .. import config_lock
+        with self.lock:
+            if not self.idle():
+                return {"ok": False, "message": "A job is running or queued; accept the change when it has finished."}
+            ctx = Ctx.create(self.cfg, self.run_dir, check_config=False)
+            ctx.quiet = True
+            try:
+                ch = config_lock.accept(ctx, reason)
+            except ValueError as e:
+                return {"ok": False, "message": str(e)}
+            self._ctx = None
+        return {"ok": True, "changes": ch, "message": f"Accepted {len(ch)} changed setting(s); recorded in provenance.jsonl."}
+
     def human_mode(self) -> str:
         from .. import provenance
         return provenance.mode(self.ctx())
@@ -522,6 +670,7 @@ class App:
         return {"next": todos.next_action(ctx, tlist, self.job is not None, len(nf)),
                 "ruled": todos.rule_exclusions(ctx),
                 "run": {"name": self.run_dir.name, "run_dir": str(self.run_dir), "config": self.config_path,
+                        "config_rel": getattr(self, "config_rel", self.config_path), "benchmark": is_benchmark(self.cfg),
                         "human_mode": self.human_mode(),
                         "spent_usd": round(self.spent(), 4), "topic": ctx.topic.get("question", "")},
                 "steps": steps(ctx, tlist), "todos": tlist, "job": self.job_view(),
@@ -550,8 +699,83 @@ class App:
                 llm.local_pool.close()
 
 
+# ---------------------------------------------------------------- workspace (every run file under configs/)
+class Workspace:
+    """The run files the UI can open, each with its own App (made on first use), and the config files."""
+
+    def __init__(self, config_path: str | None, configs_dir: str | None = None):
+        if not configs_dir and config_path:   # the configs/ folder the run file lives in, else ./configs
+            parts = Path(config_path).resolve().parts
+            if "configs" in parts:
+                configs_dir = str(Path(*parts[:len(parts) - parts[::-1].index("configs")]))
+        self.lib = Library(configs_dir or "configs")
+        self.apps: dict[str, App] = {}
+        self.lock = threading.Lock()
+        self.default = str(Path(config_path).resolve()) if config_path else None
+        if self.default:
+            self.get(None)   # fail at startup, as before, if the given run file does not load
+
+    def _path(self, cfg: str | None) -> Path | None:
+        if not cfg:
+            return Path(self.default) if self.default else None
+        p = Path(cfg).expanduser()
+        p = (p if p.is_absolute() else self.lib.base / p).resolve()
+        if self.default and str(p) == self.default:
+            return p
+        p = self.lib.resolve(str(p))
+        if self.lib.kind_of(p) != "run":
+            raise ValueError(f"{self.lib.rel(p)} is not a run file (configs/<review|benchmark>/<topic>/<run>.yaml)")
+        return p
+
+    def get(self, cfg: str | None) -> App | None:
+        p = self._path(cfg)
+        if p is None:
+            return None
+        with self.lock:
+            app = self.apps.get(str(p))
+            if app is None:
+                app = self.apps[str(p)] = App(str(p))
+                app.config_rel = self.lib.rel(p)
+        if app.config_changed():
+            app.reload()   # raises when the edited file no longer loads; the error is shown with a link to fix it
+        return app
+
+    def changed(self):
+        """A config file was saved or created: open run files re-read their config before the next use."""
+        with self.lock:
+            for a in self.apps.values():
+                a.stale = True
+
+    def configs(self, current: str | None) -> dict:
+        out = self.lib.listing()
+        live = {a.config_rel: a for a in self.apps.values()}
+        cur = None
+        try:
+            p = self._path(current)
+            cur = self.lib.rel(p) if p else None
+        except ValueError:
+            pass
+        for r in out["runs"]:
+            a = live.get(r["path"])
+            r["current"] = r["path"] == cur
+            r["job"] = ("running" if a.job else "queued") if a and (a.job or a.queue) else None
+        if cur and not any(r["path"] == cur for r in out["runs"]):   # a run file outside configs/
+            try:
+                a = self.get(current)
+                out["runs"].insert(0, {"path": cur, "kind": "", "topic": "", "name": Path(cur).stem, "current": True,
+                                       "agent": f"{role_cfg(a.cfg, 'agent').get('provider')}:{role_cfg(a.cfg, 'agent').get('model')}",
+                                       "human_mode": a.cfg["pipeline"]["human_mode"], "question": (a.cfg.get("topic") or {}).get("question", ""),
+                                       "status": "", "run_dir": str(a.run_dir), "outside": True})
+            except Exception:
+                pass
+        out["current"] = cur
+        out["default"] = self.lib.rel(self.default) if self.default else None
+        out["model_files"] = self.lib.model_files()
+        return out
+
+
 # ---------------------------------------------------------------- HTTP
-def make_handler(app: App):
+def make_handler(ws: Workspace):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -570,7 +794,7 @@ def make_handler(app: App):
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}")
 
-        def _export(self, name: str, q: dict):
+        def _export(self, app: App, name: str, q: dict):
             from .. import studies
             ctx = app.ctx()
             run = app.run_dir.name
@@ -607,14 +831,36 @@ def make_handler(app: App):
             self.end_headers()
             self.wfile.write(data)
 
+        def _app(self, q: dict) -> App:
+            app = ws.get(q.get("config", [None])[0])
+            if app is None:
+                raise LookupError("no run file is open: choose one on the Configs page")
+            return app
+
         def do_GET(self):
             u = urlparse(self.path)
             path, q = u.path, parse_qs(u.query)
             try:
                 if path in ("/", "/index.html"):
                     return self._send(200, (STATIC / "index.html").read_bytes(), "text/html")
+                if path == "/api/configs":
+                    return self._send(200, ws.configs(q.get("config", [None])[0]))
+                if path == "/api/config_file":
+                    return self._send(200, ws.lib.read(q.get("path", [""])[0]))
                 if path == "/api/state":
-                    return self._send(200, app.state())
+                    cfg_q = q.get("config", [None])[0]
+                    try:
+                        app = self._app(q)
+                        return self._send(200, app.state())
+                    except LookupError:
+                        return self._send(200, {"no_config": True})
+                    except ConfigChanged as e:   # a started review whose fixed settings were edited
+                        rel = ws.lib.rel(ws._path(cfg_q))
+                        return self._send(200, {"config_error": str(e), "config_changed": e.changes, "config": rel})
+                    except Exception as e:
+                        return self._send(200, {"config_error": f"{type(e).__name__}: {e}"[:600],
+                                                "config": cfg_q or (ws.lib.rel(ws.default) if ws.default else None)})
+                app = self._app(q)
                 if path == "/api/models":
                     return self._send(200, app.models())
                 if path == "/api/job":
@@ -637,7 +883,7 @@ def make_handler(app: App):
                     from ..studies import history
                     return self._send(200, history(app.ctx(), actor=q.get("actor", [""])[0], q=q.get("q", [""])[0]))
                 if path.startswith("/export/"):
-                    return self._export(path[len("/export/"):], q)
+                    return self._export(app, path[len("/export/"):], q)
                 if path == "/needed_pdfs.csv":
                     from ..stages.fulltext import write_needed_pdfs
                     return self._send(200, write_needed_pdfs(app.ctx()).read_bytes(), "text/csv")
@@ -645,10 +891,40 @@ def make_handler(app: App):
             except Exception as e:
                 return self._send(500, {"error": str(e)})
 
+        def _configs_post(self, path: str, b: dict) -> dict:
+            lib = ws.lib
+            if path == "/api/config_check":
+                return lib.check(b.get("path", ""), b.get("text", ""))
+            if path == "/api/config_save":
+                r = lib.save(b.get("path", ""), b.get("text", ""), b.get("mtime"), bool(b.get("create")))
+            elif path == "/api/config_new":
+                r = lib.new_topic(b) if b.get("what") == "topic" else lib.new_run(b)
+            elif path == "/api/config_duplicate":
+                r = lib.duplicate(b)
+            else:
+                return {"error": "not found"}
+            if r.get("ok"):
+                ws.changed()
+            return r
+
         def do_POST(self):
-            path = urlparse(self.path).path
+            u = urlparse(self.path)
+            path = u.path
             try:
                 b = self._body()
+                if path == "/api/stage_models":
+                    r = self._app(parse_qs(u.query)).set_stage_models(b.get("stages") or {}, ws.lib)
+                    if r.get("ok"):
+                        ws.changed()
+                    return self._send(200, r)
+                if path == "/api/config_accept":
+                    return self._send(200, self._app(parse_qs(u.query)).accept_config(b.get("reason", "")))
+                if path.startswith("/api/config_"):
+                    try:
+                        return self._send(200, self._configs_post(path, b))
+                    except ValueError as e:
+                        return self._send(200, {"ok": False, "message": str(e)})
+                app = self._app(parse_qs(u.query))
                 if path == "/api/estimate":
                     return self._send(200, app.estimate(b))
                 if path == "/api/run":
@@ -692,11 +968,14 @@ def make_handler(app: App):
     return H
 
 
-def serve(config_path: str, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True):
-    app = App(config_path)
-    srv = ThreadingHTTPServer((host, port), make_handler(app))
+def serve(config_path: str | None, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+          configs_dir: str | None = None):
+    ws = Workspace(config_path, configs_dir)
+    srv = ThreadingHTTPServer((host, port), make_handler(ws))
     url = f"http://{host}:{port}"
-    print(f"sragent UI for {app.run_dir.name}: {url}   (Ctrl+C to stop)")
+    app = ws.get(None)
+    print(f"sragent UI for {app.run_dir.name if app else 'the run files in ' + ws.lib.rel(ws.lib.root) + '/'}: {url}"
+          "   (Ctrl+C to stop)")
     if open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 import pytest
-from sragent.config import load_config, role_cfg
+from sragent.config import LLM_STAGES, load_config, role_cfg, stage_cfg
 from sragent.llm import LLM, CostTracker
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,5 +42,9 @@ def test_example_configs():
         assert Path(role_cfg(cfg, "agent")["api_env"]).parent == ROOT
         assert cfg["run_dir"] == "runs/" + str(path.relative_to(ROOT / "configs").with_suffix(""))   # derived
         assert ROOT / cfg["local"]["endpoints_file"] == ROOT / "local_endpoints.yaml"   # project root
+        providers = {"openai", "gemini", "anthropic", "local"}
         for role in cfg["roles"]:
-            assert role_cfg(cfg, role)["provider"] in {"openai", "gemini", "local"}
+            assert role_cfg(cfg, role)["provider"] in providers
+        for stage in LLM_STAGES:                                   # stage_models resolve to a known provider and price
+            sc = stage_cfg(cfg, stage)
+            assert sc["provider"] in providers and sc.get("pricing") is not None

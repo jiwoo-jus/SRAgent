@@ -11,6 +11,7 @@ Every human input is appended to <run_dir>/provenance.jsonl with a category:
   pdf_provision    a requested full text was supplied (file name, size, sha256) or declared not obtainable
   human_judgment   a decision, edit, approval/rejection, feedback or re-run request by a person
   annotation       a comment saved without asking the agent to act (changes no output)
+  config_change    review-defining settings changed after the start and accepted on purpose (config_lock.py)
 PDF provision and human judgment are therefore always counted separately. In agent_only mode,
 judgment actions are refused (and would be recorded as violations if they happened anyway).
 """
@@ -23,7 +24,7 @@ from collections import Counter
 from pathlib import Path
 
 MODES = ("agent_only", "human_in_the_loop")
-CATEGORIES = ("pdf_provision", "human_judgment", "annotation")
+CATEGORIES = ("pdf_provision", "human_judgment", "annotation", "config_change")
 
 
 class NotAllowed(Exception):
@@ -90,6 +91,7 @@ def summary(ctx_or_run_dir, cfg_mode: str | None = None) -> dict:
     pdf = [e for e in ev if e["category"] == "pdf_provision"]
     jud = [e for e in ev if e["category"] == "human_judgment"]
     ann = [e for e in ev if e["category"] == "annotation"]
+    cfgc = [e for e in ev if e["category"] == "config_change"]
     return {
         "mode": m,
         "pdf_provision": {"n": len(pdf), "files_supplied": sum(1 for e in pdf if e["action"] == "supplied"),
@@ -98,6 +100,7 @@ def summary(ctx_or_run_dir, cfg_mode: str | None = None) -> dict:
         "human_judgment": {"n": len(jud), "by_action": dict(Counter(e["action"] for e in jud)),
                            "studies": sorted({e.get("rid") for e in jud if e.get("rid")})},
         "annotation": {"n": len(ann)},
+        "config_changes": {"n": len(cfgc), "keys": sorted({c["key"] for e in cfgc for c in e.get("changes", [])})},
         "violations": sum(1 for e in jud if e.get("violation")),
         "condition_respected": not (m == "agent_only" and jud),
     }

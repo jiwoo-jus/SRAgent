@@ -50,6 +50,11 @@ DEFAULTS: dict[str, Any] = {
         "probe_timeout": 5,
         "wait_timeout": None,   # wait for updated/recovered endpoints until cancelled
     },
+    # model and effort per pipeline stage, over the agent role: {stage: {model, reasoning_effort, provider, ...}}.
+    # Stages: plan search screen fulltext snowball extract rob synthesize, and feedback (feedback handling,
+    # revisions, sync). Unset = the agent role. The price comes from the model files when not written.
+    # A stage's model is fixed once the stage has started (config_lock.py).
+    "stage_models": {},
     # role-specific overrides of llm_defaults
     "roles": {
         "agent": {},      # does the review work
@@ -154,6 +159,7 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
     if p["human_mode"] == "agent_only" and p["fulltext_unclear"] == "await":
         raise ValueError("pipeline.fulltext_unclear: await leaves records for a person to decide; "
                          "with human_mode: agent_only set it to include or exclude")
+    _resolve_stage_models(cfg)
     if p["max_records"] and not is_benchmark(cfg):
         raise ValueError("pipeline.max_records drops records at random; it is only for benchmark topics "
                          "(records.source: synergy), where the known answers are always kept")
@@ -178,8 +184,97 @@ def is_benchmark(cfg: dict) -> bool:
 
 
 def role_cfg(cfg: dict, role: str) -> dict:
-    """LLM settings for a role = llm_defaults overridden by roles[role]."""
-    return deep_merge(cfg["llm_defaults"], cfg.get("roles", {}).get(role, {}) or {})
+    """LLM settings for a role = llm_defaults overridden by roles[role] (a role's own price replaces the default's)."""
+    return _over_agent(cfg["llm_defaults"], cfg.get("roles", {}).get(role, {}) or {})
+
+
+# ---------------------------------------------------------------- per-stage models
+
+LLM_STAGES = ("plan", "search", "screen", "fulltext", "snowball", "extract", "rob", "synthesize", "feedback")
+STAGE_LABELS = {"plan": "Protocol", "search": "Search", "screen": "Title/abstract screening",
+                "fulltext": "Full-text screening", "snowball": "Citation chasing", "extract": "Data extraction",
+                "rob": "Risk of bias", "synthesize": "Synthesis", "feedback": "Feedback, revisions and updates"}
+EFFORTS = {"anthropic": ("low", "medium", "high", "xhigh", "max"), "openai": ("low", "medium", "high"),
+           "gemini": ("low", "medium", "high")}
+_STAGE_KEYS = set(DEFAULTS["llm_defaults"]) | {"fallbacks"}
+
+
+def stage_of_tag(tag: str) -> str:
+    """The pipeline stage an LLM call belongs to, from its tag (used outside a pipeline stage)."""
+    t = tag or ""
+    for prefix, stage in (("screen_title_abstract", "screen"), ("screen_full_text", "fulltext"), ("extract", "extract"),
+                          ("rob", "rob"), ("synthesis", "synthesize"), ("plan", "plan"), ("search", "search")):
+        if t == prefix or t.startswith(prefix + "_"):
+            return stage
+    return "feedback"
+
+
+def model_prices(models_dir: str | os.PathLike | None) -> dict:
+    """(provider, model) -> pricing for every model named in the model setup files."""
+    out: dict = {}
+    for f in sorted(Path(models_dir or "configs/models").expanduser().glob("*.yaml")):
+        try:
+            m = yaml.safe_load(f.read_text()) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        base = m.get("llm_defaults") or {}
+        for rc in [base] + [_over_agent(base, r or {}) for r in (m.get("roles") or {}).values() if isinstance(r, dict)]:
+            if rc.get("model") and rc.get("pricing") and rc.get("provider"):
+                out.setdefault((rc["provider"], rc["model"]), rc["pricing"])
+    return out
+
+
+def _resolve_stage_models(cfg: dict) -> None:
+    """Check stage_models and fill in each stage's provider and price (from the model files when not written)."""
+    sm = cfg.get("stage_models") or {}
+    if not isinstance(sm, dict):
+        raise ValueError("stage_models must map a stage to its settings, e.g. extract: {model: ..., reasoning_effort: medium}")
+    agent = role_cfg(cfg, "agent")
+    prices = None
+    for stage, ov in list(sm.items()):
+        if stage not in LLM_STAGES:
+            hint = " (the report makes no LLM calls)" if stage == "report" else ""
+            raise ValueError(f"stage_models.{stage}: unknown stage{hint}; use one of {', '.join(LLM_STAGES)}")
+        if ov is None:
+            sm[stage] = {}
+            continue
+        if not isinstance(ov, dict):
+            raise ValueError(f"stage_models.{stage}: write a mapping, e.g. {{model: claude-sonnet-5-5, reasoning_effort: high}}")
+        bad = set(ov) - _STAGE_KEYS
+        if bad:
+            raise ValueError(f"stage_models.{stage}: unknown keys {', '.join(sorted(bad))}")
+        ov = dict(ov)
+        if ov.get("model") and ov["model"] != agent.get("model") and not ov.get("pricing"):
+            prices = prices if prices is not None else model_prices(cfg.get("models_dir"))
+            found = [(p, m) for (p, m) in prices if m == ov["model"] and (not ov.get("provider") or p == ov["provider"])]
+            if not found:
+                raise ValueError(f"stage_models.{stage}: no price known for {ov['model']}; name it in a file in "
+                                 f"configs/models/ or write pricing: {{input_per_m: ..., output_per_m: ...}}")
+            ov.setdefault("provider", found[0][0])
+            ov["pricing"] = prices[(ov["provider"], ov["model"])]
+        sc = _over_agent(agent, ov)
+        eff = sc.get("reasoning_effort")
+        ok = EFFORTS.get(sc.get("provider"))
+        if eff is not None and ok and eff not in ok:
+            raise ValueError(f"stage_models.{stage}.reasoning_effort: {eff!r} is not offered for {sc['provider']} "
+                             f"(use {', '.join(ok)} or null for the model default)")
+        sm[stage] = ov
+    cfg["stage_models"] = sm
+
+
+def stage_cfg(cfg: dict, stage: str | None) -> dict:
+    """LLM settings for the agent in one pipeline stage = the agent role overridden by stage_models[stage]."""
+    agent = role_cfg(cfg, "agent")
+    ov = (cfg.get("stage_models") or {}).get(stage or "") or {}
+    return _over_agent(agent, ov) if ov else agent
+
+
+def _over_agent(agent: dict, ov: dict) -> dict:
+    """A stage's settings over the agent's; a stage's own price replaces the agent's (never merged into it)."""
+    sc = deep_merge(agent, ov)
+    if ov.get("pricing"):
+        sc["pricing"] = copy.deepcopy(ov["pricing"])
+    return sc
 
 
 # ---------------------------------------------------------------- secrets

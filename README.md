@@ -25,7 +25,7 @@ Code for each step is in `sragent/stages/`. `sragent/pipeline.py` runs them in o
 ## Configs: benchmark or real review
 
 ```
-configs/models/       which LLMs do the work: gemini.yaml, local.yaml
+configs/models/       which LLMs do the work: gemini.yaml, claude-haiku-5-5_claude-sonnet-5-5_gemma-4-31b-it.yaml (Claude), local.yaml
 configs/benchmark/    topics WITH a known answer: measure the agent (sragent eval works)
 configs/review/       topics WITHOUT a known answer: real reviews (copy review/_template/)
 ```
@@ -50,16 +50,18 @@ python -m pip install -e ".[dev]"
 cp api_env.example.yaml api_env.yaml
 ```
 
-Fill in `api_env.yaml` (or set `OPENAI_API_KEY` or `GEMINI_API_KEY`) and set model IDs in `configs/models/`. Requires Python 3.10 or newer. Run commands from the project root so relative paths resolve.
+Fill in `api_env.yaml` (or set `OPENAI_API_KEY`, `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`) and set model IDs in `configs/models/`. Requires Python 3.10 or newer. Run commands from the project root so relative paths resolve.
 
 ## Run
 
-The web interface shows the steps, a to-do list of decisions, a Run panel with model choice and a live cost estimate, and a drop folder for full-text PDFs:
+The web interface shows the steps, a to-do list of decisions, a Run panel with the model and effort per stage and a live cost estimate, and a drop folder for full-text PDFs. Its **Configs** page lists every run file (click one to open it), edits any config with a check on every change, and sets up a new review from a short form:
 
 ```
-cp -r configs/review/_template configs/review/<your_topic>     # then fill in topic.yaml
-sragent ui --config configs/review/<your_topic>/run.yaml
+sragent ui                                                     # Configs page: open a run file or create one
+sragent ui --config configs/review/<your_topic>/run.yaml       # or open one run file directly
 ```
+
+On a remote machine add `--no-browser --port <free port>` and forward that port (GUIDE.md section 7.1). Settings that define a review (topic, people mode, sampling, and each stage's model once that stage has started) are fixed after the start; an edit pauses the run until it is set back or accepted with `sragent accept-config` (configs/README.md, rule 6).
 
 From the command line (the benchmark):
 
@@ -71,7 +73,7 @@ sragent status --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml
 sragent eval --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --suite all     # benchmark topics only
 ```
 
-Use `--until STAGE` to stop early. Other commands: `runs` (every run file and its state), `rescreen` (re-derive decisions after editing the protocol, no LLM calls), `pdfs` (process added full-text PDFs), `sync`, `feedback`, `rerun`, `propagate`, `accept`, `reject`, `revalidate-terms`, `eval-audit`, and `data --synergy KEY`. See GUIDE.md section 7.
+Use `--until STAGE` to stop early. Other commands: `runs` (every run file and its state), `accept-config` (continue a review whose fixed settings were edited; recorded), `rescreen` (re-derive decisions after editing the protocol, no LLM calls), `pdfs` (process added full-text PDFs), `sync`, `feedback`, `rerun`, `propagate`, `accept`, `reject`, `revalidate-terms`, `eval-audit`, and `data --synergy KEY`. See GUIDE.md section 7.
 
 Outputs go to the run's folder under `runs/`: `protocol.yaml`, `store.json` and `store_changelog.jsonl` (decisions, evidence, history), `report.md` and `report_evidence.html`, `usage.jsonl` and `cost.json` (API usage and cost), and `fulltext/needed_pdfs.csv` (papers whose full-text review is blocked; put `<rid>.pdf` in `fulltext/`). Caches are in `.cache/`. Outputs, caches, and credentials are ignored by Git.
 

@@ -30,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-from .. import gold, provenance
+from .. import config_lock, gold, provenance
 from ..provenance import file_sha
 from ..config import role_cfg
 from ..context import Ctx
@@ -88,6 +88,7 @@ def manifest(ctx: Ctx, ectx: Ctx, run_id: str, suite: str, allow_cache: bool, fr
                    "n_nodes": len(ctx.store.nodes), "snapshot": str(snap)},
         "condition": provenance.mode(ctx),
         "human_involvement": provenance.summary(ctx),
+        "config_changes": config_lock.changes(ctx.store),   # review-defining settings changed after the start
         "models": models, "seed": ectx.cfg.get("eval", {}).get("seed"),
         "llm_sampling": "temperatures as configured per role (Claim 1 repeats: 0.0 then 0.7); provider-side sampling seeds are not set",
         "cache_policy": "reuse identical earlier calls" if allow_cache else "fresh: every model call in this run is new (answers are still cached for later)",
@@ -327,6 +328,9 @@ def render(R: dict) -> str:
          f"- Condition: **{M['condition']}** · human judgments recorded in the evaluated review: {hi['human_judgment']['n']} "
          f"{hi['human_judgment']['by_action'] or ''} · full texts supplied by a person: {hi['pdf_provision']['files_supplied']} "
          f"(declared not obtainable: {hi['pdf_provision']['declared_not_obtainable']}) · condition respected: {hi['condition_respected']}",
+         *([f"- **Settings changed after the review started** (accepted on purpose; outputs made before a change followed the earlier "
+            f"settings, so this is not a clean single-condition run): "
+            + "; ".join(f"{c['key']} ({e['reason']})" for e in M["config_changes"] for c in e["changes"])] if M.get("config_changes") else []),
          f"- Review snapshot: `{M['review']['run_dir']}` store sha256 `{M['review']['store_sha256']}` ({M['review']['n_nodes']} nodes), copied to `review_snapshot.json`",
          f"- Models: " + "; ".join(f"{r} `{v['provider']}:{v['model']}` (effort {v['reasoning_effort']})" for r, v in M["models"].items()),
          f"- Seed {M['seed']} · {M['llm_sampling']}",

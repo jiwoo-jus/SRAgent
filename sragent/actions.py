@@ -265,22 +265,24 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
     if step == "rob" and not st.get(f"ext:{rid}"):
         raise ValueError(f"{rid} has no extraction yet")
     t0, usd0 = time.time(), ctx.hub.tracker.spent
-    cs = _new_cs("RR", kind="rerun", label=f"Re-run of {RERUN_STEPS[step].lower()}", rid=rid, step=step,
-                 target=nid, note=note, model=ctx.agent.name,
-                 feedback=f"Re-run {RERUN_STEPS[step].lower()} for study {rid} with {ctx.agent.name}"
-                          + (f". Note: {note}" if note else ""), verdict="rerun")
-    cs["mode"]["propagate"] = propagate
-    sb = dataclasses.replace(ctx, store=st.clone(), note=note)
     before_node = st.get(nid)
     before = copy.deepcopy(before_node["data"]) if before_node else None
-    cache = sb.agent.cache
+    ft = st.get(f"ft:{rid}")
+    stage = "full_text" if (before or {}).get("stage") == "full_text" or (ft and ft["data"].get("kind") == "fulltext") \
+        else "title_abstract"
+    pstage = {"extract": "extract", "rob": "rob"}.get(step) or ("fulltext" if stage == "full_text" else "screen")
+    llm = ctx.hub.agent_for(pstage)          # that stage's model (stage_models), or the model picked for this job
+    cs = _new_cs("RR", kind="rerun", label=f"Re-run of {RERUN_STEPS[step].lower()}", rid=rid, step=step,
+                 target=nid, note=note, model=llm.name,
+                 feedback=f"Re-run {RERUN_STEPS[step].lower()} for study {rid} with {llm.name}"
+                          + (f". Note: {note}" if note else ""), verdict="rerun")
+    cs["mode"]["propagate"] = propagate
+    sb = dataclasses.replace(ctx, store=st.clone(), note=note, stage=pstage)
+    cache = llm.cache
     if fresh:
-        sb.agent.cache = None       # a re-run asks the model again instead of returning the cached answer
+        llm.cache = None       # a re-run asks the model again instead of returning the cached answer
     try:
         if step == "screen":
-            prev = (before or {}).get("stage")
-            ft = st.get(f"ft:{rid}")
-            stage = "full_text" if prev == "full_text" or (ft and ft["data"].get("kind") == "fulltext") else "title_abstract"
             if stage == "full_text" and not ft:
                 fulltext.fetch_one(sb, rid)
             screening.screen_one(sb, st.get("protocol")["data"], rid, stage, tag_suffix="_rerun")
@@ -289,7 +291,8 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
         else:
             rob.rob_one(sb, rid)
     finally:
-        sb.agent.cache = cache
+        llm.cache = cache
+        sb.stage = None        # revising dependent outputs is feedback work (stage_models.feedback)
     after = sb.store.get(nid)["data"]
     if before_node and before.get("human_decision"):
         cs["explanation"] = f"Note: this replaces your earlier manual decision ({before['human_decision']['decision']})."

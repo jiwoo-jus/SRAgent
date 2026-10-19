@@ -4,7 +4,8 @@
 configs/
   models/                     WHICH LLMs do the work (shared by every run)
     gemini.yaml                 Gemini for every role
-    claude.yaml                 Claude: Haiku agent/reviewer, Sonnet judge
+    claude-haiku-5-5_claude-sonnet-5-5_gemma-4-31b-it.yaml
+                                Claude: Haiku agent/reviewer, Sonnet judge, Gemma second judge
     local.yaml                  your own vLLM servers (listed in ../../local_endpoints.yaml)
   benchmark/                  topics WITH a known answer: to measure the agent
     emicizumab_pk/
@@ -15,7 +16,7 @@ configs/
     _template/                  copy this folder to start one (topic.yaml + run.yaml)
 ```
 
-**A run file's path is its name, and its outputs follow it.** `configs/<benchmark|review>/<topic>/<run>.yaml` writes to `runs/<benchmark|review>/<topic>/<run>/`; nothing has to be written in the file for that. Any run file can be opened in the web interface (`sragent ui --config <file>`) or run from the command line (`sragent run --config <file>`).
+**A run file's path is its name, and its outputs follow it.** `configs/<benchmark|review>/<topic>/<run>.yaml` writes to `runs/<benchmark|review>/<topic>/<run>/`; nothing has to be written in the file for that. Any run file can be opened in the web interface or run from the command line (`sragent run --config <file>`). `sragent ui` (with or without `--config <file>`) has a **Configs** page that lists every run file, topic and model setup here, opens a run file with one click, edits any of these files with a check on every change (it loads the run file with its includes, as `sragent run` would), and creates a new review topic or run file from a short form.
 
 **What exists and where it stands:** `sragent runs` lists every run file with its models, people mode, records and the state of its outputs (not started / review done / evaluated).
 
@@ -46,7 +47,7 @@ Other runs are made from these when needed, e.g. the second evaluation condition
 | File | Roles |
 |---|---|
 | `gemini.yaml` | Gemini for every role (one API key). Agent gemini-3.8-flash, judge gemini-3.1-pro-preview, second judge gemma-4-31b-it. |
-| `claude.yaml` | Claude, lowest-cost setup (one Anthropic API key, `anthropic_api_key` in `api_env.yaml`). Agent and reviewer claude-haiku-5-5, judge claude-sonnet-5-5, second judge gemma-4-31b-it (needs the Gemini key). |
+| `claude-haiku-5-5_claude-sonnet-5-5_gemma-4-31b-it.yaml` | Claude, lowest-cost setup (one Anthropic API key, `anthropic_api_key` in `api_env.yaml`). Agent and reviewer claude-haiku-5-5, judge claude-sonnet-5-5, second judge gemma-4-31b-it (needs the Gemini key). |
 | `local.yaml` | Your own vLLM servers for every role (free). The servers and the roles each may serve are listed in `local_endpoints.yaml` in the project root (next to `api_env.yaml`); `sragent local-endpoints` edits that list. |
 
 Roles: **agent** does the review; **verifier** (optional) checks feedback against the evidence and re-checks revised outputs, and is the agent unless set; **judge**, **judge2** and **reviewer** are used only by `sragent eval`. The web interface offers every API model named in these files (with its price) plus the local endpoint list, so a price is written in one place only.
@@ -60,7 +61,8 @@ Roles: **agent** does the review; **verifier** (optional) checks feedback agains
 3. **Roles inherit.** Each role (`agent`, `verifier`, `judge`, `reviewer`, `judge2`) = `llm_defaults` + its own entry under `roles:`. Write in a role only what differs.
 4. **Paths.** `include`, `api_env`, `local.endpoints_file` and `models_dir` are relative to the file they are written in. `cache_dir`, `pipeline.fulltext_dir` and the topic's `records.data_dir`, `records.file` and `protocol_file` are relative to the project root (run `sragent` from there). `run_dir` is derived from the run file's path; write it only to override that.
 5. **Naming.** One folder per topic. Benchmark run files are `<models>_<characteristic>.yaml` (e.g. `gemini_agentonly`, `local_agentonly`); a review's run file is `run.yaml`.
-6. **No keys in configs.** API keys live in `api_env.yaml` (project root, git-ignored) or environment variables.
+6. **Settings that define a review are fixed once it has started.** The topic (question, eligibility, screening rules, records, extraction fields, risk-of-bias tool and domains) and `pipeline.human_mode`, `max_records`, `screen_sample_seed` and `fulltext_unclear` are recorded, and so is each stage's model and effort once that stage has started, in the run's `store.json` when it first saves. If any of them is edited afterwards, by the web interface, a text editor or a changed include, the run stops before any LLM call and shows what changed. Then: set them back; make a new run file for the new design (its own `runs/` folder); or accept the change on purpose with `sragent accept-config --config <run file> --reason "..."` (or Accept in the web interface). An accepted change is written to `provenance.jsonl` and shown in the report (Appendix D) and in every evaluation of the run. Budget, contact email, models, `feedback.*` and `eval.*` can change at any time. A run started before this check existed records its settings on its next save.
+7. **No keys in configs.** API keys live in `api_env.yaml` (project root, git-ignored) or environment variables.
 
 ### Run file (`configs/<benchmark|review>/<topic>/<run>.yaml`)
 
@@ -75,6 +77,10 @@ pipeline:
   max_records: 60                      # benchmark only; omit for all records
 eval:                                  # benchmark only, for `sragent eval`
   budget_usd: 8.0
+stage_models:                          # optional: agent model and effort per stage (unset = the model file's agent)
+  plan:       {model: claude-sonnet-5-5, reasoning_effort: high}
+  extract:    {model: claude-sonnet-5-5, reasoning_effort: medium}
+  screen:     {reasoning_effort: medium}   # same model as the agent, other effort
 ```
 
 ### Model file (`configs/models/<name>.yaml`)
@@ -124,6 +130,8 @@ Defaults are in parentheses.
 | `extra_body` | extra request parameters, e.g. Qwen `chat_template_kwargs` |
 | `concurrency` (4) | parallel requests from this process |
 | `pricing` | `{input_per_m, output_per_m}` in USD; used for cost estimates and `budget_usd` |
+
+**`stage_models` (run file, or a model file)**: the agent's model and effort per pipeline stage, written over the agent role. Stages: `plan`, `search`, `screen` (title/abstract), `fulltext` (full-text screening), `snowball` (citation chasing, which screens the papers it finds), `extract`, `rob`, `synthesize` (writing and checking statements), and `feedback` (handling feedback, revising dependent outputs, updates after your decisions). The report makes no LLM calls. Each entry takes the role keys (`model`, `reasoning_effort`, `provider`, `max_tokens`, ...); `provider` and `pricing` are taken from the model files when not written, so a model must be named in one of them (or carry its own `pricing`). `reasoning_effort`: `low`, `medium`, `high` (Claude also `xhigh`, `max`), or `null` for the model default. The web interface's Run page edits this section (Models per stage). A stage's model is fixed once that stage has started (rule 6); stages not yet started can be changed freely. A model picked in the web interface for one re-run or one piece of feedback applies to that job only. The report lists the model each stage ran with.
 
 **`local` (model file `local.yaml`)**: `endpoints_file` (`local_endpoints.yaml` in the project root), `poll_interval` (2 s), `retry_interval` (5 s), `probe_timeout` (5 s), `wait_timeout` (null = wait until cancelled). See GUIDE section 4.
 

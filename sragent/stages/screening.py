@@ -42,6 +42,19 @@ def finalize(decision: str, stage: str, policy: str = "await") -> str:
     return decision
 
 
+def rederive(protocol: dict, d: dict, policy: str = "await") -> tuple[str, list[str], str]:
+    """(decision, because, stage) for a stored screen node's assessments under a (revised) protocol.
+    A record waiting at full-text retrieval was assessed on its title/abstract only: it keeps waiting
+    unless those assessments now exclude it (it is never included without a full-text review)."""
+    if d["stage"] == "retrieval":
+        dec, because = rule_decision(protocol, d.get("criteria", []), "title_abstract")
+        if dec == "exclude":
+            return "exclude", because, "title_abstract"
+        return d["decision"], d.get("because", []), "retrieval"
+    dec, because = rule_decision(protocol, d.get("criteria", []), d["stage"])
+    return finalize(dec, d["stage"], policy), because, d["stage"]
+
+
 def rule_decision(protocol: dict, assessments: list[dict], stage: str) -> tuple[str, list[str]]:
     types = {c["id"]: c["type"] for c in protocol.get("criteria", [])}
     stages = {c["id"]: c.get("stage", "title_abstract") for c in protocol.get("criteria", [])}
@@ -230,11 +243,10 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
         if n["data"].get("rule") or n["data"].get("human_decision"):
             continue
         d = dict(n["data"])
-        dec, because = rule_decision(protocol, d.get("criteria", []), d["stage"])
-        dec = finalize(dec, d["stage"], policy)
-        if (dec, because) != (d["decision"], d.get("because")):
+        dec, because, stage = rederive(protocol, d, policy)
+        if (dec, because, stage) != (d["decision"], d.get("because"), d["stage"]):
             d.pop("note", None)
-            d["decision"], d["because"] = dec, because
+            d["decision"], d["because"], d["stage"] = dec, because, stage
             st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user",
                       reason="protocol revised: decision re-derived from stored assessments")
             for f in n["flags"]:

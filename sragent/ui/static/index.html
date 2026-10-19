@@ -356,6 +356,30 @@ details.more{margin-top:4px}
 .item .body{margin-top:4px;font-size:13px}
 .item ul{margin:6px 0 0;padding-left:18px;font-size:12.5px;color:var(--fg-2)}
 
+/* ---------------------------------------------------------------- configs */
+.runcard .switch{margin-left:auto;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:11.5px;font-weight:500;flex:none}
+.navl a.off{opacity:.45;pointer-events:none}
+tr.cur>td{background:var(--acc-bg)}
+tr.tg>td{background:var(--surface-2);font-size:11.5px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;padding-top:7px;padding-bottom:7px;cursor:default}
+table.hover tbody tr.tg:hover{background:transparent}
+.cfg-path{font-family:var(--mono);font-size:11.5px;color:var(--mut);margin-top:2px;word-break:break-all}
+.edgrid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;align-items:start}
+.edgrid aside{position:sticky;top:84px;max-height:calc(100vh - 100px);overflow-y:auto}
+@media (max-width:1100px){.edgrid{grid-template-columns:1fr}.edgrid aside{position:static;max-height:none}}
+textarea.code{font:12.5px/1.6 var(--mono);min-height:62vh;border:0;border-radius:0;box-shadow:none;padding:14px 18px;tab-size:2;white-space:pre;overflow:auto;resize:vertical;background:var(--surface)}
+textarea.code:focus{box-shadow:none}
+.issues{margin:0;padding-left:18px;font-size:12.5px;line-height:1.5}
+.issues li{margin:3px 0;word-break:break-word}
+.issues.e li{color:var(--bad)}.issues.w li{color:var(--warn)}
+.sumt td{padding:5px 0;border:0;font-size:12.5px;vertical-align:top}
+.sumt td:first-child{color:var(--mut);padding-right:12px;white-space:nowrap}
+.sumt td:last-child{word-break:break-word}
+.keys tr{display:block;padding:5px 0;border-top:1px solid var(--line)}.keys tr:first-child{border-top:0}
+.keys td{display:block;padding:0!important;white-space:normal!important}.keys td:last-child{color:var(--fg-2);margin-top:2px}
+.dirty{width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block}
+.form .full{grid-column:1/-1}
+textarea.mono{font-family:var(--mono);font-size:12.5px}
+
 /* ---------------------------------------------------------------- run */
 .rungrid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
 .rungrid aside{position:sticky;top:84px}
@@ -374,7 +398,8 @@ details.more{margin-top:4px}
       <div><b>SRAgent</b><span>Systematic review workspace</span></div>
     </div>
     <div class="runcard">
-      <div class="rn" title="Run folder"><svg class="i sm" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span id="runname">…</span></div>
+      <div class="rn"><svg class="i sm" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span id="runname" title="Run folder">…</span>
+        <a class="switch" href="#/configs" title="Open another run file">Switch</a></div>
       <div class="q" id="topic"></div>
       <div class="meta"><span id="mode"></span></div>
     </div>
@@ -387,7 +412,9 @@ details.more{margin-top:4px}
       <a href="#/run" data-t="run"><svg class="i" viewBox="0 0 24 24"><path d="m7 4 13 8-13 8z"/></svg>Run</a>
       <a href="#/activity" data-t="activity"><svg class="i" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Activity<span id="act-n" class="cnt info"></span></a>
       <div class="lbl">Output</div>
-      <a href="/report" target="_blank" rel="noopener"><svg class="i" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>Report<svg class="i sm" viewBox="0 0 24 24" style="margin-left:auto;color:var(--mut-2)"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></a>
+      <a href="/report" id="reportlink" target="_blank" rel="noopener"><svg class="i" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>Report<svg class="i sm" viewBox="0 0 24 24" style="margin-left:auto;color:var(--mut-2)"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></a>
+      <div class="lbl">Setup</div>
+      <a href="#/configs" data-t="configs"><svg class="i" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m10 13-2 2 2 2M14 13l2 2-2 2"/></svg>Configs</a>
     </nav>
     <div class="side-foot">
       <div id="jobw"></div>
@@ -409,6 +436,7 @@ details.more{margin-top:4px}
       <section id="v-pdfs" hidden></section>
       <section id="v-studies" hidden></section>
       <section id="v-activity" hidden></section>
+      <section id="v-configs" hidden></section>
     </main>
   </div>
 </div>
@@ -422,10 +450,11 @@ let S = null, M = null, tab = "steps", showSnoozed = false, lastJobId = null;
 const answers = {};            // todo id -> {option, text, extra}
 const STAGES = [["plan","Protocol"],["search","Search"],["screen","Title/abstract screening"],["fulltext","Full texts + full-text screening"],["snowball","Citation chasing"],
                 ["extract","Data extraction"],["rob","Risk of bias"],["synthesize","Synthesis"],["report","Report (whole review)"]];
-const VIEWS = ["steps","todo","studies","pdfs","run","activity"];
+const VIEWS = ["steps","todo","studies","pdfs","run","activity","configs"];
 const TITLES = {steps:["Overview","Where the review stands and the next thing to do"], todo:["To-do","Decisions and checks waiting for you"],
   studies:["Studies","Every record, its status and the evidence behind it"], pdfs:["Full texts","PDFs that would help the agent, and how to add them"],
-  run:["Run","Start the agent, choose a model and see the cost first"], activity:["Activity","Jobs, proposals, comments and the full change history"]};
+  run:["Run","Start the agent, choose a model and see the cost first"], activity:["Activity","Jobs, proposals, comments and the full change history"],
+  configs:["Configs","Every run file: open one, edit it, or set up a new review"]};
 
 /* ---------------- icons ---------------- */
 const IC = {
@@ -449,8 +478,11 @@ const IC = {
 const ic = (n, cls) => `<svg class="i${cls ? " " + cls : ""}" viewBox="0 0 24 24">${IC[n] || ""}</svg>`;
 
 /* ---------------- small helpers ---------------- */
+/* the open run file: ?config=<path> in the page URL (none = the one `sragent ui --config` was started with) */
+const CFG = new URLSearchParams(location.search).get("config") || "";
+const U = path => CFG ? path + (path.includes("?") ? "&" : "?") + "config=" + encodeURIComponent(CFG) : path;
 async function api(path, body){
-  const r = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
+  const r = await fetch(U(path), body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
   try { return await r.json(); } catch(e) { return {ok:false, error:`HTTP ${r.status}`}; }
 }
 const badge = (text, tone, cls) => `<span class="badge ${tone||""} ${cls||""}">${esc(text)}</span>`;
@@ -512,13 +544,23 @@ function activate(t, noload){
   window.scrollTo(0, 0);
   if (noload) return;
   render();
+  if (NOCFG) return;      // no run file open: only the Configs page has data
   if (t === "run") loadModels();
   if (t === "studies") loadStudies();
   if (t === "activity") loadActivity();
 }
+function go(hash){ if (location.hash !== hash) history.pushState(null, "", hash); route(); }
 function route(){
-  const [t0, rid] = location.hash.replace(/^#\/?/, "").split("/");
-  const t = VIEWS.includes(t0) ? t0 : "steps";
+  const [t0, rid, arg] = location.hash.replace(/^#\/?/, "").split("/");
+  if (CF.dirty && !(t0 === "configs" && rid === "edit" && decodeURIComponent(arg||"") === CF.path)) {
+    if (!confirm("Discard your unsaved changes to " + CF.path + "?")) { history.pushState(null, "", "#/configs/edit/" + encodeURIComponent(CF.path)); return; }
+    CF.dirty = false;
+  }
+  const t = VIEWS.includes(t0) ? t0 : NOCFG ? "configs" : "steps";
+  if (t === "configs") {
+    CF.sub = ["edit","new-topic","new-run"].includes(rid) ? rid : "list"; CF.arg = decodeURIComponent(arg || "");
+    document.body.dataset.ready = "1"; CF.shown = null; activate("configs"); return;
+  }
   if (t === "studies" && rid) { if (!(tab === "studies" && ST.rid === rid && ST.d)) openStudy(decodeURIComponent(rid)); return; }
   if (t === "studies" && ST.rid) { ST.rid = null; ST.d = null; }
   else if (t === tab && document.body.dataset.ready) return;
@@ -527,10 +569,17 @@ function route(){
 }
 window.addEventListener("popstate", route);
 window.addEventListener("hashchange", route);
-document.querySelectorAll("#tabs a[data-t]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); const t = a.dataset.t; if (t === "studies") { ST.rid = null; ST.d = null; } show(t); }));
+document.querySelectorAll("#tabs a[data-t]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); const t = a.dataset.t; if (t === "studies") { ST.rid = null; ST.d = null; } if (t === "configs") go("#/configs"); else show(t); }));
 
+let NOCFG = null;      // {error, config} when no run file is open or it fails to load
 async function refresh(force){
-  try { S = await api("/api/state"); } catch(e){ return; }
+  let st;
+  try { st = await api("/api/state"); } catch(e){ return; }
+  if (st && (st.no_config || st.config_error)) {
+    const first = !NOCFG; S = null; NOCFG = {error: st.config_error || "", config: st.config || CFG, changes: st.config_changed || null};
+    renderNoRun(); if (first && tab !== "configs") go("#/configs"); return;
+  }
+  S = st; NOCFG = null;
   if (!S || !S.run) return;
   renderChrome();
   const j = S.job.current;
@@ -543,7 +592,17 @@ async function refresh(force){
   render(!force);
 }
 
+function renderNoRun(){
+  document.title = "Configs · SRAgent";
+  $("#runname").textContent = NOCFG.changes ? "Paused: settings changed" : NOCFG.error ? "Run file does not load" : "No run file open";
+  $("#topic").textContent = NOCFG.error ? NOCFG.config : "Open a run file, or set up a new review.";
+  $("#mode").innerHTML = NOCFG.changes ? badge("settings changed", "warn", "dot") : NOCFG.error ? badge("config error", "bad", "dot") : "";
+  document.querySelectorAll("#tabs a[data-t]").forEach(a => a.classList.toggle("off", a.dataset.t !== "configs"));
+  $("#reportlink").classList.add("off");
+}
 function renderChrome(){
+  document.querySelectorAll("#tabs a.off").forEach(a => a.classList.remove("off"));
+  $("#reportlink").href = U("/report");
   document.title = S.run.name + " · SRAgent";
   $("#runname").textContent = S.run.name;
   $("#runname").parentElement.title = S.run.run_dir;
@@ -574,6 +633,7 @@ function renderChrome(){
 }
 
 function render(fromPoll){
+  if (tab === "configs") { if (!fromPoll) renderConfigs(); return; }
   if (!S) return;
   if (tab === "steps") renderSteps(fromPoll);
   if (tab === "todo") renderTodo(fromPoll);
@@ -597,7 +657,7 @@ function goNext(){
   if (n.go === "todo") goTodoGroup(n.group);
   else if (n.go === "run") presetRun(n.until || "report");
   else if (n.go === "pdfs") show("pdfs");
-  else window.open("/report", "_blank");
+  else window.open(U("/report"), "_blank");
 }
 function goTodoGroup(group){ show("todo"); setTimeout(() => scrollToId("g-" + (group || "")), 60); }
 function goTodoStep(step){
@@ -775,7 +835,7 @@ function pdfPanel(ft, compact){
     <div class="card-f" style="display:block">
       <details data-k="ftlist" ${compact?"":"open"}><summary>File list (${total})</summary>
         <div class="tw" style="margin-top:10px;background:var(--surface);border:1px solid var(--line);border-radius:10px"><table><thead><tr><th>Status</th><th>File name</th><th>Study</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-        <div class="row" style="margin-top:10px"><a class="btn sm" href="/needed_pdfs.csv">${ic("download","sm")} Download list (CSV)</a></div></details></div></div>`;
+        <div class="row" style="margin-top:10px"><a class="btn sm" href="${U('/needed_pdfs.csv')}">${ic("download","sm")} Download list (CSV)</a></div></details></div></div>`;
 }
 async function pdfUnwant(rid){ const r = await api("/api/bulk", {kind:"pdf_unwant", ids:[rid]}); toast(r.ok ? "The agent will decide without this full text" : (r.message||r.error), !r.ok); refresh(true); }
 async function pdfUnavailable(rid){ const r = await api("/api/bulk", {kind:"pdf_unavailable", ids:[rid]}); toast(r.ok ? "Marked as not obtainable" : (r.message||r.error), !r.ok); refresh(true); }
@@ -876,12 +936,15 @@ async function submitTodo(id){
 /* ---------------- run ---------------- */
 const runOpts = {action:"run", until:"report", suite:"all", n_cases:"", max_records:"", extra_budget:2, agent:null, judge:null, effort:"low"};
 async function loadModels(){
-  M = await api("/api/models");
+  const m = await api("/api/models");
+  if (!m || m.error || !m.current) return;
+  M = m;
   const st = M.settings || {};
   if (!runOpts.agent) runOpts.agent = st.agent || {provider:M.current.agent.provider, model:M.current.agent.model, effort:M.current.agent.reasoning_effort||"low"};
   if (!runOpts.judge) runOpts.judge = st.judge || {provider:M.current.judge.provider, model:M.current.judge.model, effort:"low"};
   if (st.extra_budget) runOpts.extra_budget = st.extra_budget;
   if (st.max_records && M.benchmark) runOpts.max_records = st.max_records;
+  SM.edit = Object.fromEntries((M.stages || []).map(r => [r.stage, Object.keys(r.set).length ? {...r.set} : null])); SM.dirty = false;
   renderRun();
 }
 function modelOptions(sel, role){
@@ -932,15 +995,16 @@ function renderRun(){
            <div class="hint">Each evaluation is its own run in eval/runs/ (fresh model calls, own cost and report).</div></div>
          <label>Claim-2 cases per type</label><div><input type="number" min="1" placeholder="from config" value="${esc(a.n_cases)}" oninput="runOpts.n_cases=this.value" style="width:120px"></div>` : ""}
       </div>` : ""}</div></div>
-    <div class="card"><div class="card-h"><h2>Model and budget</h2></div><div class="card-b"><div class="form">
-      <label>Agent model</label><div><select style="width:100%" onchange="runOpts.agent={...JSON.parse(this.value),effort:runOpts.agent.effort};renderRun()">${modelOptions(a.agent,"agent")}</select>
+    ${STAGE_JOB(a.action) ? stageCard() : ""}
+    <div class="card"><div class="card-h"><h2>${STAGE_JOB(a.action) ? "Budget" : "Model and budget"}</h2></div><div class="card-b"><div class="form">
+      ${STAGE_JOB(a.action) ? "" : `<label>Agent model</label><div><select style="width:100%" onchange="runOpts.agent={...JSON.parse(this.value),effort:runOpts.agent.effort};renderRun()">${modelOptions(a.agent,"agent")}</select>
         <div class="hint">${esc(noteFor(a.agent))}</div></div>
       <label>Reasoning effort</label><div><div class="seg">${[["low","Low · cheaper, recommended"],["default","Model default"]].map(([v,l])=>`<button class="${(a.agent.effort||"low")===v?"on":""}" onclick="runOpts.agent.effort='${v}';renderRun()">${l}</button>`).join("")}</div></div>
-      ${a.action==="eval" ? `<label>Judge model</label><div><select style="width:100%" onchange="runOpts.judge={...JSON.parse(this.value),effort:'low'};estimate()">${modelOptions(a.judge,"judge")}</select>
+      `}${a.action==="eval" ? `<label>Judge model</label><div><select style="width:100%" onchange="runOpts.judge={...JSON.parse(this.value),effort:'low'};estimate()">${modelOptions(a.judge,"judge")}</select>
          <div class="hint">Prefer a judge from a different model family than the agent.</div></div>` : ""}
       <label>Spending cap for this job</label><div><div class="field" style="max-width:180px"><span class="mut">$</span><input type="number" min="0" step="0.5" value="${esc(a.extra_budget)}" oninput="runOpts.extra_budget=this.value"></div>
         <div class="hint">The job stops cleanly when it is reached; finished work is kept.</div></div>
-      <label></label><div class="row"><button class="btn" onclick="testModel()">${ic("bot","sm")} Test model</button><span id="testres" class="small mut">One tiny call, well under $0.001.</span></div>
+      ${STAGE_JOB(a.action) ? "" : `<label></label><div class="row"><button class="btn" onclick="testModel()">${ic("bot","sm")} Test model</button><span id="testres" class="small mut">One tiny call, well under $0.001.</span></div>`}
     </div></div></div>
   </div>
   <aside><div class="card"><div class="card-h"><h2>Estimated cost</h2></div><div class="card-b" id="est"><span class="mut">Estimating…</span></div>
@@ -950,14 +1014,65 @@ function renderRun(){
   <div class="card"><div class="card-h"><h2>Job log</h2><div id="jobhead" class="card-act"></div></div><div class="card-b" id="jobbox"></div></div>`;
   runWarn(); estimate(); renderJob();
 }
+/* models per stage (stage_models in the run file) */
+const STAGE_JOB = act => ["run","pdfs","sync"].includes(act);
+const SM = {edit:null, dirty:false};
+function smEff(r){   // what a row resolves to with the unsaved edits
+  const e = SM.edit[r.stage] || {}, ag = M.current.agent;
+  return {provider: e.model ? (e.provider || ag.provider) : ag.provider, model: e.model || ag.model,
+          effort: "reasoning_effort" in e ? e.reasoning_effort : ag.reasoning_effort};
+}
+function stageCard(){
+  if (!M.stages) return "";
+  const ag = M.current.agent;
+  const apiOpts = (sel) => M.api.map(m => `<option value='${esc(JSON.stringify({provider:m.provider, model:m.id}))}' ${sel && sel.model===m.id && (sel.provider||ag.provider)===m.provider ? "selected" : ""} ${m.key_available ? "" : "disabled"}>${esc(m.id)} · $${m.input_per_m} / $${m.output_per_m}${m.key_available ? "" : " (no API key)"}</option>`).join("")
+    + M.local.models.map(id => `<option value='${esc(JSON.stringify({provider:"local", model:id}))}' ${sel && sel.provider==="local" && sel.model===id ? "selected" : ""}>${esc(id === "auto" ? "local: served model" : "local: " + id)} · free</option>`).join("");
+  const rows = M.stages.map(r => {
+    const e = SM.edit[r.stage] || {}, eff = smEff(r), lock = r.started;
+    const effs = (M.efforts[eff.provider] || ["low","medium","high"]);
+    const effSel = "reasoning_effort" in e ? (e.reasoning_effort === null ? "default" : e.reasoning_effort) : "";
+    return `<tr${lock ? ' style="opacity:.75"' : ""}><td><b style="font-weight:600">${esc(r.label)}</b>${lock ? `<div class="xs" style="color:var(--warn)" title="This stage has started, so its model is fixed (accept a change on the Configs page)">fixed: stage started</div>` : ""}</td>
+      <td><select style="width:100%;min-width:200px" ${lock ? "disabled" : ""} onchange="smSet('${r.stage}','model',this.value)"><option value="" title="as set in the model file">${esc(ag.model)} (default)</option>${apiOpts(e.model ? e : null)}</select></td>
+      <td><select ${lock ? "disabled" : ""} onchange="smSet('${r.stage}','effort',this.value)"><option value="" title="as set in the model file">${esc(ag.reasoning_effort || "model default")} (default)</option>
+        ${effs.map(x => `<option ${effSel===x ? "selected" : ""}>${x}</option>`).join("")}<option value="default" ${effSel==="default" ? "selected" : ""}>model default</option></select></td></tr>`;
+  }).join("");
+  return `<div class="card"><div class="card-h"><div class="grow"><h2>Models per stage</h2><div class="sub">Saved in the run file (<code>stage_models</code>). A stage's model is fixed once that stage has started; the others can change.</div></div></div>
+    <div class="card-b flush tw"><table id="smtable"><thead><tr><th>Stage</th><th>Model</th><th>Effort</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card-f"><button class="btn primary" id="smsave" onclick="saveStageModels()" ${SM.dirty ? "" : "disabled"}>${ic("check","sm")} Save to run file</button>
+      <button class="btn" onclick="testStageModels()">${ic("bot","sm")} Test models</button><span id="smmsg" class="msg grow"></span></div></div>`;
+}
+function smSet(stage, what, v){
+  const e = {...(SM.edit[stage] || {})};
+  if (what === "model") { if (v) { const o = JSON.parse(v); e.model = o.model; e.provider = o.provider; } else { delete e.model; delete e.provider; } }
+  else { if (v === "") delete e.reasoning_effort; else e.reasoning_effort = v === "default" ? null : v; }
+  SM.edit[stage] = Object.keys(e).length ? e : null; SM.dirty = true;
+  renderRun();
+}
+async function saveStageModels(){
+  const r = await api("/api/stage_models", {stages: SM.edit});
+  msg("smmsg", r);
+  if (!r.ok) { toast(r.message || r.error || "Not saved", true); return false; }
+  toast(r.message || "Saved"); M = null; await loadModels(); return true;
+}
+async function testStageModels(){
+  const el = $("#smmsg"); const seen = {}, out = [];
+  M.stages.forEach(r => { const e = smEff(r); seen[e.provider + ":" + e.model + ":" + e.effort] = e; });
+  el.innerHTML = `<span class="spin" style="display:inline-block;vertical-align:-2px"></span> testing ${Object.keys(seen).length} model(s)…`;
+  for (const e of Object.values(seen)) {
+    const r = await api("/api/test_model", {provider:e.provider, model:e.model, effort: e.effort || "default"});
+    out.push(r.ok ? `<span class="saved">${ic("check","sm")} ${esc(e.model)} (${esc(e.effort || "default")}) ${r.seconds}s</span>` : `<span class="err">${esc(e.model)}: ${esc(r.error || "failed")}</span>`);
+  }
+  el.innerHTML = out.join(" · ");
+}
 let estTimer = null;
 function estimate(){
   clearTimeout(estTimer);
   estTimer = setTimeout(async () => {
-    const e = await api("/api/estimate", {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null});
+    const e = await api("/api/estimate", {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null,
+                                          ...(STAGE_JOB(runOpts.action) && SM.edit ? {stage_models: SM.edit} : {})});
     const el = $("#est"); if (!el) return;
     if (e.error) { el.innerHTML = `<span class="err">${esc(e.error)}</span>`; return; }
-    const rows = (e.rows||[]).map(r => `<tr title="${r.in_per_call.toLocaleString()} in / ${r.out_per_call.toLocaleString()} out tokens per call · ${esc(r.source)}"><td>${esc(r.stage)}</td><td class="r num mut">${r.calls}×</td><td class="r num">${usd(r.usd,3)}</td></tr>`).join("");
+    const rows = (e.rows||[]).map(r => `<tr title="${r.in_per_call.toLocaleString()} in / ${r.out_per_call.toLocaleString()} out tokens per call · ${esc(r.source)}"><td>${esc(r.stage)}${r.model ? `<div class="xs mut">${esc(r.model)} · ${esc(r.effort)}</div>` : ""}</td><td class="r num mut">${r.calls}×</td><td class="r num">${usd(r.usd,3)}</td></tr>`).join("");
     const spent = e.spent_so_far !== undefined ? `<div class="hint" style="margin-top:12px">Already spent in this run folder: ${usd(e.spent_so_far)}. Cached calls are free and are not counted again.</div>` : "";
     if (!rows && !e.note) { el.innerHTML = `<div class="est-big">$0</div><p class="small" style="margin:8px 0 0">Nothing left to run for this choice. It is already done, or waiting for your decisions in the To-do list.</p>${spent}`; return; }
     el.innerHTML = `<div class="est-big">${usd(e.total_usd)}</div><div class="small mut" style="margin-top:2px">likely $${e.range_usd[0]} to $${e.range_usd[1]}</div>
@@ -971,6 +1086,7 @@ async function testModel(){
   $("#testres").innerHTML = r.ok ? `<span class="saved">${ic("check","sm")} ${esc(r.model)} answered in ${r.seconds}s</span>` : `<span class="err">${esc(r.error||"failed")}</span>`;
 }
 async function startRun(){
+  if (STAGE_JOB(runOpts.action) && SM.dirty && !(await saveStageModels())) return;
   const body = {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null,
                 n_cases: runOpts.n_cases ? Number(runOpts.n_cases) : null};
   if (body.action !== "eval") delete body.judge;
@@ -1007,7 +1123,7 @@ function renderPdfs(fromPoll){
   open.forEach(([k, o]) => { const d = document.querySelector(`#v-pdfs details[data-k="${CSS.escape(k)}"]`); if (d) d.open = o; });
 }
 async function processPdfs(btn){
-  if (!M) M = await api("/api/models");
+  await ensureModels();
   const st = M.settings || {};
   const r = await api("/api/run", {action:"pdfs", agent: runOpts.agent || st.agent, extra_budget: runOpts.extra_budget});
   const m = btn && btn.parentElement.querySelector(".pdfmsg");
@@ -1017,7 +1133,7 @@ async function processPdfs(btn){
 }
 
 /* ---------------- shared: model picker for agent jobs ---------------- */
-async function ensureModels(){ if (!M) M = await api("/api/models"); return M; }
+async function ensureModels(){ if (!M) { const m = await api("/api/models"); if (m && m.current) M = m; } return M; }
 function defaultAgent(){
   const st = (M && M.settings) || {};
   return runOpts.agent || st.agent || (M ? {provider:M.current.agent.provider, model:M.current.agent.model, effort:"low"} : null);
@@ -1067,8 +1183,8 @@ function renderStudies(){
      <div class="search">${ic("search")}<input placeholder="Search title, author, PMID, reason" title="Press / to search" value="${esc(ST.q)}" oninput="ST.q=this.value;clearTimeout(window._sq);window._sq=setTimeout(renderStudies,200)" id="studyq"></div></div></div>
      <div class="card-f"><span class="small"><b>${F.length.toLocaleString()}</b> <span class="mut">shown</span></span><span class="grow"></span>
        <button class="btn sm" data-v="${pm.join(",")}" onclick="copyText(this.dataset.v, this)">${ic("copy","sm")} Copy ${pm.length} PMIDs</button>
-       <a class="btn sm" href="/export/studies.csv${ST.group!=="all"?"?group="+ST.group:""}">${ic("download","sm")} Table (CSV)</a>
-       <a class="btn sm" href="/export/review.json">${ic("download","sm")} Everything (JSON)</a>
+       <a class="btn sm" href="${U("/export/studies.csv" + (ST.group!=="all" ? "?group="+ST.group : ""))}">${ic("download","sm")} Table (CSV)</a>
+       <a class="btn sm" href="${U(`/export/review.json`)}">${ic("download","sm")} Everything (JSON)</a>
        <button class="btn sm ghost" onclick="loadStudies()" title="Refresh">${ic("refresh","sm")}</button></div></div>
    <details class="card" data-k="revc" ${ST.revOpen ? "open" : ""} ontoggle="ST.revOpen=this.open">
      <summary class="dsum">${ic("msg")}<b>Comment on the whole review</b><span class="small mut hide-sm">${judging() ? "Send it to the agent or keep it as a note" : "Saved as a note"}</span></summary>
@@ -1122,8 +1238,8 @@ function renderStudy(){
   const out = [];
   out.push(`<div class="row" style="margin-bottom:14px">${crumbs.replace('class="crumbs"', 'class="crumbs" style="margin:0"')}<span class="grow"></span>
      <button class="btn sm" onclick="copyStudy(this)">${ic("copy","sm")} Copy as Markdown</button>
-     <a class="btn sm" href="/export/study/${d.rid}.md">${ic("download","sm")} .md</a>
-     <a class="btn sm" href="/export/study/${d.rid}.json">${ic("download","sm")} .json</a>
+     <a class="btn sm" href="${U(`/export/study/${d.rid}.md`)}">${ic("download","sm")} .md</a>
+     <a class="btn sm" href="${U(`/export/study/${d.rid}.json`)}">${ic("download","sm")} .json</a>
      <button class="btn sm ghost" onclick="openStudy('${d.rid}')" title="Refresh">${ic("refresh","sm")}</button></div>`);
   out.push(`<div class="card shead"><div class="pt">${esc((r.pub_types||[]).join(" · "))}</div>
      <h2>${esc(r.title)}</h2><div class="au">${esc(r.authors)}</div><div class="small mut"><i>${esc(r.journal)}</i> ${esc(r.year)}</div>
@@ -1279,7 +1395,7 @@ async function decideCs(id, opt, b){
   toast(r.ok ? (r.message || (opt === "accept" ? "Accepted" : "Rejected")) : (r.message || r.error || "Failed"), !r.ok);
   setTimeout(() => { if (tab==="studies" && ST.rid) openStudy(ST.rid, true); else loadActivity(); refresh(true); }, 400);
 }
-async function copyStudy(b){ const t = await (await fetch(`/export/study/${ST.d.rid}.md`)).text(); copyText(t, b); }
+async function copyStudy(b){ const t = await (await fetch(U(`/export/study/${ST.d.rid}.md`))).text(); copyText(t, b); }
 
 /* ---------------- activity (global history) ---------------- */
 const ACT = {sub:"jobs", actor:"", q:"", H:null, J:null, open:{}};
@@ -1309,12 +1425,12 @@ function jobsHtml(){
   const rows = J.running.map(j => jobRow(j,"running")).join("") + J.queued.map(j => jobRow(j,"queued")).join("") + J.done.map(j => jobRow(j,"done")).join("");
   return `<div class="card-h"><div class="row grow"><b>${J.running.length} running · ${J.queued.length} queued · ${J.done.length} finished</b>
      ${J.pending_answers?badge(`${J.pending_answers} of your answers wait for the running job`,"warn"):""}</div>
-     <a class="btn sm" href="/export/jobs.csv">${ic("download","sm")} CSV</a></div>
+     <a class="btn sm" href="${U(`/export/jobs.csv`)}">${ic("download","sm")} CSV</a></div>
      ${rows?`<div class="card-b flush tw"><table><thead><tr><th>Queued</th><th>Task</th><th>Model</th><th>Status</th><th class="r">Cost</th><th class="r">Time</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:`<div class="empty">No LLM jobs yet.</div>`}`;
 }
 async function toggleLog(id){
   if (ACT.open[id]) { delete ACT.open[id]; }
-  else { ACT.open[id] = await (await fetch("/api/job_log?id="+id)).text(); }
+  else { ACT.open[id] = await (await fetch(U("/api/job_log?id="+id))).text(); }
   $("#jobs-card").innerHTML = jobsHtml();
 }
 async function cancelJob(id){ await api("/api/cancel", {id}); toast("Job cancelled"); loadActivity(); refresh(); }
@@ -1340,7 +1456,7 @@ function renderActivity(){
       <td class="small">${esc(x.text||"")}</td><td class="small">${x.status ? badge(x.status, tone(x.status)) : ""}</td></tr>`).join("")}</tbody></table>` : none("No decisions yet.")}</div></div>`;
   if (ACT.sub === "changes") body = `<div class="card"><div class="card-h"><div class="toolbar grow"><div class="seg">${[["","Everyone"],["agent","Agent"],["user","You"],["rule","Rules"]].map(([v,l]) => `<button class="${ACT.actor===v?"on":""}" onclick="ACT.actor='${v}';loadActivity()">${l}</button>`).join("")}</div>
       <div class="search">${ic("search")}<input placeholder="Filter by output id or reason (e.g. ext:30157389), then Enter" value="${esc(ACT.q)}" onchange="ACT.q=this.value;loadActivity()"></div>
-      <a class="btn sm" href="/export/history.csv">${ic("download","sm")} All (CSV)</a></div></div>
+      <a class="btn sm" href="${U(`/export/history.csv`)}">${ic("download","sm")} All (CSV)</a></div></div>
       <div class="card-b flush tw"><table><thead><tr><th>When</th><th>Output</th><th>What</th><th>Who</th><th>Why</th></tr></thead><tbody>${H.changelog.map(h => `<tr><td class="small nowrap">${fmtT(h.ts)}</td>
       <td class="small mono nowrap">${(h.node.split(":")[1]||"").match(/^[0-9d]/) ? `<button class="link small mono" onclick="openStudy('${esc(h.node.split(":")[1])}')">${esc(h.node)}</button>` : esc(h.node)}</td>
       <td class="small">${esc(h.op)}: ${esc(h.changes.join("; ").slice(0,300))}</td><td class="small">${badge(h.actor, h.actor==="user"?"info":"")}</td><td class="small mut">${esc(h.reason.slice(0,200))}</td></tr>`).join("")}</tbody></table>
@@ -1353,6 +1469,407 @@ function renderActivity(){
       ${H.llm_by_tag.length ? "" : none("No LLM calls yet.")}</div></div>`; }
   $("#v-activity").innerHTML = `<div class="toolbar" style="margin-bottom:16px">${tabs}<span class="grow"></span><button class="btn sm ghost" onclick="loadActivity()">${ic("refresh","sm")} Refresh</button></div>${body}`;
 }
+
+/* ---------------- configs (#/configs, #/configs/edit/<path>, #/configs/new-topic, #/configs/new-run/<topic path>) ---------------- */
+const CF = {sub:"list", arg:"", shown:null, L:null, q:"", file:null, text:"", path:"", dirty:false, chk:null, created:null, nt:null, nr:null};
+const KIND_LABEL = {run:"Run file", topic:"Topic", model:"Model setup", other:"YAML"};
+const KIND_SUB = {run:"A run = the folder's topic + one model setup + run settings. Its outputs go to the same path under runs/.",
+  topic:"What to review: question, eligibility, records, extraction fields and risk-of-bias domains. Shared by every run file in this folder.",
+  model:"Which LLMs do the work. Shared by every run file that includes it.", other:"A YAML file under configs/."};
+const CF_HELP = {
+  run:`<p style="margin-top:0"><code>include:</code> loads this folder's <code>topic.yaml</code> and one file from <code>configs/models/</code>; keys written here override them, and nested sections merge key by key. Anything not written takes its default.</p>
+    <table class="sumt keys"><tbody>
+    <tr><td><code>budget_usd</code></td><td>hard cost cap for the run folder (5.0)</td></tr>
+    <tr><td><code>contact_email</code></td><td>sent to NCBI, Unpaywall, OpenAlex; Unpaywall needs it</td></tr>
+    <tr><td><code>pipeline.human_mode</code></td><td><code>human_in_the_loop</code> or <code>agent_only</code></td></tr>
+    <tr><td><code>pipeline.fulltext_unclear</code></td><td><code>await</code> · <code>include</code> · <code>exclude</code> (agent_only: not await)</td></tr>
+    <tr><td><code>pipeline.max_records</code></td><td>benchmark only: screen a sample</td></tr>
+    <tr><td><code>pipeline.citation_chasing</code></td><td>follow references and citations (true)</td></tr>
+    <tr><td><code>feedback.auto_accept</code></td><td>apply proposals without confirmation (false)</td></tr>
+    <tr><td><code>eval.budget_usd</code></td><td>benchmark only, per evaluation (8.0)</td></tr></tbody></table>
+    <p class="hint" style="margin-bottom:0">Every key is listed in <code>configs/README.md</code>. API keys never go here; they live in <code>api_env.yaml</code>.</p>`,
+  topic:`<table class="sumt keys"><tbody>
+    <tr><td><code>key</code></td><td>short id</td></tr>
+    <tr><td><code>question</code></td><td>the review question</td></tr>
+    <tr><td><code>seed_eligibility</code></td><td>eligibility in plain words; the agent turns it into atomic criteria you approve</td></tr>
+    <tr><td><code>screening_rules</code></td><td>exclusions before any LLM call: empty_record, conference_abstract, erratum, editorial, review, off_topic_no_abstract</td></tr>
+    <tr><td><code>records.source</code></td><td><code>pubmed</code> (with <code>pubmed_retmax</code>, <code>maxdate</code>), <code>file</code> (a JSONL path) or <code>synergy</code> (benchmark)</td></tr>
+    <tr><td><code>extraction_fields</code></td><td><code>{name, description, kind}</code>; kind <code>drug</code> or <code>disease</code> turns on term checks</td></tr>
+    <tr><td><code>rob_tool_name</code>, <code>rob_domains</code></td><td>quality tool and its domains <code>{name, description}</code></td></tr></tbody></table>`,
+  model:`<p style="margin-top:0"><code>llm_defaults:</code> is shared by every role; <code>roles:</code> (<code>agent</code>, <code>verifier</code>, <code>judge</code>, <code>reviewer</code>, <code>judge2</code>) holds only what differs.</p>
+    <table class="sumt keys"><tbody>
+    <tr><td><code>provider</code></td><td><code>openai</code> · <code>gemini</code> · <code>anthropic</code> · <code>local</code></td></tr>
+    <tr><td><code>model</code></td><td>model ID</td></tr>
+    <tr><td><code>reasoning_effort</code></td><td><code>low</code> · <code>medium</code> · <code>high</code> or null</td></tr>
+    <tr><td><code>pricing</code></td><td><code>{input_per_m, output_per_m}</code> USD per 1M tokens; used for estimates and the budget</td></tr>
+    <tr><td><code>api_env</code></td><td>file with the API keys, relative to this file</td></tr></tbody></table>
+    <p class="hint" style="margin-bottom:0">The Run page offers every API model named in these files, with its price.</p>`,
+  other:`<p style="margin:0">This file is not a run, topic or model file, so only its YAML syntax is checked.</p>`};
+const editHash = p => "#/configs/edit/" + encodeURIComponent(p);
+function openConfig(p){
+  if (CF.dirty && !confirm("Discard your unsaved changes to " + CF.path + "?")) return;
+  CF.dirty = false;
+  if (S && S.run.config_rel === p && CFG === p) return show("steps");
+  location.href = "/?config=" + encodeURIComponent(p) + "#/steps";
+}
+const stTone = s => /done/.test(s||"") ? "ok" : /progress/.test(s||"") ? "info" : "";
+const today = () => { const d = new Date(); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`; };
+const loadingCard = t => `<div class="card"><div class="empty"><span class="spin" style="display:inline-block;margin-bottom:8px"></span><br>${t}</div></div>`;
+
+function renderConfigs(){
+  const key = CF.sub + "|" + CF.arg;
+  if (CF.shown === key) return;
+  CF.shown = key;
+  const T = {edit:["Edit config", CF.arg], "new-topic":["New review","A topic folder with its topic.yaml and a first run file"], "new-run":["New run file","Another way to run an existing topic: other models, people mode or budget"]}[CF.sub];
+  if (T) { $("#ptitle").textContent = T[0]; $("#psub").textContent = T[1]; }
+  if (CF.sub === "edit") return openEditor(CF.arg);
+  if (CF.sub === "new-topic" || CF.sub === "new-run") return renderNewForm();
+  loadConfigs();
+}
+async function loadConfigs(){
+  if (!CF.L) $("#v-configs").innerHTML = loadingCard("Reading configs…");
+  CF.L = await api("/api/configs");
+  if (tab === "configs" && CF.sub === "list") renderConfigList();
+}
+function renderConfigList(){
+  const L = CF.L;
+  if (!L || L.error) { $("#v-configs").innerHTML = `<div class="callout warn">${ic("warn")}<div>${esc((L && L.error) || "Could not read the configs.")}</div></div>`; return; }
+  const q = CF.q.toLowerCase();
+  const hit = (...xs) => !q || xs.join(" ").toLowerCase().includes(q);
+  const runs = L.runs.filter(r => hit(r.path, r.question, r.agent, r.human_mode, r.status));
+  const grp = r => r.outside ? "other" : r.template ? "template" : r.kind;
+  const groups = [["other","Opened from outside configs/"],["review","Reviews"],["benchmark","Benchmarks (known answers)"],["template","Templates"]];
+  const runRow = r => {
+    const people = r.human_mode === "agent_only" ? badge("Agent-only","info") : r.human_mode ? badge("Human in the loop") : "";
+    const status = r.error ? `<span title="${esc(r.error)}">${badge("does not load","bad","dot")}</span>` : r.status ? badge(r.status, stTone(r.status), "dot") : "";
+    return `<tr class="${r.current ? "cur" : ""}" data-p="${esc(r.path)}" onclick="${r.error || r.template ? "go(editHash(this.dataset.p))" : "openConfig(this.dataset.p)"}" title="${r.error ? "Fix this run file" : r.template ? "A template: copy it with New review" : "Open this review"}">
+      <td><div class="st-title">${r.topic ? `<span class="mut" style="font-weight:500">${esc(r.topic)} /</span> ` : ""}${esc(r.name)}
+        ${r.current ? badge("open","info") : ""}${r.job ? " " + badge(r.job, "info", "dot") : ""}
+        ${r.config_changed && r.config_changed.length ? `<span title="Changed after the start: ${esc(r.config_changed.join(", "))}">${badge("settings changed","warn","dot")}</span>` : ""}</div><div class="cfg-path">${esc(r.path)}</div>
+        ${r.question ? `<div class="reason clamp2" style="max-width:80ch" title="${esc(r.question)}">${esc(r.question)}</div>` : ""}
+        ${r.error ? `<div class="reason err">${esc(trunc(r.error, 200))}</div>` : ""}</td>
+      <td class="hide-xs mono nowrap" title="${esc(r.agent||"")}">${esc((r.agent||"").split(":").slice(1).join(":") || r.agent || "")}</td><td class="hide-xs">${people}</td>
+      <td class="nowrap">${status}${r.spent_usd ? `<div class="xs mut" style="margin-top:3px">${usd(r.spent_usd)} spent</div>` : ""}</td>
+      <td class="r nowrap" onclick="event.stopPropagation()">
+        ${r.error || r.template ? "" : `<button class="btn sm ${r.current ? "" : "primary"}" onclick="openConfig(this.closest('tr').dataset.p)">${r.current ? "Back" : "Open"}</button>`}
+        ${r.outside ? "" : `<button class="btn sm" onclick="go(editHash(this.closest('tr').dataset.p))">${ic("edit","sm")} Edit</button>
+        <button class="btn sm ghost" onclick="dupConfig(this.closest('tr').dataset.p)" title="Copy this run file in the same folder">${ic("copy","sm")}</button>`}</td></tr>`;
+  };
+  const body = groups.map(([g, label]) => { const rs = runs.filter(r => grp(r) === g); return rs.length ? `<tr class="tg"><td colspan="5">${label} · ${rs.length}</td></tr>` + rs.map(runRow).join("") : ""; }).join("");
+  const topics = L.topics.filter(t => hit(t.path, t.question, t.source));
+  const models = L.models.filter(m => hit(m.path, m.agent, m.judge));
+  const other = L.other.filter(o => hit(o.path));
+  const editBtn = p => `<button class="btn sm" data-p="${esc(p)}" onclick="go(editHash(this.dataset.p))">${ic("edit","sm")} Edit</button>`;
+  const C = CF.created;
+  $("#v-configs").innerHTML = `
+    ${NOCFG && NOCFG.changes ? changedPanel() : NOCFG && NOCFG.error ? `<div class="callout warn">${ic("warn")}<div class="grow"><b>${esc(NOCFG.config)}</b> does not load: ${esc(NOCFG.error)}
+       ${L.runs.some(r => r.path === NOCFG.config) || /^configs\//.test(NOCFG.config) ? `<div style="margin-top:6px"><button class="btn sm" onclick="go(editHash(NOCFG.config))">${ic("edit","sm")} Fix it</button></div>` : ""}</div></div>` : ""}
+    ${NOCFG && !NOCFG.error ? `<div class="callout info">${ic("info")}<div>No run file is open. Open one below, or set up a new review.</div></div>` : ""}
+    ${C ? `<div class="callout info">${ic("check")}<div class="grow">Created ${C.files.map(f => `<code>${esc(f)}</code>`).join(" and ")}.
+       ${C.check && !C.check.ok ? `<div class="err" style="margin-top:4px">Still to fix: ${esc(C.check.errors.join("; "))}</div>` : C.check && C.check.warnings.length ? `<div class="small" style="margin-top:4px;color:var(--warn)">${esc(C.check.warnings.join("; "))}</div>` : ""}
+       <div class="row" style="margin-top:8px">${C.check && C.check.ok ? `<button class="btn sm primary" onclick="openConfig(CF.created.path)">${ic("play","sm")} Open the review</button>` : ""}
+       ${C.files.map(f => `<button class="btn sm" data-p="${esc(f)}" onclick="go(editHash(this.dataset.p))">${ic("edit","sm")} Edit ${esc(f.split("/").pop())}</button>`).join("")}
+       <button class="btn sm ghost" onclick="CF.created=null;renderConfigList()">Dismiss</button></div></div></div>` : ""}
+    <div class="toolbar" style="margin-bottom:16px"><div class="search">${ic("search")}<input id="cfgq" placeholder="Filter by path, question, model or status" value="${esc(CF.q)}" oninput="CF.q=this.value;renderConfigList();const i=$('#cfgq');i.focus();i.setSelectionRange(i.value.length,i.value.length)"></div>
+      <button class="btn" onclick="go('#/configs/new-run')">New run file</button>
+      <button class="btn primary" onclick="go('#/configs/new-topic')">${ic("edit","sm")} New review</button></div>
+    <div class="card"><div class="card-h"><div class="grow"><h2>Run files</h2><div class="sub">Click a row to open that review here. <code>configs/&lt;review|benchmark&gt;/&lt;topic&gt;/&lt;run&gt;.yaml</code> writes to <code>runs/</code> under the same path.</div></div></div>
+      <div class="card-b flush tw"><table class="hover"><thead><tr><th style="width:44%">Run file</th><th class="hide-xs">Agent</th><th class="hide-xs">People</th><th>Status</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="5" class="empty">${q ? "No run file matches." : "No run files yet. Start with New review."}</td></tr>`}</tbody></table></div></div>
+    <div class="card"><div class="card-h"><div class="grow"><h2>Topics</h2><div class="sub">One folder per topic; its <code>topic.yaml</code> is shared by the run files next to it.</div></div></div>
+      <div class="card-b flush tw"><table><thead><tr><th>Topic</th><th class="hide-sm">Question</th><th>Records</th><th></th></tr></thead><tbody>
+      ${topics.map(t => `<tr><td><div class="st-title">${esc(t.topic)} ${t.template ? badge("template") : ""}</div><div class="cfg-path">${esc(t.path)}</div></td>
+        <td class="hide-sm"><div class="clamp2 small" style="max-width:56ch">${esc(t.question)}</div></td><td>${t.source ? badge(t.source, t.source === "synergy" ? "info" : "") : ""}</td>
+        <td class="r nowrap">${editBtn(t.path)}${t.template ? "" : ` <button class="btn sm ghost" data-p="${esc(t.path)}" onclick="go('#/configs/new-run/'+encodeURIComponent(this.dataset.p))">+ Run file</button>`}</td></tr>`).join("")
+        || `<tr><td colspan="4" class="empty">No topics match.</td></tr>`}</tbody></table></div></div>
+    <div class="card"><div class="card-h"><div class="grow"><h2>Model setups</h2><div class="sub"><code>configs/models/</code>: which LLMs do the work; a run file includes one.</div></div></div>
+      <div class="card-b flush tw"><table><thead><tr><th>File</th><th>Agent</th><th class="hide-xs">Judge</th><th></th></tr></thead><tbody>
+      ${models.map(m => `<tr><td><div class="st-title">${esc(m.name)}</div><div class="cfg-path">${esc(m.path)}</div></td><td class="mono">${esc(m.agent || m.error || "")}</td>
+        <td class="mono hide-xs">${esc(m.judge || "")}</td><td class="r">${editBtn(m.path)}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">No model setups match.</td></tr>`}</tbody></table></div></div>
+    ${other.length ? `<div class="card"><div class="card-h"><h2>Other YAML files</h2></div><div class="card-b flush tw"><table><tbody>
+      ${other.map(o => `<tr><td class="mono">${esc(o.path)}</td><td class="r">${editBtn(o.path)}</td></tr>`).join("")}</tbody></table></div></div>` : ""}`;
+}
+async function dupConfig(p){
+  const base = p.split("/").pop().replace(/\.ya?ml$/, "");
+  const name = prompt("Name of the copy (same folder, without .yaml):", base + "_copy");
+  if (!name) return;
+  const r = await api("/api/config_duplicate", {path:p, name});
+  if (!r.ok) return toast(r.message || r.error || "Failed", true);
+  toast("Created " + r.path); CF.L = null; go(editHash(r.path));
+}
+
+/* editor */
+async function openEditor(path){
+  CF.path = path; CF.dirty = false; CF.chk = null; CF.file = null;
+  $("#v-configs").innerHTML = loadingCard("Opening " + esc(path) + "…");
+  const f = await api("/api/config_file?path=" + encodeURIComponent(path));
+  if (CF.path !== path) return;
+  if (!f || f.error || f.text == null) {
+    $("#v-configs").innerHTML = `<div class="crumbs"><a href="#/configs" onclick="event.preventDefault();go('#/configs')">Configs</a></div>
+      <div class="callout warn">${ic("warn")}<div>${esc((f && (f.error || f.message)) || "Could not open the file.")}</div></div>`; return;
+  }
+  CF.file = f; CF.text = f.text;
+  renderEditor(); checkConfig();
+}
+function renderEditor(){
+  const f = CF.file, isRun = f.kind === "run";
+  const isCur = isRun && S && S.run.config_rel === f.path;
+  $("#v-configs").innerHTML = `
+    <div class="crumbs"><a href="#/configs" onclick="event.preventDefault();go('#/configs')">Configs</a><span class="sep">/</span><span class="mono">${esc(f.path)}</span></div>
+    <div class="edgrid"><div>
+      <div class="card"><div class="card-h"><div class="grow"><h2 style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${esc(f.path.split("/").pop())} ${badge(KIND_LABEL[f.kind] || "YAML", f.kind === "run" ? "info" : "")}<span id="ed-dirty" class="row" style="gap:5px"></span></h2>
+        <div class="sub">${KIND_SUB[f.kind] || ""}</div></div></div>
+        <textarea class="code" id="ed" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="YAML of ${esc(f.path)}"></textarea>
+        <div class="card-f"><button class="btn primary" id="ed-save" onclick="saveConfig()">${ic("check","sm")} Save</button>
+          <button class="btn" onclick="checkConfig()">Check</button><button class="btn ghost" onclick="revertConfig()">Revert</button>
+          ${isRun ? `<button class="btn" onclick="openConfig(CF.path)">${ic("play","sm")} ${isCur ? "Back to this review" : "Open this review"}</button>` : ""}
+          <span class="hint grow nowrap hide-sm">Ctrl+S saves · Tab indents</span><span id="ed-msg" class="msg"></span></div></div>
+    </div><aside>
+      <div class="card"><div class="card-h"><h2>Check</h2><span id="chk-badge"></span></div><div class="card-b" id="chk"><span class="mut small">Checking…</span></div></div>
+      <div class="card"><div class="card-h"><h2>Keys</h2></div><div class="card-b small">${CF_HELP[f.kind] || CF_HELP.other}</div></div>
+    </aside></div>`;
+  const ta = $("#ed"); ta.value = CF.text;
+  ta.addEventListener("input", () => { CF.text = ta.value; setDirty(CF.text !== CF.file.text); scheduleCheck(); });
+  ta.addEventListener("keydown", edKey);
+}
+function setDirty(v){
+  CF.dirty = v;
+  const el = $("#ed-dirty"); if (el) el.innerHTML = v ? `<span class="dirty"></span><span class="small" style="font-weight:500;color:var(--warn)">unsaved</span>` : "";
+}
+function insertText(ta, t){
+  ta.focus();
+  if (!document.execCommand || !document.execCommand("insertText", false, t)) { ta.setRangeText(t, ta.selectionStart, ta.selectionEnd, "end"); ta.dispatchEvent(new Event("input")); }
+}
+function edKey(e){
+  const ta = e.target;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); return saveConfig(); }
+  if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); insertText(ta, "  "); }
+  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {   // keep the indentation (+2 after "key:")
+    const before = ta.value.slice(0, ta.selectionStart), line = before.slice(before.lastIndexOf("\n") + 1);
+    let ind = (line.match(/^\s*/) || [""])[0];
+    if (/:\s*$/.test(line.split(" #")[0])) ind += "  ";
+    if (/^\s*- /.test(line) && !/:\s*$/.test(line)) ind = ind + "";
+    e.preventDefault(); insertText(ta, "\n" + ind);
+  }
+}
+let chkTimer = null;
+function scheduleCheck(){ clearTimeout(chkTimer); chkTimer = setTimeout(checkConfig, 700); }
+async function checkConfig(){
+  clearTimeout(chkTimer);
+  const path = CF.path, text = CF.text;
+  const r = await api("/api/config_check", {path, text});
+  if (CF.path !== path || CF.text !== text) return;
+  CF.chk = r; renderCheck();
+}
+function gotoLine(n){
+  const ta = $("#ed"); if (!ta) return;
+  const lines = ta.value.split("\n"); let pos = 0;
+  for (let i = 0; i < n - 1 && i < lines.length; i++) pos += lines[i].length + 1;
+  ta.focus(); ta.setSelectionRange(pos, pos + (lines[n-1] || "").length);
+  ta.scrollTop = Math.max(0, (n - 5) * 20);
+}
+function renderCheck(){
+  const r = CF.chk, el = $("#chk"); if (!el || !r) return;
+  if (r.error) { el.innerHTML = `<span class="err">${esc(r.error)}</span>`; return; }
+  const nl = (r.locked || []).length;
+  $("#chk-badge").innerHTML = !r.ok ? badge(r.errors.length + " problem" + (r.errors.length > 1 ? "s" : ""), "bad", "dot")
+    : nl ? badge("pauses " + nl + " started run" + (nl > 1 ? "s" : ""), "warn", "dot")
+    : r.warnings.length ? badge("loads, " + r.warnings.length + " note" + (r.warnings.length > 1 ? "s" : ""), "warn", "dot") : badge("loads", "ok", "dot");
+  const sm = r.summary;
+  el.innerHTML = `
+    ${r.errors.length ? `<ul class="issues e">${r.errors.map(e => `<li>${esc(e)}</li>`).join("")}</ul>${r.line ? `<button class="btn sm" style="margin-top:8px" onclick="gotoLine(${r.line})">Go to line ${r.line}</button>` : ""}` : ""}
+    ${r.warnings.length ? `<ul class="issues w" ${r.errors.length ? 'style="margin-top:10px"' : ""}>${r.warnings.map(e => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
+    ${lockedHtml(r.locked)}
+    ${!r.errors.length && !r.warnings.length && !(r.locked||[]).length ? `<div class="saved">${ic("check","sm")} ${r.kind === "run" ? "Loads with its includes, as sragent run would." : "Looks right."}</div>` : ""}
+    ${sm ? `<table class="sumt" style="margin-top:12px"><tbody>
+      <tr><td>Outputs</td><td class="mono">${esc(sm.run_dir)}</td></tr>
+      <tr><td>Status</td><td>${badge(sm.status, stTone(sm.status), "dot")}</td></tr>
+      <tr><td>Agent</td><td class="mono">${esc(sm.agent)}</td></tr>
+      ${sm.benchmark ? `<tr><td>Judge</td><td class="mono">${esc(sm.judge)}</td></tr>` : ""}
+      <tr><td>People</td><td>${esc(human(sm.human_mode))}</td></tr>
+      <tr><td>Records</td><td>${esc(sm.records)}${sm.benchmark ? " (benchmark)" : ""}${sm.max_records ? ` · sample of ${sm.max_records}` : ""}</td></tr>
+      <tr><td>Budget</td><td>${usd(sm.budget_usd)}</td></tr>
+      <tr><td>Question</td><td class="small">${esc(trunc(sm.question, 220))}</td></tr></tbody></table>` : ""}
+    ${r.resolved ? `<details style="margin-top:12px"><summary>Resolved configuration (with includes and defaults)</summary><pre class="log" style="margin-top:8px;max-height:420px">${esc(r.resolved)}</pre></details>` : ""}`;
+}
+function changesTable(ch){
+  return `<div class="tw" style="border:1px solid var(--line);border-radius:10px;margin:8px 0;background:var(--surface)"><table><thead><tr><th>Setting</th><th>Started with</th><th>Config now</th></tr></thead><tbody>
+    ${ch.map(c => `<tr><td class="mono nowrap">${esc(c.key)}</td><td class="small">${esc(trunc(typeof c.old === "string" ? c.old : JSON.stringify(c.old), 300))}</td>
+      <td class="small">${esc(trunc(typeof c.new === "string" ? c.new : JSON.stringify(c.new), 300))}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function changesList(ch){   // narrow places: one block per setting
+  const v = x => esc(trunc(typeof x === "string" ? x : JSON.stringify(x), 260));
+  return `<div style="margin-top:8px">${ch.map(c => `<div style="border-top:1px solid var(--warn-line);padding:7px 0">
+    <div class="mono" style="font-weight:600">${esc(c.key)}</div><div class="small"><span class="mut">was</span> ${v(c.old)}</div><div class="small"><span class="mut">now</span> ${v(c.new)}</div></div>`).join("")}</div>`;
+}
+function lockedHtml(L){
+  if (!L || !L.length) return "";
+  return L.map(x => `<div class="callout warn" style="margin:10px 0 0">${ic("warn")}<div class="grow" style="min-width:0"><b>${esc(x.run.split("/").pop())}</b> has started.
+    Saving this changes settings that are fixed for it, so that review pauses until you accept the change (it is recorded and shown in the report) or set them back.${changesList(x.changes)}</div></div>`).join("");
+}
+function changedPanel(){
+  const N = NOCFG, inConfigs = /^configs\//.test(N.config || "");
+  const topicFile = N.config.replace(/[^/]+$/, "topic.yaml");
+  const files = [...(N.changes.some(c => c.key.startsWith("topic.")) ? [topicFile] : []), ...(N.changes.some(c => !c.key.startsWith("topic.")) ? [N.config] : [])];
+  return `<div class="callout warn" style="display:block">
+    <div class="row" style="gap:8px">${ic("warn")}<b>${esc(N.config)}</b> is paused: settings that define this review were changed after it started.</div>
+    <p class="small" style="margin:8px 0 0">Nothing runs and nothing is spent until you choose. Outputs so far followed the settings it started with.</p>
+    ${changesTable(N.changes)}
+    <div class="optcards" style="margin-top:12px">
+      <div class="optcard" style="cursor:default;flex-direction:column"><b>Set them back</b><span class="d">Edit the file back to the "started with" values; the review continues as it was.</span>
+        ${inConfigs ? `<div class="row" style="margin-top:8px;gap:6px">${files.map(f => `<button class="btn sm" data-p="${esc(f)}" onclick="go(editHash(this.dataset.p))">${ic("edit","sm")} Edit ${esc(f.split("/").pop())}</button>`).join("")}</div>` : ""}</div>
+      <div class="optcard" style="cursor:default;flex-direction:column"><b>Start a new run file</b><span class="d">A copy with the new settings starts a fresh review in its own runs/ folder. Set this file back to continue the original too.</span>
+        ${inConfigs ? `<button class="btn sm" style="margin-top:8px" onclick="dupConfig(NOCFG.config)">${ic("copy","sm")} Copy as a new run file</button>` : ""}</div>
+      <div class="optcard" style="cursor:default;flex-direction:column"><b>Accept the change</b><span class="d">Continue this review with the new settings. The change and your reason are recorded in provenance.jsonl, the report and every evaluation of this run.</span>
+        <textarea id="acc-reason" rows="2" style="margin-top:8px" placeholder="Why the settings changed (required)"></textarea>
+        <div class="row" style="margin-top:6px"><button class="btn sm primary" onclick="acceptConfig(this)">Accept and continue</button><span id="acc-msg" class="msg"></span></div></div>
+    </div></div>`;
+}
+async function acceptConfig(btn){
+  const reason = ($("#acc-reason").value || "").trim();
+  if (!reason) return msg("acc-msg", {ok:false, message:"Write a reason first"});
+  btn.disabled = true;
+  const r = await fetch("/api/config_accept?config=" + encodeURIComponent(NOCFG.config), {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({reason})})
+    .then(x => x.json()).catch(e => ({ok:false, error:String(e)}));
+  btn.disabled = false;
+  if (!r.ok) return msg("acc-msg", r);
+  toast(r.message || "Accepted");
+  location.href = "/?config=" + encodeURIComponent(NOCFG.config) + "#/steps";
+}
+async function saveConfig(force){
+  if (!CF.file) return;
+  const text = CF.text, btn = $("#ed-save"); if (btn) btn.disabled = true;
+  const r = await api("/api/config_save", {path:CF.path, text, mtime: force ? null : CF.file.mtime});
+  if (btn) btn.disabled = false;
+  const m = $("#ed-msg");
+  if (r.conflict) {
+    if (m) m.innerHTML = `<span class="err">${esc(r.message)}</span> <button class="btn sm danger" onclick="saveConfig(true)">Overwrite</button> <button class="btn sm" onclick="CF.dirty=false;openEditor(CF.path)">Reload</button>`;
+    return;
+  }
+  if (!r.ok) { if (m) msg(m, r); if (r.errors) { CF.chk = r; renderCheck(); } return; }
+  CF.file.text = text; CF.file.mtime = r.mtime; setDirty(CF.text !== text);
+  CF.chk = r; renderCheck(); CF.L = null;
+  const lk = (r.locked || [])[0];
+  if (m) m.innerHTML = lk ? `<span class="err">Saved. ${esc(lk.run.split("/").pop())} is paused until you accept or revert the change</span>
+      <button class="btn sm" data-p="${esc(lk.run)}" onclick="openConfig(this.dataset.p)">Accept or revert…</button>`
+    : r.errors && r.errors.length ? `<span class="err">Saved, with problems to fix</span>` : `<span class="saved">${ic("check","sm")} Saved</span>`;
+  toast("Saved " + CF.path + (S ? "; the open review uses it from now on" : ""));
+  if (S) refresh(true);
+}
+function revertConfig(){
+  if (!CF.file) return;
+  CF.text = CF.file.text; const ta = $("#ed"); if (ta) ta.value = CF.text;
+  setDirty(false); checkConfig();
+}
+
+/* new review / new run file */
+const NT_FIELDS = `study_design: Design, setting, sample size, comparator and follow-up.
+population: Who was studied (age, condition, severity).
+intervention [drug]: Drug or intervention, dose and regimen.
+comparator [drug]: Comparator or control.
+outcomes: Main results with numbers, units, timepoints and uncertainty.`;
+const NT_ROB = `randomization: Random sequence generation and allocation concealment.
+deviations: Deviations from the intended interventions.
+missing_data: Missing outcome data.
+measurement: Measurement of the outcome.
+selective_reporting: Selection of the reported result.`;
+function defaultModels(){ const m = (CF.L && CF.L.model_files) || []; return m.includes("gemini") ? "gemini" : m[0] || ""; }
+async function renderNewForm(){
+  if (!CF.L) { $("#v-configs").innerHTML = loadingCard("Reading configs…"); CF.L = await api("/api/configs"); }
+  if (tab !== "configs" || !["new-topic","new-run"].includes(CF.sub)) return;
+  if (CF.sub === "new-topic") {
+    if (!CF.nt) CF.nt = {key:"", question:"", seed_eligibility:"", source:"pubmed", maxdate:today(), pubmed_retmax:1000, records_file:"",
+      extraction_fields:NT_FIELDS, rob_tool_name:"RoB 2", rob_domains:NT_ROB, models:defaultModels(), human_mode:"human_in_the_loop",
+      fulltext_unclear:"include", budget_usd:10, contact_email:"", run_name:"run"};
+  } else {
+    const topics = CF.L.topics.filter(t => !t.template);
+    if (!CF.nr || (CF.arg && CF.nr.topic_path !== CF.arg)) CF.nr = {topic_path: CF.arg || (topics[0] || {}).path || "", name:"", named:false, models:defaultModels(),
+      human_mode:"human_in_the_loop", fulltext_unclear:"include", budget_usd:10, max_records:"", contact_email:""};
+  }
+  drawNewForm();
+}
+function nf(){ return CF.sub === "new-topic" ? CF.nt : CF.nr; }
+function setNf(k, v, redraw){ nf()[k] = v; if (CF.sub === "new-run" && k !== "name" && !CF.nr.named) CF.nr.name = ""; if (redraw) drawNewForm(); else nfPreview(); }
+function nrName(){
+  const r = CF.nr; if (r.named && r.name) return r.name;
+  return r.models.replace(/[^A-Za-z0-9_.-]+/g, "_") + "_" + (r.human_mode === "agent_only" ? "agentonly" : "humanloop") + (r.max_records ? "_n" + r.max_records : "");
+}
+function nfPreview(){
+  const el = $("#nf-path"); if (!el) return;
+  if (CF.sub === "new-topic") { const k = CF.nt.key || "<topic>"; el.innerHTML = `Writes <code>configs/review/${esc(k)}/topic.yaml</code> and <code>configs/review/${esc(k)}/${esc(CF.nt.run_name || "run")}.yaml</code>; outputs go to <code>runs/review/${esc(k)}/${esc(CF.nt.run_name || "run")}/</code>.`; }
+  else { const folder = CF.nr.topic_path.replace(/\/topic\.yaml$/, ""); const n = nrName(); el.innerHTML = folder ? `Writes <code>${esc(folder)}/${esc(n)}.yaml</code>; outputs go to <code>${esc(folder.replace(/^configs\//, "runs/"))}/${esc(n)}/</code>.` : ""; const ni = $("#nr-name"); if (ni && !CF.nr.named) ni.placeholder = n; }
+}
+function peopleFields(o){
+  const ao = o.human_mode === "agent_only";
+  return `<label>People</label><div><div class="seg">${[["human_in_the_loop","Human in the loop"],["agent_only","Agent-only"]].map(([v,l]) => `<button class="${o.human_mode===v?"on":""}" onclick="setNf('human_mode','${v}',true)">${l}</button>`).join("")}</div>
+      <div class="hint">${ao ? "The agent makes every judgment; people may only supply the full texts it asks for." : "You approve the protocol, decide unclear records, and confirm or correct the agent's work."}</div></div>
+    ${ao ? `<label>Still unclear after the full text</label><div><div class="seg">${[["include","Include (flagged)"],["exclude","Exclude"]].map(([v,l]) => `<button class="${o.fulltext_unclear===v?"on":""}" onclick="setNf('fulltext_unclear','${v}',true)">${l}</button>`).join("")}</div>
+      <div class="hint">No person decides in agent-only mode, so these records need a rule.</div></div>` : ""}
+    <label>Models</label><div><select onchange="setNf('models',this.value)">${(CF.L.model_files||[]).map(m => `<option ${o.models===m?"selected":""}>${esc(m)}</option>`).join("")}</select>
+      <div class="hint">A model setup from <code>configs/models/</code>. You can still pick another agent model on the Run page.</div></div>
+    <label>Budget</label><div><div class="field" style="max-width:180px"><span class="mut">$</span><input type="number" min="0" step="1" style="flex:0 1 120px" value="${esc(o.budget_usd)}" oninput="setNf('budget_usd',this.value)"></div>
+      <div class="hint">Hard cap for the whole run folder; the run stops cleanly when it is reached.</div></div>
+    <label>Contact email</label><div><input type="email" style="width:100%;max-width:360px" placeholder="you@example.org" value="${esc(o.contact_email)}" oninput="setNf('contact_email',this.value)">
+      <div class="hint">Sent to NCBI, Unpaywall and OpenAlex. Unpaywall needs it to find open-access full texts.</div></div>`;
+}
+function drawNewForm(){
+  const back = `<div class="crumbs"><a href="#/configs" onclick="event.preventDefault();go('#/configs')">Configs</a><span class="sep">/</span><span>${CF.sub === "new-topic" ? "New review" : "New run file"}</span></div>`;
+  let body;
+  if (CF.sub === "new-topic") {
+    const o = CF.nt;
+    body = `<div class="card"><div class="card-h"><div class="grow"><h2>What to review</h2><div class="sub">You can change all of this later in the topic file; the protocol the agent drafts from it is approved by you before screening.</div></div></div><div class="card-b"><div class="form">
+      <label>Topic folder</label><div><input style="width:100%;max-width:360px" placeholder="e.g. statins_dementia" value="${esc(o.key)}" oninput="this.value=this.value.replace(/[^A-Za-z0-9_-]/g,'_');setNf('key',this.value)">
+        <div class="hint">Short id: letters, digits and _ only.</div></div>
+      <label>Review question</label><div><textarea rows="3" placeholder="What is the effect of X on Y in Z?" oninput="setNf('question',this.value)">${esc(o.question)}</textarea></div>
+      <label>Eligibility criteria</label><div><textarea rows="6" placeholder="Include … Exclude …" oninput="setNf('seed_eligibility',this.value)">${esc(o.seed_eligibility)}</textarea>
+        <div class="hint">Plain words. The agent turns this into atomic inclusion and exclusion criteria.</div></div>
+      <label>Records</label><div><div class="seg">${[["pubmed","PubMed search"],["file","My own file (JSONL)"]].map(([v,l]) => `<button class="${o.source===v?"on":""}" onclick="setNf('source','${v}',true)">${l}</button>`).join("")}</div>
+        <div class="row" style="margin-top:10px">${o.source === "pubmed"
+          ? `<label class="small mut">Search end date <input style="width:130px" value="${esc(o.maxdate)}" oninput="setNf('maxdate',this.value)" placeholder="YYYY/MM/DD"></label>
+             <label class="small mut">Most records <input type="number" min="1" style="width:110px" value="${esc(o.pubmed_retmax)}" oninput="setNf('pubmed_retmax',this.value)"></label>`
+          : `<input style="flex:1;min-width:240px" placeholder="data/my_records.jsonl (from the project root)" value="${esc(o.records_file)}" oninput="setNf('records_file',this.value)">`}</div>
+        <div class="hint">${o.source === "pubmed" ? "The agent writes the PubMed query from the question and criteria." : "One JSON record per line (pmid, title, abstract, …)."}</div></div>
+    </div></div></div>
+    <div class="card"><div class="card-h"><div class="grow"><h2>What to extract and assess</h2><div class="sub">One per line, <code>name: description</code>. Add <code>[drug]</code> or <code>[disease]</code> after a name to check its terms in RxNorm, PubChem, ChEMBL or MONDO.</div></div></div><div class="card-b"><div class="form">
+      <label>Extraction fields</label><div><textarea class="mono" rows="6" oninput="setNf('extraction_fields',this.value)">${esc(o.extraction_fields)}</textarea></div>
+      <label>Risk-of-bias tool</label><div><input style="width:100%;max-width:360px" value="${esc(o.rob_tool_name)}" oninput="setNf('rob_tool_name',this.value)"></div>
+      <label>Its domains</label><div><textarea class="mono" rows="5" oninput="setNf('rob_domains',this.value)">${esc(o.rob_domains)}</textarea></div>
+    </div></div></div>
+    <div class="card"><div class="card-h"><div class="grow"><h2>How to run it</h2><div class="sub">The first run file of this topic. Add more later (other models or people mode) with New run file.</div></div></div><div class="card-b"><div class="form">
+      ${peopleFields(o)}
+      <label>Run file name</label><div><input style="width:200px" value="${esc(o.run_name)}" oninput="this.value=this.value.replace(/[^A-Za-z0-9_.-]/g,'_');setNf('run_name',this.value)"></div>
+    </div></div>
+    <div class="card-f"><button class="btn primary lg" onclick="createConfig(this)">${ic("check","sm")} Create review</button><span id="nf-path" class="hint grow"></span><span id="nf-msg" class="msg"></span></div></div>`;
+  } else {
+    const o = CF.nr, topics = CF.L.topics.filter(t => !t.template);
+    const t = topics.find(x => x.path === o.topic_path), bench = t && t.kind === "benchmark";
+    body = `<div class="card"><div class="card-h"><div class="grow"><h2>Run file</h2><div class="sub">Same topic, another way to run it. Each run file has its own outputs, cost and history.</div></div></div><div class="card-b"><div class="form">
+      <label>Topic</label><div><select style="width:100%;max-width:520px" onchange="setNf('topic_path',this.value,true)">${topics.map(x => `<option value="${esc(x.path)}" ${x.path===o.topic_path?"selected":""}>${esc(x.kind)} / ${esc(x.topic)}</option>`).join("")}</select>
+        ${t ? `<div class="hint">${esc(trunc(t.question, 240))}</div>` : `<div class="hint">No topics yet: start with New review.</div>`}</div>
+      ${peopleFields(o)}
+      ${bench ? `<label>Records to screen</label><div><input type="number" min="1" placeholder="all" style="width:120px" value="${esc(o.max_records)}" oninput="setNf('max_records',this.value)">
+        <div class="hint">Benchmark only: a sample that always keeps every known answer. Blank = all.</div></div>` : ""}
+      <label>Name</label><div><input id="nr-name" style="width:100%;max-width:420px" value="${esc(o.named ? o.name : "")}" placeholder="${esc(nrName())}" oninput="this.value=this.value.replace(/[^A-Za-z0-9_.-]/g,'_');CF.nr.named=!!this.value;setNf('name',this.value)">
+        <div class="hint">${bench ? "Benchmark runs are named <code>&lt;models&gt;_&lt;characteristic&gt;</code>." : "Leave blank for the suggested name."}</div></div>
+    </div></div>
+    <div class="card-f"><button class="btn primary lg" onclick="createConfig(this)" ${t ? "" : "disabled"}>${ic("check","sm")} Create run file</button><span id="nf-path" class="hint grow"></span><span id="nf-msg" class="msg"></span></div></div>`;
+  }
+  $("#v-configs").innerHTML = back + body;
+  nfPreview();
+}
+async function createConfig(btn){
+  const what = CF.sub === "new-topic" ? "topic" : "run";
+  const body = what === "topic" ? {what, ...CF.nt} : {what, ...CF.nr, name: nrName()};
+  btn.disabled = true;
+  const r = await api("/api/config_new", body);
+  btn.disabled = false;
+  if (!r.ok) { msg("nf-msg", r); return; }
+  toast("Created " + r.files.join(", "));
+  CF.created = r; CF.L = null;
+  if (what === "topic") CF.nt = null; else CF.nr = null;
+  go("#/configs");
+}
+window.addEventListener("beforeunload", e => { if (CF.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 /* ---------------- start ---------------- */
 document.addEventListener("keydown", e => {

@@ -1,7 +1,7 @@
 """Command-line interface.
 
   sragent run       --config C [--until STAGE] [--plan-only] [--fresh]
-  sragent ui        --config C [--port 8765]   (local web interface)
+  sragent ui        [--config C] [--port 8765] (local web interface; lists, edits and opens every run file)
   sragent pdfs      --config C [--list]       (process PDFs put in <run_dir>/fulltext/<rid>.pdf)
   sragent sync      --config C                (update outputs after human decisions)
   sragent status    --config C
@@ -12,6 +12,7 @@
   sragent eval      --config C [--suite all|screening|grounding|claim1|claim2|judge] [--n-cases N]
   sragent data      --synergy KEY            (download + resolve a SYNERGY benchmark dataset)
   sragent runs                              (every run file under configs/ with its status)
+  sragent accept-config --config C --reason "..."   (continue a started review whose fixed settings were edited)
   sragent local-endpoints --config C [--nodes N ... | --urls U ...] [--roles R ...] [--add] [--probe]
 """
 from __future__ import annotations
@@ -25,14 +26,37 @@ from .config import load_config
 from .context import Ctx
 
 
-def _ctx(args, fresh=False):
+def _ctx(args, fresh=False, check_config=True):
     over = {}
     if getattr(args, "budget", None) is not None:
         over["budget_usd"] = args.budget
     if getattr(args, "run_dir", None):
         over["run_dir"] = args.run_dir
     cfg = load_config(args.config, over)
-    return Ctx.create(cfg, fresh=fresh)
+    return Ctx.create(cfg, fresh=fresh, check_config=check_config)
+
+
+def cmd_accept_config(args):
+    """Accept edited review-defining settings on purpose; the change is recorded (config_lock.py)."""
+    from . import config_lock
+    ctx = _ctx(args, check_config=False)
+    rec = (ctx.store.meta.get("config_lock") or {}).get("values")
+    ch = config_lock.diff(rec, ctx.cfg) if rec else []
+    if not ch:
+        print("Nothing to accept: the config matches the settings this review started with.")
+        return
+    for c in ch:
+        print(f"  {c['key']}:\n    was: {config_lock.short(c['old'])}\n    now: {config_lock.short(c['new'])}")
+    if not args.yes:
+        try:
+            ok = input("Accept these changes for this review? They are recorded and shown in the report [y/N] ").strip().lower() == "y"
+        except EOFError:   # no terminal: only --yes accepts
+            ok = False
+        if not ok:
+            print("\nNot accepted (use --yes when there is no terminal to answer).")
+            return 1
+    config_lock.accept(ctx, args.reason)
+    print(f"Accepted and recorded in {ctx.run_dir / 'provenance.jsonl'}.")
 
 
 def cmd_run(args):
@@ -55,7 +79,7 @@ def cmd_rescreen(args):
 
 def cmd_ui(args):
     from .ui.server import serve
-    serve(args.config, host=args.host, port=args.port, open_browser=not args.no_browser)
+    serve(args.config, host=args.host, port=args.port, open_browser=not args.no_browser, configs_dir=args.configs)
 
 
 def cmd_pdfs(args):
@@ -85,22 +109,22 @@ def cmd_revalidate(args):
 def cmd_runs(args):
     """Every run file under configs/<benchmark|review>/ with what it would run and what runs/ holds for it."""
     from .config import is_benchmark, role_cfg
+    from .config_lock import pending
+    from .ui.configs import run_status
     root = Path(args.configs)
     files = sorted(p for kind in ("benchmark", "review") for p in (root / kind).rglob("*.yaml")
                    if p.name != "topic.yaml" and "_template" not in p.parts)
     rows = []
     for p in files:
-        cfg = load_config(p)
+        try:
+            cfg = load_config(p)
+        except Exception as e:   # one broken run file should not hide the others
+            rows.append((str(p.relative_to(root)), "?", "", "", "", f"does not load: {e}"[:90], ""))
+            continue
         rd = Path(cfg["run_dir"])
-        if not (rd / "store.json").exists():
-            status = "not started"
-        elif (rd / "report.md").exists():
-            status = "review done"
-        else:
-            status = "review in progress"
-        n_eval = len(list((rd / "eval" / "runs").glob("*/results.json")))
-        if n_eval:
-            status += f", evaluated {n_eval}x"
+        status = run_status(rd)
+        if pending(cfg, rd):
+            status += ", PAUSED: fixed settings changed (sragent accept-config)"
         a = role_cfg(cfg, "agent")
         rows.append((str(p.relative_to(root)), "benchmark" if is_benchmark(cfg) else "review",
                      f"{a['provider']}:{a['model']}", cfg["pipeline"]["human_mode"],
@@ -234,8 +258,9 @@ def main(argv=None):
     p = sub.add_parser("status"); common(p); p.set_defaults(fn=cmd_status)
     p = sub.add_parser("runs", help="list every run file under configs/ with its status")
     p.add_argument("--configs", default="configs"); p.set_defaults(fn=cmd_runs)
-    p = sub.add_parser("ui", help="open the local web interface")
-    common(p)
+    p = sub.add_parser("ui", help="open the local web interface (every run file under configs/ can be opened in it)")
+    p.add_argument("--config", default=None, help="run file to open first (default: choose one on the Configs page)")
+    p.add_argument("--configs", default=None, help="configs folder (default: the one --config is in, else ./configs)")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--no-browser", action="store_true")
@@ -312,8 +337,26 @@ def main(argv=None):
     from .local import cli_endpoints
     p.set_defaults(fn=cli_endpoints)
 
+    p = sub.add_parser("accept-config", help="continue a started review whose review-defining settings were edited")
+    common(p)
+    p.add_argument("--reason", required=True, help="why the settings changed (recorded and shown in the report)")
+    p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    p.set_defaults(fn=cmd_accept_config)
+
     args = ap.parse_args(argv)
-    args.fn(args)
+    from .config_lock import ConfigChanged
+    try:
+        return args.fn(args)
+    except ConfigChanged as e:
+        print("sragent: " + str(e), file=sys.stderr)
+        for c in e.changes:
+            print(f"  {c['key']}:\n    started with: {_short(c['old'])}\n    config now:   {_short(c['new'])}", file=sys.stderr)
+        return 2
+
+
+def _short(v):
+    from .config_lock import short
+    return short(v)
 
 
 if __name__ == "__main__":

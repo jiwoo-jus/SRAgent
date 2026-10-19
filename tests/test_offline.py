@@ -253,9 +253,11 @@ def test_ui_app_state_and_estimate(tmp_path):
     flash = next(x for x in m["api"] if x["id"] == "gemini-3.8-flash")   # from the model setup files
     assert flash["input_per_m"] == 0.75 and "agent" in flash["roles"]
     assert m["local"]["endpoints"] == 1 and m["local"]["models"] == ["auto"]
-    job = yaml.safe_load(app._write_job_config({"agent": {"provider": "local", "model": "auto"}}).read_text())
+    job = yaml.safe_load(app._write_job_config({"action": "rerun", "agent": {"provider": "local", "model": "auto"}}).read_text())
     assert job["local"]["endpoints_file"] == str((tmp_path / "local_endpoints.yaml").resolve())
-    assert job["roles"]["agent"]["provider"] == "local"
+    assert job["job_agent"]["provider"] == "local"     # a model picked for one re-run: this job only
+    job = yaml.safe_load(app._write_job_config({"action": "run", "agent": {"provider": "local", "model": "auto"}}).read_text())
+    assert "job_agent" not in job and "agent" not in (job.get("roles") or {})   # pipeline jobs follow stage_models
     r = app.answer({"todo_id": "protocol", "option": "approve"})
     assert r["ok"]
 
@@ -425,3 +427,109 @@ def test_citation_chasing(tmp_path, monkeypatch):
     res = snowball.snowball(ctx, ctx.store.get("protocol")["data"])
     assert res["added"] == 1 and ctx.store.get(f"screen:{ctx.store.meta['snowball']['added'][0]}")
     assert ctx.store.meta["found_via"][ctx.store.meta["snowball"]["added"][0]] == ["citation"]
+
+
+def test_config_lock(tmp_path):
+    """Review-defining settings are fixed once a review has started; a change must be accepted on purpose."""
+    import copy
+
+    import pytest
+    import yaml
+    from sragent import config_lock, pipeline, provenance
+    from sragent.stages.report import report_html, report_markdown
+    from sragent.ui.server import App
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    assert ctx.store.meta["config_lock"]["values"]["pipeline.human_mode"] == "human_in_the_loop"
+    cfg = copy.deepcopy(ctx.cfg)
+    cfg["budget_usd"], cfg["contact_email"] = 3.0, "me@example.org"      # free to change at any time
+    Ctx.create(cfg, mock_fn=mock_fn)
+    cfg["topic"]["extraction_fields"] = cfg["topic"]["extraction_fields"] + [{"name": "new_field", "description": "x"}]
+    cfg["pipeline"]["human_mode"], cfg["pipeline"]["fulltext_unclear"] = "agent_only", "include"
+    with pytest.raises(config_lock.ConfigChanged) as e:
+        Ctx.create(cfg, mock_fn=mock_fn)
+    keys = {"topic.extraction_fields", "pipeline.human_mode", "pipeline.fulltext_unclear"}
+    assert {c["key"] for c in e.value.changes} == keys
+    assert {c["key"] for c in config_lock.pending(cfg, ctx.run_dir)} == keys     # read from store.json's head
+
+    # the web interface: the run refuses to load, then is accepted with a reason
+    cfgp = tmp_path / "ui.yaml"
+    ui = {k: v for k, v in cfg.items() if not k.startswith("_")}
+    ui["models_dir"] = "models"
+    (tmp_path / "models").mkdir()
+    cfgp.write_text(yaml.safe_dump(ui))
+    app = App(str(cfgp))
+    with pytest.raises(config_lock.ConfigChanged):
+        app.ctx()
+    assert not app.accept_config("")["ok"]                                    # a reason is required
+    r = app.accept_config("added a field the protocol needed")
+    assert r["ok"] and {c["key"] for c in r["changes"]} == keys
+    c2 = app.ctx()                                                             # continues with the new settings
+    assert config_lock.pending(cfg, ctx.run_dir) == []
+    assert provenance.summary(c2)["config_changes"] == {"n": 1, "keys": sorted(keys)}
+    assert "Changes to the review settings after the start" in report_markdown(c2)
+    assert "Table D0." in report_html(c2)
+
+
+def test_stage_models(tmp_path):
+    """Each stage uses its own model and effort; a stage's model is fixed once that stage has started."""
+    import copy
+
+    import pytest
+    from sragent import config_lock, pipeline
+    from sragent.estimate import estimate_stages
+    big = {"model": "mock-big", "reasoning_effort": "high", "pricing": {"input_per_m": 2.0, "output_per_m": 10.0}}
+    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"plan": big, "extract": {**big, "reasoning_effort": "medium"}}})
+    pipeline.run(ctx, until="fulltext")
+    rows = [json.loads(line) for line in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
+    by_tag = {}
+    for r in rows:
+        by_tag.setdefault(r["tag"].split("_rerun")[0], set()).add(r["model"])
+    assert by_tag["plan"] == {"mock-big"} and by_tag["screen_title_abstract"] == {"mock"}
+    rec = ctx.store.meta["config_lock"]["values"]
+    assert rec["stage_models.plan"]["model"] == "mock-big" and "stage_models.extract" not in rec   # not started yet
+
+    cfg = copy.deepcopy(ctx.cfg)                                    # a stage that has not started: free to change
+    cfg["stage_models"]["extract"] = {**big, "reasoning_effort": "low"}
+    cfg["stage_models"]["rob"] = {"reasoning_effort": "medium"}
+    c2 = Ctx.create(cfg, mock_fn=mock_fn)
+    c2.quiet = True
+    est = estimate_stages({"extract": 2, "rob": 2}, cfg)
+    assert {r["stage"]: (r["model"], r["effort"]) for r in est["rows"]} == {"extract": ("mock-big", "low"), "rob": ("mock", "medium")}
+    pipeline.run(c2)
+    rows = [json.loads(line) for line in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
+    assert {r["model"] for r in rows if r["tag"] == "extract"} == {"mock-big"}
+    assert {r["model"] for r in rows if r["tag"] == "rob"} == {"mock"}
+    assert c2.store.meta["config_lock"]["values"]["stage_models.extract"]["reasoning_effort"] == "low"
+
+    cfg3 = copy.deepcopy(cfg)                                       # a started stage: fixed
+    cfg3["stage_models"]["screen"] = {"reasoning_effort": "high"}
+    with pytest.raises(config_lock.ConfigChanged) as e:
+        Ctx.create(cfg3, mock_fn=mock_fn)
+    assert [c["key"] for c in e.value.changes] == ["stage_models.screen"]
+    from sragent.stages.report import report_markdown
+    assert "mock-big (high effort): protocol" in report_markdown(c2)
+
+
+def test_rescreen_keeps_records_waiting_for_full_text(tmp_path):
+    """Re-applying a protocol never includes a record without a full-text review; it can still exclude it."""
+    import copy
+
+    from sragent import pipeline
+    from sragent.stages import screening
+    ctx = make_ctx(tmp_path, fulltexts=("1001",))          # 1002 and 1003 have no full text
+    pipeline.run(ctx, until="fulltext")
+    st = ctx.store
+    waiting = sorted(n["id"] for n in st.by_type("screen") if n["data"]["stage"] == "retrieval")
+    assert waiting == ["screen:1002", "screen:1003"]
+    protocol = st.get("protocol")["data"]
+    screening.rescreen_rule_only(ctx, protocol)
+    assert st.included_ids() == ["1001"]
+    assert all(st.get(w)["data"]["decision"] == "fulltext_unavailable" for w in waiting)
+    p2 = copy.deepcopy(protocol)                            # a revised protocol that rules them out
+    ta = next(c for c in p2["criteria"] if c["type"] == "inclusion" and c.get("stage", "title_abstract") == "title_abstract")
+    ta["type"] = "exclusion"                                 # 'met' now means excluded
+    screening.rescreen_rule_only(ctx, p2)
+    for w in waiting:
+        d = st.get(w)["data"]
+        assert (d["decision"], d["stage"]) == ("exclude", "title_abstract") and ta["id"] in d["because"]

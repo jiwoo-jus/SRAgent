@@ -36,9 +36,9 @@ python -m pip install -e ".[dev]"
 cp api_env.example.yaml api_env.yaml  # your keys; never commit this file
 pytest -q tests/                      # offline tests with a mock LLM (no cost)
 
-# a real review (no known answer): copy the template, fill in topic.yaml, open it in the web interface
-cp -r configs/review/_template configs/review/<your_topic>
-sragent ui --config configs/review/<your_topic>/run.yaml          # opens http://127.0.0.1:8765
+# the web interface: the Configs page opens any run file and sets up a new review (New review form)
+sragent ui                                                         # opens http://127.0.0.1:8765
+sragent ui --config configs/review/<your_topic>/run.yaml          # or open one run file directly
 
 # the benchmark (known answer): the main results of section 11.0
 sragent run    --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml
@@ -67,6 +67,8 @@ SRAgent/
   configs/                       see configs/README.md
     models/                      WHICH LLMs do the work (agent, judge, reviewer, judge2)
       gemini.yaml                  Gemini for every role
+      claude-haiku-5-5_claude-sonnet-5-5_gemma-4-31b-it.yaml
+                                   Claude: Haiku agent, Sonnet judge, Gemma second judge
       local.yaml                   your own vLLM servers (endpoint pool settings; servers in local_endpoints.yaml)
     benchmark/                   topics WITH a known answer: measure the agent (`sragent eval`)
       emicizumab_pk/
@@ -75,9 +77,10 @@ SRAgent/
     review/                      topics WITHOUT a known answer: real reviews
       _template/                   topic.yaml + run.yaml to copy
   sragent/
-    llm.py         provider layer (openai | gemini | local | mock), disk cache, cost tracker, budget
+    llm.py         provider layer (openai | gemini | anthropic | local | mock), per-stage agent clients, disk cache, cost tracker, budget
     local.py       reloadable vLLM endpoint pool, managed SSH tunnels, `sragent local-endpoints`
-    config.py      config loading with `include:` layering, DEFAULTS (every key), key loading from api_env.yaml
+    config.py      config loading with `include:` layering, DEFAULTS (every key), stage_models, key loading from api_env.yaml
+    config_lock.py review-defining settings (and each started stage's model) fixed once a review has started
     context.py     the run context (config, run folder, store, LLM clients)
     store.py       ReviewStore = versioned nodes + dependency graph + change log
     evidence.py    sentence segmentation and located evidence (ids -> section + offsets), section-aware packing
@@ -97,7 +100,7 @@ SRAgent/
     estimate.py    cost estimate of the remaining work per model
     pdf.py         PDF -> page-marked text
     docparse.py    full-text parsing: Azure Content Understanding, pdftotext, page images, supplements
-    ui/            local web interface (server.py, steps.py, static/index.html)
+    ui/            local web interface (server.py, configs.py: the Configs page, steps.py, static/index.html)
     cli.py         command line
     eval/          run_all (one evaluation run), screening_eval, stagewise, grounding_eval, synthesis_eval,
                    inject, claim1, claim2, judge_validation, stats, common
@@ -124,7 +127,7 @@ Python 3.10+ works. Dependencies are small (openai, pyyaml, requests, rapidfuzz,
 
 ### 3.2 API keys
 
-Keys are read from `api_env.yaml`, never from the configs. The model files point to it with `api_env: ../../api_env.yaml` (paths in a config file are relative to that file, so the file sits in the project root). The loader tolerates the mixed `key: "value"` and `KEY= value` lines in your file. Environment variables `OPENAI_API_KEY`, `GEMINI_API_KEY`, `LOCAL_API_KEY` override the file. `api_env.example.yaml` lists the keys.
+Keys are read from `api_env.yaml`, never from the configs. The model files point to it with `api_env: ../../api_env.yaml` (paths in a config file are relative to that file, so the file sits in the project root). The loader tolerates the mixed `key: "value"` and `KEY= value` lines in your file. Environment variables `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `LOCAL_API_KEY` override the file. `api_env.example.yaml` lists the keys.
 
 Add `api_env.yaml` to `.gitignore` (already done in this repo). Other keys read from the same file:
 
@@ -255,9 +258,13 @@ Other SYNERGY reviews (26 in total) can be used by changing `records.synergy_key
 ### 7.1 The web interface (recommended)
 
 ```bash
-sragent ui --config configs/review/<your_topic>/run.yaml      # opens http://127.0.0.1:8765
-# on OSC or a remote machine:  sragent ui --config ... --no-browser, then  ssh -N -L 8765:localhost:8765 <host>
+sragent ui                                                    # opens http://127.0.0.1:8765 on the Configs page
+sragent ui --config configs/review/<your_topic>/run.yaml      # or straight into one run file
+# on OSC or a remote machine:  sragent ui --no-browser --port <free port>, then
+#   ssh -N -L <port>:localhost:<port> <user>@<the same login node>   (or VS Code's Ports panel)
 ```
+
+The **Configs** page lists every run file under `configs/` with its models, people mode, status and spend; click one to open that review (the address carries it: `/?config=<run file>`, so several reviews can be open in different tabs). It also lists the topic files and model setups, edits any of them with a check on every change (a run file is loaded with its includes, as `sragent run` would), and creates a new review (a topic folder with its `topic.yaml` and first run file) or another run file for a topic from a short form. Jobs from all open run files share one queue: one job runs at a time. A review whose fixed settings were edited after it started opens on a panel that shows the changes, with three ways on: set them back, copy as a new run file, or accept the change with a reason (configs/README.md, rule 6).
 
 It runs on your machine only (standard library web server, no extra install, no external scripts or fonts). A sidebar shows the run, its review question, the human-involvement mode, the cost so far and any running job (with **Stop**); on a phone it folds into a menu. Every view has its own address (`#/todo`, `#/studies/<rid>`, ...), so the browser's back button, reloads and bookmarks work. Light and dark themes follow the system setting; the button next to the cost overrides it. Every page starts with one **Next step** banner that says, in plain words, the single most useful thing to do now, with a button that takes you there. You never have to work out the order yourself.
 
@@ -265,7 +272,7 @@ It runs on your machine only (standard library web server, no extra install, no 
 |---|---|
 | **Overview** | The Next step banner, the record counts (records, included, pending, excluded, spent; click one to open those studies), then the review pipeline: one row per step with its status (`done`, `to do`, `needs you`), a summary, **Review** (its to-do items) and **Run to here**. |
 | **To-do** | Everything that needs you, in the order you should do it, with jump links to each section. Repetitive decisions are tables with pre-filled suggestions and one Save button, not one card each (see below). |
-| **Run** | What to run (continue the review up to a stage, process added PDFs, update outputs after your decisions, or an evaluation suite), the **agent model** (API models with their list price per 1M tokens; local models from the endpoint list of section 4, free), reasoning effort, max records and a **spending cap**. A cost estimate for exactly that choice updates live beside the **Run** button. **Test model** makes one tiny call. **Run** starts a background job with a live log; **Stop** ends it cleanly. For a real review (no known answer) the record cap and the evaluation are not offered. |
+| **Run** | What to run (continue the review up to a stage, process added PDFs, update outputs after your decisions, or an evaluation suite), the **model and reasoning effort per stage** (API models with their list price per 1M tokens; local models from the endpoint list of section 4, free), saved in the run file as `stage_models` and fixed for a stage once it has started; max records and a **spending cap**. A cost estimate for exactly that choice updates live beside the **Run** button. **Test model** makes one tiny call. **Run** starts a background job with a live log; **Stop** ends it cleanly. For a real review (no known answer) the record cap and the evaluation are not offered. |
 | **Studies** | Every record with its current status (included / pending / excluded, and by whom: agent, rule or you), the reason, source used, open flags, RoB, which synthesis statements cite it and comments. Filter, search, copy the PMIDs of what is shown, download the table (CSV) or everything (JSON). A box to comment on the whole review. Click a row for the **study page** (7.1b). |
 | **Full texts** | A copyable, comma-separated **PMID list** with **Open in PubMed**, DOIs for records without a PMID, the folder path, the file name for each study (`<PMID>.pdf`), and **Process added PDFs**. Per study: "decide without it" or "not obtainable". |
 | **Activity** | The global history. **LLM jobs**: every agent task started from the interface (runs, re-runs, comments sent to the agent, updates after your edits) with status (queued, running, done, failed, cancelled), model, cost, duration and the full log; queued jobs can be cancelled. **Agent proposals** (all change sets, accept / reject the open ones), **Comments**, **Your decisions**, **Change history** (every version of every output, filter by agent / you / rules or by output id, CSV download) and **LLM calls by stage**. |
@@ -287,9 +294,11 @@ What the To-do page contains, top to bottom
 
 Decisions stay in sync: excluding a study removes it from the PMID list and from risk of bias immediately; "Update now" (or the to-do that appears after any change) brings extraction and synthesis in line.
 
-Screenshots of the main results (`benchmark/emicizumab_pk/gemini_agentonly`, agent-only): `docs/ui_steps.png` (Overview), `docs/ui_todo.png` (in agent-only mode the to-do list only asks for full texts), `docs/ui_fulltexts.png`, `docs/ui_run.png`, `docs/ui_studies.png`, `docs/ui_study_page.png`, `docs/ui_activity.png`. The eligibility and risk-of-bias tables appear only in human-in-the-loop mode; `docs/ui_todo_eligibility.png` and `docs/ui_todo_rob.png` show them on a copy of the same review opened that way.
+Screenshots of the main results (`benchmark/emicizumab_pk/gemini_agentonly`, agent-only): `docs/ui_steps.png` (Overview), `docs/ui_todo.png` (in agent-only mode the to-do list only asks for full texts), `docs/ui_fulltexts.png`, `docs/ui_run.png`, `docs/ui_studies.png`, `docs/ui_study_page.png`, `docs/ui_activity.png`, `docs/ui_configs.png` (the Configs page) and `docs/ui_config_editor.png` (editing the run file, with its check). In `docs/ui_run.png` every stage is marked "fixed: stage started" because this review is finished. The eligibility and risk-of-bias tables appear only in human-in-the-loop mode; `docs/ui_todo_eligibility.png` and `docs/ui_todo_rob.png` show them on a copy of the same review opened that way.
 
 ![Overview](docs/ui_steps.png)
+
+![Configs: every run file, topic and model setup](docs/ui_configs.png)
 
 ![To-do: eligibility table (human in the loop)](docs/ui_todo_eligibility.png)
 
@@ -334,18 +343,19 @@ All writes are serialized: while a job is running, your answers, edits and comme
 
 ### 7.3 Command line
 
-All commands take `--config`. `--budget` and `--run-dir` override the config.
+Commands that work on one review take `--config` (`ui` optionally). `--budget` and `--run-dir` override the config. If a review's fixed settings were edited after it started, every command stops before any LLM call and lists the changes (exit code 2).
 
 | Command | What it does |
 |---|---|
 | `sragent run --config C [--until STAGE] [--plan-only] [--fresh]` | Runs the pipeline. Resumable: finished work is skipped. `--plan-only` stops after writing `protocol.yaml` for you to edit. |
 | `sragent rescreen --config C` | After editing `protocol.yaml`, re-derives every eligibility decision from the stored criterion assessments. **No LLM calls.** |
 | `sragent revalidate-terms --config C` | Re-runs DB term validation on stored extractions. No LLM calls. |
-| `sragent ui --config C [--port 8765] [--no-browser]` | Opens the web interface (7.1). |
+| `sragent ui [--config C] [--configs DIR] [--port 8765] [--no-browser]` | Opens the web interface (7.1); without `--config` it starts on the Configs page. |
+| `sragent accept-config --config C --reason "..." [--yes]` | Continues a review whose fixed settings were edited after it started; the change and the reason are recorded in `provenance.jsonl`, the report and every evaluation of the run. |
 | `sragent pdfs --config C [--list]` | Processes PDFs added to `runs/<name>/fulltext/` (7.2); `--list` writes and prints the wanted file names. |
 | `sragent sync --config C` | Updates extraction, RoB and synthesis after human eligibility decisions (dependency-aware). |
 | `sragent status --config C` | PRISMA counts, node counts, open flags, pending change sets, cost. |
-| `sragent runs` | Every run file under `configs/` with its models, people mode, records and the state of its outputs (not started, review done, evaluated). |
+| `sragent runs` | Every run file under `configs/` with its models, people mode, records and the state of its outputs (not started, review done, evaluated, paused because fixed settings changed). |
 | `sragent feedback --config C --text "..." [--target NODE] [--pmid PMID] [--accept] [--local-edit] [--no-verify]` | Handles one piece of feedback. Without `--target` the agent locates it. `--pmid` adds a paper. Without `--accept` you get a proposal to review. |
 | `sragent rerun --config C --rid ID --step screen\|extract\|rob [--note "..."] [--no-propagate] [--cached]` | Re-runs one agent step for one study and proposes the result plus the dependent revisions (7.1b). Asks the model again unless `--cached`. |
 | `sragent propagate --config C --node ext:ID [--from-version N] [--note "..."]` | After a manual edit, proposes revisions of the outputs that depend on it. |
@@ -386,14 +396,14 @@ A run is one file in `configs/<benchmark|review>/<topic>/` that includes the fol
 
 **Your own full texts.** `runs/<name>/fulltext/<id>.pdf` or `<id>.txt` (section 7.2); they take precedence over Europe PMC.
 
-**Model list for the UI.** The Run tab offers every API model named in `configs/models/*.yaml` (with the price written there and the roles the file gives it) plus the local endpoint list (section 4). To offer another model, add it to a model file.
+**Model list for the UI.** The Run tab offers every API model named in `configs/models/*.yaml` (with the price written there and the roles the file gives it) plus the local endpoint list (section 4), for each stage (`stage_models`, configs/README.md). To offer another model, add it to a model file.
 
 ### 8.2 Outputs (in `run_dir`)
 
 | File | Content |
 |---|---|
 | `protocol.yaml` | editable protocol (human checkpoint) |
-| `store.json` | every node with `data`, `evidence`, `depends_on`, `status`, `version`, `history`, `flags` |
+| `store.json` | every node with `data`, `evidence`, `depends_on`, `status`, `version`, `history`, `flags`; `meta.config_lock` (the fixed settings and each started stage's model) and `meta.config_changes` (accepted changes) |
 | `store_changelog.jsonl` | every create, update, status change and flag, with actor and reason |
 | `report.md` | report-only view (methods, PRISMA counts, excluded-with-reasons table, study table, RoB table, synthesis, references) |
 | `report_evidence.html` | evidence-linked view, laid out as a formal review document (PRISMA 2020 / Cochrane conventions; prints to A4): status notice, structured summary, methods (PICO, criteria, search, selection, data items, quality domains), PRISMA 2020 flow diagram, numbered tables of study characteristics, results and quality judgements (traffic-light table and summary figure), synthesis with numbered Vancouver citations, references, and appendices with the evidence (statements with links to cited studies and self-check results, each extracted value with its located sentences (click to open the numbered source with the sentence highlighted), DB ids, RoB rationales and evidence, populations of the studies each statement cites, criterion-level decisions for every record, open flags, revision history, feedback boxes) |
@@ -461,7 +471,7 @@ These rules apply to every evaluation from now on (`sragent eval`, code in `srag
 | `agent_only` | only supply the full texts the agent requested (or say one cannot be obtained). Every judgment and revision is the agent's. The interface shows only the PDF list; judgment actions are refused. |
 | `human_in_the_loop` | additionally decide eligibility, edit content, confirm RoB, approve or reject proposals, send feedback |
 
-Every human input goes to `<run_dir>/provenance.jsonl` with a category: `pdf_provision` (file name, size, sha256, or "not obtainable") or `human_judgment` (decision, edit, approval, feedback, re-run request), plus `annotation` for comments that change nothing. Each evaluation run records both counts separately and whether the condition was respected.
+Every human input goes to `<run_dir>/provenance.jsonl` with a category: `pdf_provision` (file name, size, sha256, or "not obtainable") or `human_judgment` (decision, edit, approval, feedback, re-run request), plus `annotation` for comments that change nothing and `config_change` for review-defining settings changed after the start and accepted on purpose. Each evaluation run records both counts separately and whether the condition was respected.
 
 **2. Final inclusion only after a full-text review** (both conditions). Title/abstract screening only excludes or forwards. Every forwarded record is retrieved and screened on its full text. If no full text can be obtained automatically, only those records are requested (`fulltext/needed_pdfs.csv`: file name, PMID, DOI, reason) and PDFs put in that folder are processed. Four outcomes are always kept apart: **not retrieved**, **unreadable file**, **undecided** after the full text, **excluded** as ineligible. A person cannot include a study without a full text either.
 
@@ -687,6 +697,7 @@ What was done to save budget, and what it bought.
 
 * **Caching.** Every LLM and HTTP call is cached on disk (`.cache/`). Re-running a stage, rendering reports or re-scoring an evaluation costs nothing.
 * **Reasoning effort.** The biggest single saving. With Gemini's default thinking, title/abstract screening used about 1,700 output tokens per record ($1.78 for 247 records). `reasoning_effort: low` cuts thinking tokens about 7-fold, and every later v2 stage together (full-text screening of 139 records, extraction, RoB, synthesis) cost $0.58. Keep `low` for routine stages; give the judge `low` or `medium`.
+* **Model per stage.** `stage_models` (configs/README.md, or the Run tab) gives each stage its own model and effort, so a stronger model can go where errors cost most (protocol, search, full-text screening, extraction, synthesis) while the high-volume title/abstract screening stays on a cheap one. The cost estimate prices each stage with its own model.
 * **Sizing.** `pipeline.max_records` caps screening; `eval.*` sets the number of error sets, repeats and cases. v1 used the smallest useful sizes; v2 used moderate ones for about $3.5 of evaluation.
 * **Budget guard.** `budget_usd` is cumulative per run directory and stops the run cleanly; finished work is saved.
 * **Fair per-task costs.** Change sets report `cost_usd_uncached` (what the calls would cost without the cache), so cached calls do not make a condition look free.
@@ -714,7 +725,8 @@ What was done to save budget, and what it bought.
 
 | Symptom | Fix |
 |---|---|
-| `No API key for provider` | check the `api_env` path in the model file (`configs/models/`), or set `OPENAI_API_KEY` / `GEMINI_API_KEY` |
+| `No API key for provider` | check the `api_env` path in the model file (`configs/models/`), or set `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` |
+| `settings that define this review were changed after it started` | set the listed settings back, make a new run file for the new design, or `sragent accept-config --config C --reason "..."` (or Accept in the web interface) |
 | `account/key problem, not retrying` (insufficient_quota) | add credit or switch the role to another provider (e.g. use `configs/models/gemini.yaml`) |
 | `Budget ... exhausted` | raise `budget_usd`; finished work is saved, rerun resumes |
 | `Waiting for an available endpoint` | check the servers with `sragent local-endpoints --config C --probe`; register the running ones with `--nodes` or `--urls` |

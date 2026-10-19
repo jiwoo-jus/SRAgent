@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import load_secrets, role_cfg
+from .config import deep_merge, load_secrets, role_cfg, stage_cfg
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 JSON_ONLY = "Reply with a single JSON object only, without code fences or commentary."
@@ -165,9 +165,9 @@ def parse_json(text: str) -> Any:
 
 class LLM:
     def __init__(self, cfg: dict, role: str, tracker: CostTracker, cache: DiskCache | None,
-                 mock_fn: Callable[[list[dict], str], str] | None = None, local_pool=None):
-        self.role = role
-        self.c = role_cfg(cfg, role)
+                 mock_fn: Callable[[list[dict], str], str] | None = None, local_pool=None, c: dict | None = None):
+        self.role = role                     # e.g. agent, judge, or agent@extract (a stage's own model)
+        self.c = c if c is not None else role_cfg(cfg, role)
         self.provider = self.c["provider"]
         if self.provider not in {"openai", "gemini", "anthropic", "local", "mock"}:
             raise ValueError(f"Unsupported API provider: {self.provider}")
@@ -441,15 +441,28 @@ class LLMHub:
         self._client_lock = threading.Lock()
 
     def __getitem__(self, role: str) -> LLM:
+        return self._client(role, None)
+
+    def _client(self, role: str, c: dict | None) -> LLM:
         with self._client_lock:
             if role not in self._clients:
-                if role_cfg(self.cfg, role)["provider"] == "local" and self._local_pool is None:
+                if (c or role_cfg(self.cfg, role))["provider"] == "local" and self._local_pool is None:
                     from .local import LocalPool
                     self._local_pool = LocalPool(self.cfg)
-                client = LLM(self.cfg, role, self.tracker, self.cache, self.mock_fn, self._local_pool)
+                client = LLM(self.cfg, role, self.tracker, self.cache, self.mock_fn, self._local_pool, c=c)
                 client.cache_read = self.cache_read
                 self._clients[role] = client
             return self._clients[role]
+
+    def agent_for(self, stage: str | None) -> LLM:
+        """The agent client for one pipeline stage (stage_models). job_agent, a model a person picked for one
+        job (a re-run or feedback from the web interface), is used for every call of that job instead."""
+        if self.cfg.get("job_agent"):
+            return self._client("agent@job", deep_merge(role_cfg(self.cfg, "agent"), self.cfg["job_agent"]))
+        c = stage_cfg(self.cfg, stage)
+        if c == role_cfg(self.cfg, "agent"):
+            return self["agent"]
+        return self._client(f"agent@{stage}", c)
 
     def close(self):
         if self._local_pool is not None:

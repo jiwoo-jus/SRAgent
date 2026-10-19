@@ -24,6 +24,10 @@ DEFAULTS = {
     "synthesis_verify": (10000, 60, 1500),
     "feedback": (12000, 1200, 4000),
 }
+# estimate rows -> pipeline stage whose model does that work (stage_models)
+ROW_STAGE = {"plan": "plan", "search": "search", "screen_title_abstract": "screen", "screen_full_text": "fulltext",
+             "extract": "extract", "rob": "rob", "synthesis": "synthesize", "synthesis_verify": "synthesize",
+             "feedback": "feedback"}
 FORWARD_RATE = 0.56     # share of records forwarded past title/abstract (v2)
 INCLUDE_RATE = 0.09     # share of records finally included (v2)
 N_STATEMENTS = 7
@@ -99,11 +103,35 @@ def estimate(calls: dict, model: str, pricing: dict, effort: str | None, hist: d
         h = hist.get((stage, model)) or {}
         h_any = hist.get((stage, "*")) or {}
         tin = h.get("in") or h_any.get("in") or d_in
-        tout = d_low if effort == "low" else d_def
+        tout = out_tokens(stage, effort)
         src = "your past runs" if h else ("past runs (other model)" if h_any else "defaults")
         usd = n * (tin * pricing.get("input_per_m", 0) + tout * pricing.get("output_per_m", 0)) / 1e6
         total += usd
         rows.append({"stage": stage, "calls": n, "in_per_call": int(tin), "out_per_call": int(tout),
                      "usd": round(usd, 3), "source": src})
     return {"model": model, "rows": rows, "total_usd": round(total, 2),
+            "range_usd": [round(total * 0.6, 2), round(total * 1.6, 2)]}
+
+
+def out_tokens(stage: str, effort: str | None) -> float:
+    """Output tokens per call (thinking included) for a reasoning effort."""
+    _, low, dflt = DEFAULTS[stage]
+    return {"low": low, "medium": (low + dflt) / 2, "high": dflt, "xhigh": dflt * 1.5, "max": dflt * 2}.get(effort or "", dflt)
+
+
+def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None) -> dict:
+    """Like estimate(), with each stage's own model, price and effort (stage_models)."""
+    from .config import stage_cfg
+    rows, total = [], 0.0
+    for stage, n in calls.items():
+        if not n:
+            continue
+        c = stage_cfg(cfg, ROW_STAGE.get(stage, "feedback"))
+        e = estimate({stage: n}, c.get("model"), c.get("pricing") or {}, c.get("reasoning_effort"), hist)
+        for r in e["rows"]:
+            r["model"], r["effort"] = c.get("model"), c.get("reasoning_effort") or "default"
+            rows.append(r)
+            total += r["usd"]
+    models = sorted({r["model"] for r in rows})
+    return {"model": models[0] if len(models) == 1 else "per stage", "rows": rows, "total_usd": round(total, 2),
             "range_usd": [round(total * 0.6, 2), round(total * 1.6, 2)]}
