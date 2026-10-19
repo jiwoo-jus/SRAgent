@@ -171,33 +171,124 @@ def sources_text(ctx: Ctx, rids: list[str] | None = None, max_chars: int = 6000)
 
 
 # --------------------------------------------------------------------------- HTML
+# The evidence-linked report as a formal review document (PRISMA 2020 / Cochrane conventions): front matter,
+# methods, results with a flow diagram and numbered tables, narrative synthesis with numbered citations,
+# references, and appendices holding the study-level evidence. Light, print-ready, no external resources.
 _CSS = """
-:root{--bg:#fff;--fg:#1d1d1f;--mut:#666;--line:#e3e3e3;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--acc:#0b5cad;--chip:#f3f4f6}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#16171a;--fg:#e8e8ea;--mut:#a0a0a8;--line:#33343a;--chip:#25262b;--acc:#6cb0ff}}
-body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;max-width:1100px;margin:0 auto;padding:16px}
-table{border-collapse:collapse;width:100%;font-size:13px;display:block;overflow-x:auto}td,th{border:1px solid var(--line);padding:4px 6px;vertical-align:top;text-align:left}
-details{margin:2px 0}summary{cursor:pointer}.q{color:var(--mut);font-style:italic}
-.b{display:inline-block;padding:0 6px;border-radius:8px;font-size:11px;background:var(--chip)}
-.exact,.validated,.supported,.low,.include{color:var(--ok)}.fuzzy,.approximate,.partially_supported,.some_concerns,.uncertain{color:var(--warn)}
-.not_found,.unsupported,.high,.exclude{color:var(--bad)}.flag{color:var(--bad);font-size:13px}
-textarea{width:100%;min-height:60px;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
-code{background:var(--chip);padding:1px 4px;border-radius:4px;word-break:break-all}
-.sent{font-size:13px;padding:1px 4px;border-radius:4px}.sent:target{background:#fff3b0;color:#111}.sec{font-weight:600;margin-top:6px;font-size:13px}
-details.src{margin:6px 0 18px}a.evlink{font-size:12px;white-space:nowrap}h2{border-bottom:1px solid var(--line);padding-bottom:4px}
+:root{--fg:#141414;--mut:#5a5a5a;--rule:#1f1f1f;--line:#d6d6d6;--soft:#f4f4f2;--link:#1d4a87;--ok:#2e7d32;--warn:#a86b00;--bad:#b3261e;
+  --serif:Charter,"Bitstream Charter","Sitka Text",Cambria,Georgia,"Times New Roman",serif;
+  --sans:"Helvetica Neue",Helvetica,Arial,"Segoe UI",sans-serif;--mono:Menlo,Consolas,"Liberation Mono",monospace;color-scheme:light}
+*{box-sizing:border-box}
+html{background:#fff}
+body{margin:0 auto;max-width:1000px;padding:40px 40px 80px;color:var(--fg);background:#fff;font:16px/1.6 var(--serif);
+  -webkit-font-smoothing:antialiased;font-variant-numeric:lining-nums}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+p{margin:0 0 .8em}.prose{max-width:760px}
+h1,h2,h3,h4{font-family:var(--sans);color:#000;line-height:1.3}
+h1{font-size:28px;font-weight:700;margin:6px 0 18px;letter-spacing:-.01em;max-width:860px}
+h2{font-size:20px;font-weight:700;margin:44px 0 14px;padding-top:10px;border-top:2px solid var(--rule)}
+h3{font-size:16px;font-weight:700;margin:28px 0 10px}
+h4{font-size:14.5px;font-weight:700;margin:22px 0 8px}
+.kicker{font:600 12px/1.4 var(--sans);text-transform:uppercase;letter-spacing:.12em;color:var(--mut)}
+dl.meta{display:grid;grid-template-columns:170px 1fr;gap:4px 16px;margin:0 0 20px;font:14px/1.5 var(--sans)}
+dl.meta dt{color:var(--mut)}dl.meta dd{margin:0}
+.notice{border:1px solid var(--rule);padding:12px 16px;margin:18px 0 24px;font:13.5px/1.55 var(--sans);max-width:860px}
+.notice b{display:block;text-transform:uppercase;letter-spacing:.08em;font-size:11.5px;margin-bottom:3px}
+nav.toc{font:14px/1.75 var(--sans);margin:6px 0 0}
+nav.toc ol{margin:0;padding-left:0;list-style:none}nav.toc li{break-inside:avoid}
+nav.toc .sub{padding-left:18px;color:var(--mut)}
+.abstract{background:var(--soft);border-top:2px solid var(--rule);border-bottom:1px solid var(--rule);padding:14px 20px 6px;margin:8px 0 0}
+.abstract p{font-size:15px}.abstract b{font-family:var(--sans);font-size:13.5px}
+.num{font-variant-numeric:tabular-nums}
+/* tables: ruled, numbered captions above */
+.tbl{margin:14px 0 26px;overflow-x:auto}
+.cap{font:13.5px/1.45 var(--sans);margin:0 0 6px}.cap b{font-weight:700}
+table{border-collapse:collapse;width:100%;font:12.5px/1.45 var(--sans)}
+thead th{border-top:1.5px solid var(--rule);border-bottom:1px solid var(--rule);text-align:left;vertical-align:bottom;padding:6px 8px;font-weight:700}
+td{border-bottom:1px solid var(--line);padding:6px 8px;vertical-align:top;text-align:left;white-space:pre-line}
+tbody tr:last-child td{border-bottom:1.5px solid var(--rule)}
+td.c,th.c{text-align:center}td.nw{white-space:nowrap}
+.foot{font:12px/1.5 var(--sans);color:var(--mut);margin:6px 0 0}
+.mono,code{font-family:var(--mono);font-size:12px}
+pre.query{font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word;background:var(--soft);border-left:3px solid var(--line);padding:10px 12px;margin:6px 0 12px}
+/* figure: PRISMA 2020 flow */
+figure{margin:16px 0 30px}figcaption{font:13.5px/1.45 var(--sans);margin-top:10px}
+.prisma{display:grid;grid-template-columns:30px minmax(0,1fr) 40px minmax(0,1fr);row-gap:28px;font:12.5px/1.45 var(--sans);max-width:880px}
+.prisma .stage{background:#dfe4ea;color:#1b2a3a;font-weight:700;font-size:12px;letter-spacing:.06em;text-transform:uppercase;writing-mode:vertical-rl;
+  transform:rotate(180deg);display:flex;align-items:center;justify-content:center;margin-right:10px}
+.prisma .bx{border:1px solid #222;padding:8px 11px;background:#fff;position:relative}
+.prisma .bx b{font-weight:700}.prisma .bx ul{margin:3px 0 0;padding-left:16px}.prisma .bx li{margin:1px 0}
+.prisma .main.down::after{content:"";position:absolute;left:calc(50% - 6px);top:100%;width:12px;height:28px;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='28'%3E%3Cpath d='M6 0v22' stroke='%23222' stroke-width='1.2'/%3E%3Cpath d='M1.5 20.5 6 27.5l4.5-7z' fill='%23222'/%3E%3C/svg%3E") no-repeat}
+.prisma .arr{display:flex;align-items:center}
+.prisma .arr::before{content:"";width:100%;height:12px;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='12' preserveAspectRatio='none'%3E%3Cpath d='M0 6h33' stroke='%23222' stroke-width='1.2'/%3E%3Cpath d='M32 1.5 39.5 6 32 10.5z' fill='%23222'/%3E%3C/svg%3E") no-repeat center/100% 12px}
+.prisma .side{display:flex;flex-direction:column;gap:10px;justify-content:center}
+/* risk of bias */
+.tl{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;color:#fff;font:700 13px/1 var(--sans);vertical-align:middle}
+.tl.low{background:#3f8f4a;color:#fff}.tl.some_concerns{background:#d9b310;color:#2b2200}.tl.high{background:#b8352b;color:#fff}.tl.unclear,.tl.none{background:#8d96a0;color:#fff}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font:12px/1.5 var(--sans);color:var(--mut);margin-top:8px}
+.legend span{display:inline-flex;gap:6px;align-items:center}.legend .tl{width:16px;height:16px;font-size:11px}
+.robsum{display:grid;grid-template-columns:200px minmax(0,1fr);gap:6px 12px;align-items:center;font:12.5px/1.4 var(--sans);max-width:820px}
+.robsum .bar{display:flex;height:18px;border:1px solid #222}.robsum .bar i{display:block;height:100%}
+.robsum .bar i.low{background:#3f8f4a}.robsum .bar i.some_concerns{background:#d9b310}.robsum .bar i.high{background:#b8352b}.robsum .bar i.unclear{background:#8d96a0}
+.robsum .axis{grid-column:2;display:flex;justify-content:space-between;color:var(--mut);font-size:11px}
+/* synthesis */
+.stmt{margin:0 0 20px;max-width:800px}.stmt p{margin:0}
+.sid{font:700 13px var(--sans);margin-right:6px}
+.cite{font-family:var(--sans);font-size:.82em;white-space:nowrap}
+.smeta{font:12px/1.5 var(--sans);color:var(--mut);margin-top:4px}
+.flag{font:12.5px/1.5 var(--sans);color:var(--bad);margin-top:4px}
+.flag::before{content:"Flag  ";font-weight:700;letter-spacing:.04em;text-transform:uppercase;font-size:10.5px}
+/* status words: small capitals, not pills */
+.b{font:600 11px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.06em;color:var(--mut);white-space:nowrap}
+.exact,.validated,.supported,.low,.include{color:var(--ok)}.fuzzy,.approximate,.partially_supported,.some_concerns,.uncertain,.awaiting,.unclear{color:var(--warn)}
+.not_found,.unsupported,.high,.exclude,.not_met{color:var(--bad)}.met{color:var(--ok)}
+/* references */
+ol.refs{padding-left:0;list-style:none;font-size:14.5px;line-height:1.5;max-width:860px}
+ol.refs li{display:grid;grid-template-columns:34px 1fr;margin:0 0 7px}ol.refs li>span:first-child{text-align:right;padding-right:10px}
+ol.refs li:target{background:#fff6cc}
+/* evidence */
+.ev{margin:0 0 6px;white-space:normal}.ev:last-child{margin:0}
+a.evlink{font:600 11.5px var(--mono);white-space:nowrap}.loc{font:11.5px var(--sans);color:var(--mut)}
+.q{color:#333;font-style:italic}
+.study{margin:34px 0 0;padding-top:4px}
+.study .ref{font-size:14px;color:var(--mut);margin:-4px 0 10px}
+details{margin:6px 0}summary{cursor:pointer;font:13px/1.5 var(--sans);color:var(--link)}
+details.src{margin:10px 0 0}details.src>div{max-height:520px;overflow:auto;border:1px solid var(--line);padding:8px 12px;margin-top:6px}
+.sent{font-size:13.5px;line-height:1.5;padding:1px 3px}.sent:target{background:#fff1a8}
+.sec{font:700 12px var(--sans);text-transform:uppercase;letter-spacing:.06em;margin:12px 0 2px;color:var(--mut)}
+.fb summary{color:var(--mut);font-size:12px}
+.fb textarea{display:block;width:100%;max-width:640px;min-height:64px;font:13px/1.45 var(--sans);border:1px solid #999;padding:6px 8px;margin:6px 0}
+.fb button{font:12.5px var(--sans);border:1px solid #444;background:#fff;padding:4px 10px;cursor:pointer;margin-right:6px}
+.fb button:first-of-type{background:#1f1f1f;color:#fff}
+.fb .q{font-size:12.5px}
+.note{font:12.5px/1.5 var(--sans);color:var(--mut)}
+@media (max-width:720px){body{padding:20px 16px 60px}h1{font-size:23px}dl.meta{grid-template-columns:1fr}nav.toc{columns:1}
+  .prisma{grid-template-columns:22px minmax(0,1fr) 22px minmax(0,1fr);font-size:11.5px}.robsum{grid-template-columns:120px minmax(0,1fr)}}
+@page{size:A4;margin:18mm 16mm}
+@media print{body{max-width:none;padding:0;font-size:11pt}.prisma{max-width:calc(100% - 3px)}.fb,.noprint,details.src{display:none!important}
+  h2{break-after:avoid;break-before:auto}h3,h4,.cap{break-after:avoid}tr,.stmt,.prisma .bx,figure{break-inside:avoid}
+  a{color:inherit}.tbl{overflow:visible}nav.toc{columns:1}}
 """
 
 _JS = """
+function openTo(el){let d=el&&el.closest('details');while(d){d.open=true;d=d.parentElement.closest('details');}if(el&&el.tagName==='DETAILS')el.open=true;}
+function openHash(){if(!location.hash)return;const el=document.getElementById(decodeURIComponent(location.hash.slice(1)));if(el){openTo(el);el.scrollIntoView();}}
+window.addEventListener('hashchange',openHash);window.addEventListener('load',openHash);
 document.addEventListener('click',function(ev){const a=ev.target.closest('a.evlink');if(!a)return;
-const el=document.getElementById(a.getAttribute('href').slice(1));if(!el)return;
-let d=el.closest('details');while(d){d.open=true;d=d.parentElement.closest('details');}});
+const el=document.getElementById(a.getAttribute('href').slice(1));if(el)openTo(el);});
 async function fb(id,send){const t=document.getElementById('fb-'+id).value.trim();const m=document.getElementById('cmd-'+id);
 if(!t){m.textContent='Write a comment first.';return;}
 try{const r=await fetch('/api/comment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:id,text:t,send:send})});
 const j=await r.json();m.textContent=(j.ok?'✓ ':'')+(j.message||j.error||'');if(j.ok)document.getElementById('fb-'+id).value='';}
-catch(e){const c='sragent feedback --config CONFIG.yaml --target '+id+' --text "'+t.replace(/"/g,'\\"')+'"';
+catch(e){const c='sragent feedback --config CONFIG.yaml --target '+id+' --text "'+t.replace(/"/g,'\\\\"')+'"';
 m.textContent='Open this report from the sragent UI (Report tab) to send comments directly. Or run: '+c;
 navigator.clipboard&&navigator.clipboard.writeText(c).catch(()=>{});}}
 """
+
+_JUDGE = {"low": ("+", "Low"), "some_concerns": ("!", "Some concerns"), "high": ("×", "High"), "unclear": ("?", "Unclear")}
+_ACRONYMS = {"pk", "pd", "pkpd", "auc", "rct", "ae", "ada", "iv", "sc", "rob", "bmi", "fviii", "nr", "id"}
 
 
 def _ev_txt(x: dict) -> str:
@@ -211,12 +302,12 @@ def _ev_html(x: dict, rid: str | None) -> str:
     if x.get("spans"):
         out = []
         for s in x["spans"]:
-            loc = f"{s['sid']} · {s['section']}"
-            link = (f"<a class='evlink' href='#src-{_e(rid)}-{_e(s['sid'])}'>{_e(loc)}</a>" if rid
-                    else f"<span class='b'>{_e(loc)}</span>")
-            out.append(f"<div>{link} <span class='q'>“{_e(s['text'][:400])}”</span></div>")
+            sid = (f"<a class='evlink' href='#src-{_e(rid)}-{_e(s['sid'])}' title='Show in the source text'>{_e(s['sid'])}</a>"
+                   if rid else f"<span class='evlink'>{_e(s['sid'])}</span>")
+            out.append(f"<div class='ev'>{sid} <span class='loc'>{_e(s['section'])}</span> "
+                       f"<span class='q'>“{_e(s['text'][:400])}”</span></div>")
         return "".join(out)
-    return "<span class='q'>(no location cited)</span>"
+    return "<span class='note'>No location cited.</span>"
 
 
 def _source_html(ctx: Ctx, rid: str) -> str:
@@ -227,9 +318,9 @@ def _source_html(ctx: Ctx, rid: str) -> str:
         if s["section"] != sec:
             sec = s["section"]
             rows.append(f"<div class='sec'>{_e(sec)}</div>")
-        rows.append(f"<div class='sent' id='src-{_e(rid)}-{_e(s['sid'])}'><b>{_e(s['sid'])}</b> {_e(s['text'])}</div>")
-    return (f"<details class='src' id='src-{_e(rid)}'><summary>Source text ({_e(kind)}, numbered sentences)</summary>"
-            + "".join(rows) + "</details>")
+        rows.append(f"<div class='sent' id='src-{_e(rid)}-{_e(s['sid'])}'><b class='mono'>{_e(s['sid'])}</b> {_e(s['text'])}</div>")
+    return (f"<details class='src' id='src-{_e(rid)}'><summary>Source text assessed ({_e(kind)}; numbered sentences)</summary><div>"
+            + "".join(rows) + "</div></details>")
 
 
 def cited_populations(ctx: Ctx, cites: list[str]) -> str:
@@ -246,84 +337,474 @@ def _e(s) -> str:
 
 
 def _badge(s) -> str:
-    return f'<span class="b {_e(s)}">{_e(s)}</span>'
+    return f'<span class="b {_e(s)}">{_e(str(s).replace("_", " "))}</span>'
 
 
 def _fbbox(nid: str) -> str:
     k = _e(nid)
-    return (f'<details><summary>comment / ask the agent</summary><textarea id="fb-{k}" placeholder="Describe the error or '
-            f'request"></textarea><button onclick="fb(\'{k}\',true)">Send to the agent</button> '
+    return (f'<details class="fb"><summary>Comment or ask the agent</summary><textarea id="fb-{k}" placeholder="Describe the error or '
+            f'request"></textarea><button onclick="fb(\'{k}\',true)">Send to the agent</button>'
             f'<button onclick="fb(\'{k}\',false)">Save as a comment only</button> '
             f'<span class="q" id="cmd-{k}"></span></details>')
 
 
 def _flags(n) -> str:
-    return "".join(f'<div class="flag">⚑ {_e(f["text"])} ({_e(f["status"])})</div>' for f in n["flags"])
+    return "".join(f'<div class="flag">{_e(f["text"])} ({_e(f["status"])})</div>' for f in n["flags"])
+
+
+def _label(name) -> str:
+    """'pk_results' -> 'PK results'."""
+    w = [x.upper() if x.lower() in _ACRONYMS else x for x in str(name).replace("_", " ").split()]
+    if w and not w[0].isupper():
+        w[0] = w[0][:1].upper() + w[0][1:]
+    return " ".join(w)
+
+
+def _study_labels(st, rids: list[str]) -> dict:
+    """Author-year labels ('Kotani 2019'), with a/b suffixes when two studies share one."""
+    from collections import Counter
+    lab = {}
+    for rid in rids:
+        r = (st.get(f"rec:{rid}") or {}).get("data", {})
+        first = (r.get("authors") or "").split(",")[0].strip()
+        sur = first.rsplit(" ", 1)[0] if " " in first else first
+        lab[rid] = f"{sur} {r.get('year') or 'n.d.'}" if sur else rid
+    dup, seen = Counter(lab.values()), Counter()
+    for rid in rids:
+        if dup[lab[rid]] > 1:
+            seen[lab[rid]] += 1
+            lab[rid] = lab[rid] + "abcdefghijklmnopqrstuvwxyz"[min(seen[lab[rid]], 26) - 1]
+    return lab
+
+
+def _cite(rids: list[str], num: dict) -> str:
+    """Numbered citation '[1–3, 7]' linked to the reference list; unknown ids are shown as they are."""
+    ns = sorted({num[r] for r in rids if r in num})
+    parts, i = [], 0
+    while i < len(ns):
+        j = i
+        while j + 1 < len(ns) and ns[j + 1] == ns[j] + 1:
+            j += 1
+        a, b = ns[i], ns[j]
+        parts.append(f"<a href='#ref-{a}'>{a}</a>" + ("" if a == b else ("," if b == a + 1 else "–") + f"<a href='#ref-{b}'>{b}</a>"))
+        i = j + 1
+    parts += [_e(r) for r in rids if r not in num]
+    return f"<span class='cite'>[{','.join(parts)}]</span>" if parts else ""
+
+
+def _vancouver(r: dict) -> str:
+    au = [a.strip() for a in (r.get("authors") or "").split(",") if a.strip()]
+    au = ", ".join(au[:6]) + (", et al" if len(au) > 6 else "")
+    t = (r.get("title") or "").strip().rstrip(".")
+    out = (f"{_e(au)}. " if au else "") + f"{_e(t)}. "
+    if r.get("journal"):
+        out += f"<i>{_e(r['journal'])}</i>. "
+    if r.get("year"):
+        out += f"{_e(r['year'])}. "
+    if r.get("doi"):
+        out += f"doi:<a href='https://doi.org/{_e(r['doi'])}'>{_e(r['doi'])}</a>. "
+    if r.get("pmid"):
+        out += f"PMID: <a href='https://pubmed.ncbi.nlm.nih.gov/{_e(r['pmid'])}/'>{_e(r['pmid'])}</a>."
+    return out
+
+
+def _reason_label(code: str, crit_by_id: dict) -> str:
+    if code.startswith("rule:"):
+        return _label(code[5:].rstrip(":")) + " (publication-type rule)"
+    c = crit_by_id.get(code)
+    if not c:
+        return _label(code)
+    if c.get("type") == "inclusion":
+        return f"Inclusion criterion {code} not met"
+    if c.get("type") == "exclusion":
+        return f"Exclusion criterion {code} applies"
+    return f"Criterion {code} ({c.get('type')}) not met"
+
+
+def _flow(ctx: Ctx) -> dict:
+    """Counts for the PRISMA 2020 flow diagram, taken from the screening records so each stage adds up."""
+    from collections import Counter
+    st = ctx.store
+    s = (st.get("search") or {}).get("data", {})
+    screens = st.by_type("screen")
+    D = lambda n: n["data"]
+    ta = [n for n in screens if D(n)["stage"] == "title_abstract"]
+    ta_ex = [n for n in ta if D(n)["decision"] == "exclude"]
+    ret = [n for n in screens if D(n)["stage"] == "retrieval"]
+    ft = [n for n in screens if D(n)["stage"] == "full_text"]
+    ft_ex = [n for n in ft if D(n)["decision"] == "exclude"]
+    reasons = Counter((D(n).get("because") or ["unspecified"])[0] for n in ft_ex)
+    added = set((st.meta.get("snowball") or {}).get("added") or [])
+    identified, dups = s.get("n_identified") or 0, s.get("n_duplicates") or 0
+    f = {"identified": identified, "duplicates": dups,
+         "not_sampled": max(0, identified - dups - s["sampled_to"]) if s.get("sampled_to") else 0,
+         "citation": sum(1 for n in screens if n["id"].split(":", 1)[1] in added),
+         "screened": len(screens), "excluded_screen": len(ta_ex),
+         "excluded_screen_rules": sum(1 for n in ta_ex if D(n).get("rule")),
+         "awaiting_fulltext_review": len(ta) - len(ta_ex),
+         "sought": len(ret) + len(ft),
+         "not_retrieved": sum(1 for n in ret if D(n)["decision"] == "fulltext_unavailable"),
+         "unreadable": sum(1 for n in ret + ft if D(n)["decision"] == "parse_failed"),
+         "excluded_before_assessment": sum(1 for n in ret if D(n)["decision"] == "exclude"),
+         "assessed": len(ft), "excluded_fulltext": len(ft_ex), "reasons": reasons.most_common(),
+         "awaiting_classification": sum(1 for n in ft if D(n)["decision"] == "awaiting"),
+         "included": len(st.included_ids())}
+    f["reconciles"] = identified - dups - f["not_sampled"] + f["citation"] == f["screened"]
+    return f
+
+
+def _prisma_figure(ctx: Ctx, f: dict, crit_by_id: dict, n_fig: int) -> str:
+    src = (ctx.topic.get("records") or {})
+    kind = src.get("source", "pubmed")
+    s = (ctx.store.get("search") or {}).get("data", {})
+    origin = {"synergy": f"Benchmark record set ({_e(src.get('synergy_key', 'SYNERGY'))})",
+              "file": "Imported record file"}.get(kind, _e(s.get("database") or "PubMed"))
+    ident = f"<b>Records identified</b><ul><li>{origin} (n = {f['identified']})</li>"
+    if f["citation"]:
+        ident += f"<li>Citation searching of included studies (n = {f['citation']})</li>"
+    removed = f"<b>Records removed before screening</b><ul><li>Duplicate records (n = {f['duplicates']})</li>"
+    if f["not_sampled"]:
+        removed += f"<li>Not sampled for screening (n = {f['not_sampled']})</li>"
+    screened_ex = (f"<b>Records excluded (n = {f['excluded_screen']})</b><ul>"
+                   f"<li>Publication-type rules (n = {f['excluded_screen_rules']})</li>"
+                   f"<li>Title and abstract assessment (n = {f['excluded_screen'] - f['excluded_screen_rules']})</li></ul>")
+    if f["awaiting_fulltext_review"]:
+        screened_ex += f"</div><div class='bx'><b>Awaiting full-text review (n = {f['awaiting_fulltext_review']})</b>"
+    notret = f"<b>Reports not retrieved (n = {f['not_retrieved']})</b>"
+    extra = ""
+    if f["excluded_before_assessment"]:
+        extra += f"<div class='bx'><b>Excluded by rule before assessment (n = {f['excluded_before_assessment']})</b></div>"
+    if f["unreadable"]:
+        extra += f"<div class='bx'><b>Reports unreadable (n = {f['unreadable']})</b></div>"
+    crit_r = [(c, k) for c, k in f["reasons"] if not c.startswith("rule:")]
+    rule_r = [(c, k) for c, k in f["reasons"] if c.startswith("rule:")]
+    rs = "".join(f"<li>{_e(_reason_label(c, crit_by_id))} (n = {k})</li>" for c, k in crit_r)
+    if rule_r:
+        rs += (f"<li>Publication-type rules (n = {sum(k for _, k in rule_r)}): "
+               + ", ".join(f"{_e(_label(c[5:].rstrip(':')).lower())} ({k})" for c, k in rule_r) + "</li>")
+    ftx = f"<b>Reports excluded (n = {f['excluded_fulltext']})</b>" + (f"<ul>{rs}</ul>" if rs else "")
+    aw = (f"<div class='bx'><b>Awaiting classification (n = {f['awaiting_classification']})</b></div>"
+          if f["awaiting_classification"] else "")
+    grid = (f"<div class='prisma'>"
+            f"<div class='stage' style='grid-row:1'>Identification</div>"
+            f"<div class='bx main down' style='grid-row:1;grid-column:2'>{ident}</ul></div><div class='arr' style='grid-row:1;grid-column:3'></div>"
+            f"<div class='side' style='grid-row:1;grid-column:4'><div class='bx'>{removed}</ul></div></div>"
+            f"<div class='stage' style='grid-row:2/5'>Screening</div>"
+            f"<div class='bx main down' style='grid-row:2;grid-column:2'><b>Records screened (n = {f['screened']})</b></div>"
+            f"<div class='arr' style='grid-row:2;grid-column:3'></div><div class='side' style='grid-row:2;grid-column:4'><div class='bx'>{screened_ex}</div></div>"
+            f"<div class='bx main down' style='grid-row:3;grid-column:2'><b>Reports sought for retrieval (n = {f['sought']})</b></div>"
+            f"<div class='arr' style='grid-row:3;grid-column:3'></div><div class='side' style='grid-row:3;grid-column:4'><div class='bx'>{notret}</div>{extra}</div>"
+            f"<div class='bx main down' style='grid-row:4;grid-column:2'><b>Reports assessed for eligibility (n = {f['assessed']})</b></div>"
+            f"<div class='arr' style='grid-row:4;grid-column:3'></div><div class='side' style='grid-row:4;grid-column:4'><div class='bx'>{ftx}</div>{aw}</div>"
+            f"<div class='stage' style='grid-row:5'>Included</div>"
+            f"<div class='bx main' style='grid-row:5;grid-column:2'><b>Studies included in the review (n = {f['included']})</b></div>"
+            f"</div>")
+    note = ("" if f["reconciles"] else
+            f"<p class='foot'>Note: the identification counts do not add up to the records screened "
+            f"({f['identified']} − {f['duplicates']} − {f['not_sampled']} + {f['citation']} ≠ {f['screened']}); "
+            f"check the search and citation-searching logs of this run.</p>")
+    return (f"<figure id='fig-prisma'>{grid}<figcaption><b>Figure {n_fig}.</b> PRISMA 2020 flow diagram of study selection. "
+            f"Reasons for exclusion at full text are counted by the primary reason recorded for each report.</figcaption>{note}</figure>")
+
+
+def _table(cap: str, head: list[str], rows: list[list[str]], foot: str = "", tid: str = "", cls: list[str] | None = None) -> str:
+    cls = cls or [""] * len(head)
+    th = "".join(f"<th class='{c}'>{h}</th>" for h, c in zip(head, cls))
+    tb = "".join("<tr>" + "".join(f"<td class='{c}'>{v}</td>" for v, c in zip(r, cls)) + "</tr>" for r in rows)
+    return (f"<div class='tbl'{f' id={chr(39)}{tid}{chr(39)}' if tid else ''}><p class='cap'>{cap}</p><table><thead><tr>{th}</tr></thead>"
+            f"<tbody>{tb}</tbody></table>{f'<p class={chr(39)}foot{chr(39)}>{foot}</p>' if foot else ''}</div>")
 
 
 def report_html(ctx: Ctx) -> str:
+    import time
+    from collections import Counter
+    from .. import provenance
+    from ..config import role_cfg
     st = ctx.store
     p = st.get("protocol")["data"]
-    pr = prisma(ctx)
-    crit = _crit_lookup(ctx)
-    H = [f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-         f"<title>Evidence-linked review</title><style>{_CSS}</style><script>{_JS}</script></head><body>",
-         f"<h1>{_e(review_title(p))}</h1><p><b>Question.</b> {_e(p.get('question'))}</p>",
-         "<p class='q'>Research prototype. AI-generated; every item links to its evidence and must be verified by a human.</p>",
-         "<h2>Selection (PRISMA)</h2><p>" + "; ".join(f"{_e(k)}: {_e(v)}" for k, v in pr.items()) + "</p>",
-         "<h2>Synthesis</h2>"]
-    for n in st.by_type("synthesis", active_only=True):
+    crit_list = p.get("criteria", [])
+    crit_by_id = {c["id"]: c for c in crit_list}
+    s = (st.get("search") or {}).get("data", {})
+    inc = st.included_ids()
+    syn = st.by_type("synthesis", active_only=True)
+    # references: numbered by first citation in the synthesis, then the remaining included studies
+    order = []
+    for n in syn:
+        for c in n["data"].get("cites", []):
+            if c not in order and st.get(f"rec:{c}"):
+                order.append(c)
+    order += [r for r in inc if r not in order]
+    num = {r: i + 1 for i, r in enumerate(order)}
+    lab = _study_labels(st, order)
+    sref = lambda rid: f"<a href='#ext:{_e(rid)}'>{_e(lab.get(rid, rid))}</a> {_cite([rid], num)}"
+    fields = ctx.topic.get("extraction_fields") or []
+    doms = ctx.topic.get("rob_domains") or []
+    mode = provenance.mode(ctx)
+    f = _flow(ctx)
+    t = time.localtime()
+    T = [0]
+
+    def tno():
+        T[0] += 1
+        return T[0]
+
+    H = [f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+         f"<title>{_e(review_title(p))}</title><style>{_CSS}</style><script>{_JS}</script></head><body>"]
+    # ---------------- front matter
+    H.append(f"<div class='kicker'>Systematic review · Draft report for verification</div><h1>{_e(review_title(p))}</h1>")
+    H.append("<dl class='meta'>"
+             f"<dt>Review question</dt><dd>{_e(p.get('question'))}</dd>"
+             f"<dt>Report generated</dt><dd>{t.tm_mday} {time.strftime('%B %Y', t)}</dd>"
+             f"<dt>Review run</dt><dd class='mono'>{_e(ctx.run_dir.name)}</dd>"
+             f"<dt>Conduct</dt><dd>{'Agent only: every judgement was made by the AI agent' if mode == 'agent_only' else 'AI agent with human reviewer in the loop'}</dd>"
+             f"<dt>Agent model</dt><dd>{_e(role_cfg(ctx.cfg, 'agent').get('model') or 'not recorded')}</dd></dl>")
+    H.append("<div class='notice'><b>Status of this report</b>Generated by SRAgent, a research prototype. Eligibility decisions, extracted data, "
+             "quality judgements and synthesis statements are drafts produced by an AI agent. Each is linked to the source sentences it relies on "
+             "(Appendix A) and must be verified by qualified reviewers before any clinical, regulatory or policy use.</div>")
+    toc = [("sum", "Summary", 0), ("methods", "1 Methods", 0), ("results", "2 Results", 0), ("res-selection", "2.1 Study selection", 1),
+           ("res-char", "2.2 Characteristics of included studies", 1), ("res-results", "2.3 Results of individual studies", 1),
+           ("res-rob", "2.4 Study quality (risk of bias)", 1), ("res-syn", "2.5 Synthesis", 1), ("refs", "References", 0),
+           ("app-a", "Appendix A Study-level data with supporting evidence", 0), ("app-b", "Appendix B Studies excluded at full text", 0),
+           ("app-c", "Appendix C Eligibility assessment of all records", 0), ("app-d", "Appendix D Revision history", 0)]
+    H.append("<nav class='toc noprint'><ol>" + "".join(f"<li class='{'sub' if lv else ''}'><a href='#{a}'>{_e(l)}</a></li>" for a, l, lv in toc)
+             + "</ol></nav>")
+
+    # ---------------- structured summary (counts only; no new claims)
+    pico = p.get("pico") or {}
+    sup = Counter((n["data"].get("verification") or {}).get("support", "unchecked") for n in syn)
+    n_ft_inc = sum(1 for r in inc if ((st.get(f"ext:{r}") or {}).get("data") or {}).get("source_kind") == "fulltext")
+    H.append("<h2 id='sum'>Summary</h2><div class='abstract prose'>"
+             f"<p><b>Objective.</b> {_e(p.get('question'))}</p>"
+             + (f"<p><b>Eligibility.</b> Population: {_e(pico.get('population'))}. Intervention or exposure: "
+                f"{_e(pico.get('intervention_or_exposure') or pico.get('intervention'))}. Comparator: {_e(pico.get('comparator'))}.</p>" if pico else "")
+             + f"<p><b>Methods.</b> {_e(s.get('database') or 'Database')} search ({_e(s.get('hits', '?'))} hits)"
+             + (f" and citation searching of included studies" if f["citation"] else "")
+             + f"; screening of titles, abstracts and full texts against {len(crit_list)} pre-specified criteria; extraction of "
+             f"{len(fields)} data items linked to source sentences; quality assessment in {len(doms)} domains; narrative synthesis.</p>"
+             f"<p><b>Results.</b> {f['screened']} records were screened, {f['assessed']} full-text reports were assessed and "
+             f"{f['included']} studies were included ({n_ft_inc} assessed from the full text, {f['included'] - n_ft_inc} from the abstract only)."
+             + (f" {f['awaiting_classification']} reports await classification." if f["awaiting_classification"] else "")
+             + f" The synthesis comprises {len(syn)} statements; the automated check judged {sup.get('supported', 0)} supported by the cited data"
+             + (f", {sup.get('partially_supported', 0)} partially supported" if sup.get("partially_supported") else "")
+             + (f", {sup.get('unsupported', 0)} unsupported" if sup.get("unsupported") else "") + ".</p></div>")
+
+    # ---------------- 1 Methods
+    H.append("<h2 id='methods'>1 Methods</h2><h3>1.1 Eligibility criteria</h3>")
+    if pico:
+        H.append(_table(f"<b>Table {tno()}.</b> Review question in PICO format.", ["Element", "Definition"],
+                        [[_e(_label(k)), _e("; ".join(v) if isinstance(v, list) else v)] for k, v in pico.items()], cls=["nw", ""]))
+    H.append(_table(f"<b>Table {tno()}.</b> Eligibility criteria and the screening stage at which each was applied.",
+                    ["ID", "Type", "Stage", "Criterion"],
+                    [[f"<b>{_e(c['id'])}</b>", _e(_label(c.get("type", ""))), _e(_label(c.get("stage", "title_abstract")).replace("Title abstract", "Title and abstract")),
+                      _e(c["text"])] for c in crit_list], cls=["nw", "nw", "nw", ""]))
+    H.append("<h3>1.2 Information sources and search</h3><div class='prose'>")
+    if s.get("database") and s.get("database") != "Imported records":
+        H.append(f"<p>{_e(s['database'])} was searched with the strategy below ({_e(s.get('hits', '?'))} hits).</p>")
+    src = ctx.topic.get("records") or {}
+    if src.get("source") == "synergy":
+        H.append(f"<p>Records for screening were taken from the benchmark record set {_e(src.get('synergy_key'))} "
+                 f"({f['identified']} records), so that the agent's decisions can be compared with a published review.</p>")
+    elif src.get("source") == "file":
+        H.append(f"<p>Records were imported from a file ({f['identified']} records).</p>")
+    sb = st.meta.get("snowball") or {}
+    if f["citation"]:
+        H.append(f"<p>Reference lists and citing articles of the included studies were searched (backward and forward citation searching; "
+                 f"{len(sb.get('seeds') or {})} seed studies, {sb.get('rounds', 1)} round{'s' if sb.get('rounds', 1) != 1 else ''}), "
+                 f"adding {f['citation']} records.</p>")
+    H.append("</div>")
+    if s.get("query"):
+        H.append(f"<p class='note'>Search strategy{' (as translated by ' + _e(s['database']) + ')' if s.get('translation') else ''}:</p>"
+                 f"<pre class='query'>{_e(s.get('translation') or s['query'])}</pre>")
+    if s.get("rationale"):
+        H.append(f"<details><summary>Rationale for the search strategy (agent)</summary><p class='prose note'>{_e(s['rationale'])}</p></details>")
+    rules_used = (st.meta.get("rules_applied") or {}).get("rules") or []
+    n_human = sum(1 for n in st.by_type("screen") if n["data"].get("human_decision"))
+    H.append("<h3>1.3 Selection process</h3><div class='prose'>"
+             + (f"<p>Records were first checked against deterministic publication-type rules ({_e(', '.join(_label(r).lower() for r in rules_used))}), "
+                "without model calls. " if rules_used else "<p>")
+             + "The remaining records were screened on title and abstract and then on full text. For each criterion the agent recorded "
+             "an assessment (met, not met, unclear) with the sentences supporting it, and the decision was derived from these assessments by rule. "
+             "Studies were included only after full-text assessment.</p>"
+             + ("<p>All eligibility judgements were made by the agent; no screening decisions were made by people (agent-only condition).</p>"
+                if mode == "agent_only" else
+                (f"<p>Records the agent could not decide were resolved by a human reviewer ({n_human} decision{'s' if n_human != 1 else ''} "
+                 "made by a person).</p>" if n_human else
+                 "<p>Records the agent cannot decide are resolved by a human reviewer; no screening decision has been made by a person so far.</p>"))
+             + "</div>")
+    H.append("<h3>1.4 Data collection</h3><p class='prose'>The agent extracted the items below. Every value is linked to the source sentences "
+             "it is based on, and drug and disease terms were checked against RxNorm, PubChem, ChEMBL and MONDO.</p>")
+    H.append(_table(f"<b>Table {tno()}.</b> Data items.", ["Item", "Definition"],
+                    [[_e(_label(x["name"])), _e(x.get("description", ""))] for x in fields], cls=["nw", ""]))
+    H.append(f"<h3>1.5 Study quality</h3><p class='prose'>Study quality was assessed with "
+             f"{_e(ctx.topic.get('rob_tool_name') or 'the domains below')}. Each domain was judged low, some concerns, high or unclear, with a "
+             "rationale and supporting sentences.</p>")
+    H.append(_table(f"<b>Table {tno()}.</b> Quality domains.", ["Domain", "", "Signalling question"],
+                    [[f"D{i + 1}", _e(_label(d["name"])), _e(d.get("description", ""))] for i, d in enumerate(doms)], cls=["nw", "nw", ""]))
+    H.append("<h3>1.6 Synthesis</h3><p class='prose'>Findings were summarised narratively. Each statement cites the included studies it rests on "
+             "and was checked automatically against the extracted data of those studies (supported, partially supported or unsupported).</p>")
+
+    # ---------------- 2 Results
+    H.append("<h2 id='results'>2 Results</h2><h3 id='res-selection'>2.1 Study selection</h3><div class='prose'>")
+    H.append(f"<p>{f['screened']} records were screened"
+             + (f" ({f['identified'] - f['duplicates'] - f['not_sampled']} from the record search after removing {f['duplicates']} duplicates, "
+                f"and {f['citation']} from citation searching)" if f["citation"] else "")
+             + f". {f['excluded_screen']} were excluded on title and abstract or by publication-type rules, and {f['sought']} reports were sought. "
+             f"Of these, {f['not_retrieved']} could not be retrieved and {f['assessed']} were assessed in full; {f['excluded_fulltext']} were excluded "
+             f"(Appendix B) and {f['included']} studies were included (Figure 1)."
+             + (f" {f['awaiting_classification']} reports await classification." if f["awaiting_classification"] else "") + "</p></div>")
+    H.append(_prisma_figure(ctx, f, crit_by_id, 1))
+
+    # characteristics / results tables: short items describe the studies, long items report their results
+    vals = {}
+    for rid in inc:
+        n = st.get(f"ext:{rid}")
+        if n and n["status"] == "active":
+            vals[rid] = {k: (v.get("value") if isinstance(v, dict) else v) for k, v in n["data"]["fields"].items()}
+    import re
+    names = [x["name"] for x in fields] or sorted({k for v in vals.values() for k in v})
+    is_result = re.compile(r"result|outcome|efficacy|safety|response|finding|effect|conclusion|estimate", re.I)
+    res_items = [k for k in names if is_result.search(k)]
+    chr_items = [k for k in names if k not in res_items]
+    sorted_inc = sorted(vals, key=lambda r: num.get(r, 10 ** 6))
+    cell = lambda rid, k: _e(str(vals[rid].get(k) if vals[rid].get(k) is not None else "NR"))
+    H.append("<h3 id='res-char'>2.2 Characteristics of included studies</h3>")
+    parts = [chr_items[i:i + 4] for i in range(0, len(chr_items), 4)] or [[]]
+    first_char = T[0] + 1
+    for i, part in enumerate(parts):
+        H.append(_table(f"<b>Table {tno()}.</b> Characteristics of the {len(vals)} included studies"
+                        + (f" (part {i + 1} of {len(parts)})." if len(parts) > 1 else "."), ["Study"] + [_e(_label(k)) for k in part],
+                        [[sref(r)] + [cell(r, k) for k in part] for r in sorted_inc], "NR, not reported.", cls=["nw"] + [""] * len(part)))
+    H.append("<h3 id='res-results'>2.3 Results of individual studies</h3>")
+    if res_items:
+        H.append(_table(f"<b>Table {tno()}.</b> Results of individual studies as extracted. Supporting sentences for every value are in Appendix A.",
+                        ["Study"] + [_e(_label(k)) for k in res_items], [[sref(r)] + [cell(r, k) for k in res_items] for r in sorted_inc],
+                        "NR, not reported.", cls=["nw"] + [""] * len(res_items)))
+    else:
+        H.append(f"<p class='note'>All extracted items are shown in Table {first_char}.</p>")
+
+    # quality
+    H.append("<h3 id='res-rob'>2.4 Study quality (risk of bias)</h3>")
+    robs = {r: st.get(f"rob:{r}") for r in sorted_inc if st.get(f"rob:{r}") and st.get(f"rob:{r}")["status"] == "active"}
+    dnames = [d["name"] for d in doms]
+    tl = lambda j: f"<span class='tl {_e(j if j in _JUDGE else 'none')}' title='{_e(_JUDGE.get(j, ('', j or 'not assessed'))[1])}'>{_JUDGE.get(j, ('–', ''))[0]}</span>"
+    rows = []
+    for r, n in robs.items():
+        jd = {d.get("domain"): d.get("judgment") for d in n["data"]["domains"]}
+        rows.append([sref(r)] + [tl(jd.get(d)) for d in dnames] + [tl(n["data"].get("overall")),
+                    "confirmed" if n["data"].get("human_confirmed") else "draft"])
+    if rows:
+        H.append(_table(f"<b>Table {tno()}.</b> Quality judgements per study and domain.", ["Study"] + [f"D{i + 1}" for i in range(len(dnames))] + ["Overall", "Status"],
+                        rows, "D1–D{}: {}. Judgements are the agent's drafts unless marked confirmed.".format(
+                            len(dnames), "; ".join(f"D{i + 1} {_e(_label(d))}" for i, d in enumerate(dnames))),
+                        cls=["nw"] + ["c"] * (len(dnames) + 1) + ["nw note"]))
+        H.append("<div class='legend'>" + "".join(f"<span>{tl(k)} {v[1]}</span>" for k, v in _JUDGE.items()) + "</div>")
+        summ = []
+        for label, key in [(_label(d), d) for d in dnames] + [("Overall", None)]:
+            c = Counter((n["data"].get("overall") if key is None else
+                         {d.get("domain"): d.get("judgment") for d in n["data"]["domains"]}.get(key)) for n in robs.values())
+            tot = sum(c.values()) or 1
+            bar = "".join(f"<i class='{j}' style='width:{100 * c[j] / tot:.1f}%' title='{_JUDGE[j][1]}: {c[j]}'></i>" for j in _JUDGE if c[j])
+            summ.append(f"<div>{'<b>' if key is None else ''}{_e(label)}{'</b>' if key is None else ''}</div><div class='bar'>{bar}</div>")
+        H.append(f"<figure><div class='robsum'>{''.join(summ)}<div class='axis'><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div></div>"
+                 f"<figcaption><b>Figure 2.</b> Quality judgements across the {len(robs)} included studies, by domain "
+                 f"(proportion of studies).</figcaption></figure>")
+    else:
+        H.append("<p class='note'>No quality assessments yet.</p>")
+
+    # synthesis
+    H.append("<h3 id='res-syn'>2.5 Synthesis</h3>")
+    if not syn:
+        H.append("<p class='note'>No synthesis statements yet.</p>")
+    for n in syn:
         d = n["data"]
         v = d.get("verification") or {}
-        H.append(f"<div id='{_e(n['id'])}'><p><b>[{_e(d['id'])}]</b> {_e(d['text'])} "
-                 + " ".join(f"<a href='#ext:{_e(c)}'>[{_e(c)}]</a>" for c in d["cites"])
-                 + f" {_badge(v.get('support', 'unchecked'))} <span class='q'>scope: {_e(d.get('scope'))}; v{n['version']}</span></p>"
-                 + f"<details><summary>populations of cited studies (check the scope)</summary><div class='q'>"
-                 + _e(cited_populations(ctx, d["cites"])) + "</div></details>"
-                 + _flags(n) + _fbbox(n["id"]) + "</div>")
-    H.append("<h2>Included studies: extracted data with evidence</h2>")
-    for rid in st.included_ids():
+        pops = "".join(f"<div class='ev'><b>{_e(lab.get(c, c))}</b> {_cite([c], num)}: "
+                       f"{_e(((st.get(f'ext:{c}') or {}).get('data') or {}).get('fields', {}).get('population', {}).get('value', 'NR'))}</div>"
+                       for c in d.get("cites", []))
+        H.append(f"<div class='stmt' id='{_e(n['id'])}'><p><span class='sid'>{_e(d['id'])}</span>{_e(d['text'])} {_cite(d.get('cites', []), num)}</p>"
+                 f"<div class='smeta'>Automated check: {_badge(v.get('support', 'unchecked'))} · Scope: {_e(d.get('scope') or 'not stated')} · version {n['version']}</div>"
+                 + _flags(n) + f"<details><summary>Populations of the cited studies (scope check)</summary>{pops}</details>"
+                 + _fbbox(n["id"]) + "</div>")
+
+    # ---------------- references
+    H.append("<h2 id='refs'>References</h2><ol class='refs'>")
+    for rid in order:
+        r = (st.get(f"rec:{rid}") or {}).get("data", {})
+        H.append(f"<li id='ref-{num[rid]}'><span>{num[rid]}.</span><span>{_vancouver(r)}</span></li>")
+    H.append("</ol>")
+
+    # ---------------- Appendix A: study-level evidence
+    H.append("<h2 id='app-a'>Appendix A. Study-level data with supporting evidence</h2><p class='prose note'>Each value is followed by the "
+             "numbered source sentences it is based on; the sentence number opens the source text at that place.</p>")
+    for i, rid in enumerate(sorted(inc, key=lambda r: num.get(r, 10 ** 6))):
         n = st.get(f"ext:{rid}")
         if not n:
             continue
         rec = st.get(f"rec:{rid}")["data"]
-        H.append(f"<h3 id='ext:{_e(rid)}'>[{_e(rid)}] {_e(rec.get('title'))}</h3>"
-                 f"<p class='q'>{_e(rec.get('authors'))} {_e(rec.get('journal'))} {_e(rec.get('year'))} · source: "
-                 f"{_e(n['data']['source_kind'])} · v{n['version']}</p>{_flags(n)}<table><tr><th>Item</th><th>Value</th><th>Evidence</th></tr>")
+        H.append(f"<div class='study'><h3 id='ext:{_e(rid)}'>A.{i + 1} {_e(lab.get(rid, rid))} {_cite([rid], num)}</h3>"
+                 f"<p class='ref'>{_e((rec.get('title') or '').rstrip('.'))}. Assessed from the {_e(str(n['data'].get('source_kind', '')).replace('fulltext', 'full text'))}"
+                 f"{' · record ' + _e(rid)} · version {n['version']}</p>{_flags(n)}")
+        rows = []
         for k, v in n["data"]["fields"].items():
             chk = v.get("check", {}).get("status", "")
-            tm = "".join(f"<div>{_e(t['term'])} {_badge(t['status'])} {_e(t['ids'])}</div>" for t in v.get("terms", []))
-            evh = "" if v["value"].strip().upper().startswith("NR") else _ev_html(v, rid)
-            H.append(f"<tr><td>{_e(k)}</td><td>{_e(v['value'])}{tm}</td><td>{evh} "
-                     f"{_badge(chk) if chk and chk != 'located' else ''}</td></tr>")
-        H.append("</table>" + _fbbox(n["id"]))
+            tm = "".join(f"<div class='ev'>{_e(t['term'])} {_badge(t['status'])} <span class='loc'>"
+                         f"{_e(', '.join(f'{a}: {b}' for a, b in (t.get('ids') or {}).items()))}</span></div>" for t in v.get("terms", []))
+            evh = "" if str(v["value"]).strip().upper().startswith("NR") else _ev_html(v, rid)
+            rows.append([f"<b>{_e(_label(k))}</b>", _e(v["value"]) + tm, evh + (f" {_badge(chk)}" if chk and chk != "located" else "")])
+        H.append(_table(f"<b>Table A{i + 1}.</b> Extracted data, {_e(lab.get(rid, rid))}.", ["Item", "Extracted value", "Supporting sentences"], rows,
+                        cls=["nw", "", ""]).replace("<td class=''>", "<td>"))
+        H.append(_fbbox(n["id"]))
         r = st.get(f"rob:{rid}")
         if r:
-            H.append(f"<details id='rob:{_e(rid)}'><summary>Risk of bias draft: overall {_badge(r['data']['overall'])}</summary><table>"
-                     "<tr><th>Domain</th><th>Judgment</th><th>Rationale</th><th>Evidence</th></tr>")
-            for d in r["data"]["domains"]:
-                H.append(f"<tr><td>{_e(d.get('domain'))}</td><td>{_badge(d.get('judgment'))}</td><td>{_e(d.get('rationale'))}</td>"
-                         f"<td>{_ev_html(d, rid)}</td></tr>")
-            H.append("</table>" + _flags(r) + _fbbox(r["id"]) + "</details>")
-        H.append(_source_html(ctx, rid))
-    H.append("<h2>All eligibility decisions</h2><table><tr><th>Record</th><th>Decision</th><th>Criteria</th></tr>")
+            H.append(f"<details id='rob:{_e(rid)}'><summary>Quality assessment: overall {_badge(r['data']['overall'])}"
+                     f"{' (confirmed by a reviewer)' if r['data'].get('human_confirmed') else ' (draft)'}</summary>")
+            H.append(_table("", ["Domain", "Judgement", "Rationale", "Supporting sentences"],
+                            [[_e(_label(d.get("domain"))), tl(d.get("judgment")) + " " + _badge(d.get("judgment")), _e(d.get("rationale")), _ev_html(d, rid)]
+                             for d in r["data"]["domains"]], cls=["nw", "nw", "", ""]).replace("<p class='cap'></p>", ""))
+            H.append(_flags(r) + _fbbox(r["id"]) + "</details>")
+        H.append(_source_html(ctx, rid) + "</div>")
+
+    # ---------------- Appendix B: excluded at full text
+    ft_ex = [n for n in st.by_type("screen") if n["data"]["stage"] == "full_text" and n["data"]["decision"] == "exclude"]
+    H.append("<h2 id='app-b'>Appendix B. Studies excluded at full text</h2>")
+    if ft_ex:
+        rows = []
+        for n in ft_ex:
+            rid = n["id"].split(":", 1)[1]
+            rec = (st.get(f"rec:{rid}") or {}).get("data", {})
+            why = "; ".join(_reason_label(c, crit_by_id) for c in n["data"].get("because", [])) or "Not specified"
+            rows.append([f"<a href='#screen:{_e(rid)}'>{_e(_study_labels(st, [rid])[rid])}</a>", _e((rec.get("title") or "").rstrip(".")), _e(why)])
+        H.append(_table(f"<b>Table B1.</b> Reports excluded after full-text assessment, with reasons (n = {len(ft_ex)}).",
+                        ["Study", "Title", "Reason for exclusion"], rows, cls=["nw", "", ""]))
+    else:
+        H.append("<p class='note'>None.</p>")
+
+    # ---------------- Appendix C: every eligibility decision
+    H.append("<h2 id='app-c'>Appendix C. Eligibility assessment of all records</h2><p class='prose note'>Decision, stage and the criteria it "
+             "rests on for every screened record; open a row for the criterion-level assessments and the sentences cited.</p>"
+             "<div class='tbl'><table><thead><tr><th>Record</th><th>Decision</th><th>Criterion-level assessment</th></tr></thead><tbody>")
     for n in st.by_type("screen"):
         rid = n["id"].split(":", 1)[1]
         d = n["data"]
-        rec = st.get(f"rec:{rid}")["data"]
-        crit_html = "".join(f"<div>{_e(a.get('id'))} {_badge(a.get('assessment'))} {_ev_html(a, None)}</div>"
+        rec = (st.get(f"rec:{rid}") or {}).get("data", {})
+        crit_html = "".join(f"<div class='ev'><b>{_e(a.get('id'))}</b> {_badge(a.get('assessment'))} {_ev_html(a, None)}</div>"
                             for a in d.get("criteria", []))
-        H.append(f"<tr id='screen:{_e(rid)}'><td>[{_e(rid)}] {_e(rec.get('title', '')[:120])}</td><td>{_badge(d['decision'])}"
-                 f"<div class='q'>{_e(d['stage'])}; because {_e(', '.join(d.get('because', [])))}</div>{_flags(n)}</td>"
-                 f"<td><details><summary>details</summary>{crit_html}</details>{_fbbox(n['id'])}</td></tr>")
-    H.append("</table><h2>Criteria</h2><ul>" + "".join(f"<li>{_e(k)}: {_e(v)}</li>" for k, v in crit.items()) + "</ul>")
+        H.append(f"<tr id='screen:{_e(rid)}'><td style='white-space:normal'><span class='mono'>{_e(rid)}</span> {_e((rec.get('title') or '')[:140])}</td>"
+                 f"<td style='white-space:normal'>{_badge(d['decision'])}<div class='note'>{_e(_label(d['stage']))}"
+                 f"{'; ' + _e(', '.join(d.get('because', []))) if d.get('because') else ''}</div>{_flags(n)}</td>"
+                 f"<td style='white-space:normal'><details><summary>Show assessment</summary>{crit_html}</details>{_fbbox(n['id'])}</td></tr>")
+    H.append("</tbody></table></div>")
+
+    # ---------------- Appendix D: revision history
     changes = [c for c in st.changelog if c["op"] in ("update", "status")
                and (c["actor"] != "agent" or "feedback" in str(c.get("reason", "")))]
+    H.append("<h2 id='app-d'>Appendix D. Revision history</h2>")
     if changes:
-        H.append("<h2>Revision history (feedback-driven)</h2><ul>")
-        for c in changes[-100:]:
-            H.append(f"<li>{_e(c['node'])}: {_e(c['op'])} by {_e(c['actor'])} — {_e(str(c['reason'])[:200])}</li>")
-        H.append("</ul>")
+        H.append(_table("<b>Table D1.</b> Revisions made by people or in response to feedback (latest 100).", ["Output", "Change", "By", "Reason"],
+                        [[f"<span class='mono'>{_e(c['node'])}</span>", _e(c["op"]), _e(c["actor"]), _e(str(c["reason"])[:200])] for c in changes[-100:]],
+                        cls=["nw", "nw", "nw", ""]))
+    else:
+        H.append("<p class='note'>No revisions by people or in response to feedback.</p>")
     H.append("</body></html>")
     return "\n".join(H)
 
