@@ -1,4 +1,5 @@
 # Model catalog: facts about each model, written once and shared by every run file.
+# Prices checked on 2026-10-20 against each provider's pricing page; check them again before a paid run.
 # A run file chooses models by name (llm_defaults.model, roles.<role>.model, stage_models.<stage>.model);
 # the provider and price below are filled in from here. Choices (reasoning effort, max_tokens,
 # concurrency, api_env, fallbacks) belong in the run file, not here.
@@ -18,7 +19,10 @@ models:
     pricing: {input_per_m: 0.75, output_per_m: 3.75}
   gemini-3.1-pro-preview:
     provider: gemini
-    pricing: {input_per_m: 2.00, output_per_m: 12.00}
+    pricing:
+      input_per_m: 2.00
+      output_per_m: 12.00
+      long_context: {threshold_tokens: 200000, input_per_m: 4.00, output_per_m: 18.00}
   gemma-4-31b-it:                 # Google's open model through the Gemini API: same family as Gemini (not an independent second judge)
     provider: gemini
     pricing: {input_per_m: 0.10, output_per_m: 0.30}
@@ -34,3 +38,28 @@ models:
   claude-sonnet-5-5:
     provider: anthropic
     pricing: {input_per_m: 2.00, output_per_m: 10.00}
+  claude-opus-5-5:
+    provider: anthropic
+    pricing: {input_per_m: 4.00, output_per_m: 20.00}
+
+  # OpenAI API (openai_api_key). Long context: prompts above 272K tokens. Prices checked 2026-10-20 at
+  # developers.openai.com/api/docs/pricing. A third family next to Claude and Gemini: use it where a check
+  # must be independent of both the writer and the judge (verifier, judge2).
+  gpt-6.1-sol:                    # mid-tier; the same price as Claude Sonnet 5.5
+    provider: openai
+    pricing:
+      input_per_m: 2.00
+      output_per_m: 10.00
+      long_context: {threshold_tokens: 272000, input_per_m: 4.00, output_per_m: 15.00}
+  gpt-6-luna:                     # small; the same price as Claude Haiku 5.5
+    provider: openai
+    pricing:
+      input_per_m: 0.10
+      output_per_m: 0.50
+      long_context: {threshold_tokens: 272000, input_per_m: 0.20, output_per_m: 0.75}
+  gpt-6-astra:                    # flagship; for a judge of last resort only
+    provider: openai
+    pricing:
+      input_per_m: 10.00
+      output_per_m: 50.00
+      long_context: {threshold_tokens: 272000, input_per_m: 20.00, output_per_m: 75.00}

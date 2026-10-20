@@ -148,12 +148,15 @@ def out_tokens(stage: str, effort: str | None) -> float:
 
 def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None) -> dict:
     """Like estimate(), with each stage's own model, price and effort (stage_models)."""
-    from .config import stage_cfg
+    from .config import role_cfg, stage_cfg
     rows, total = [], 0.0
     for stage, n in calls.items():
         if not n:
             continue
-        c = stage_cfg(cfg, ROW_STAGE.get(stage, "feedback"))
+        if stage == "synthesis_verify":   # the check is made by the verifier role (default: the agent role)
+            c = role_cfg(cfg, "verifier") if (cfg.get("roles") or {}).get("verifier") else role_cfg(cfg, "agent")
+        else:
+            c = stage_cfg(cfg, ROW_STAGE.get(stage, "feedback"))
         e = estimate({stage: n}, c.get("model"), c.get("pricing") or {}, c.get("reasoning_effort"), hist)
         for r in e["rows"]:
             r["model"], r["effort"] = c.get("model"), c.get("reasoning_effort") or "default"

@@ -49,9 +49,29 @@ Other runs are made from these when needed, e.g. the second evaluation condition
 | `claude-haiku-5-5` | anthropic | $0.10 / $0.50 up to 100K-token prompts, $0.50 / $2.50 beyond |
 | `claude-sonnet-5-5` | anthropic | $2.00 / $10.00 |
 
-The catalog holds **facts about each model**: `provider`, `pricing` (`{input_per_m, output_per_m}`, optionally `long_context: {threshold_tokens, input_per_m, output_per_m}`), optionally `base_url` and a `note`. A run file chooses models **by name**, and their provider and price are filled in from here, so a price is written in one place only (it drives the budget guard and every cost estimate). Choices (reasoning effort, `max_tokens`, `concurrency`, `api_env`, `fallbacks`) go in the run file, not here. The web interface offers every model in the catalog. To use another model, add it here. Removing a model that a run file still uses is refused by the editor. Local vLLM models need no entry.
+The catalog holds **facts about each model**: `provider`, `pricing` (`{input_per_m, output_per_m}`, optionally `long_context: {threshold_tokens, input_per_m, output_per_m}`), optionally `base_url` and a `note`. A run file chooses models **by name**, and their provider and price are filled in from here (a catalogued model's provider is a fact: it is taken from the catalog even if a run file writes another), so a price is written in one place only (it drives the budget guard and every cost estimate). Choices (reasoning effort, `max_tokens`, `concurrency`, `api_env`, `fallbacks`) go in the run file, not here. The web interface offers every model in the catalog. To use another model, add it here. Removing a model that a run file still uses is refused by the editor. Local vLLM models need no entry.
 
 Roles: **agent** does the review; **verifier** (optional) checks feedback against the evidence, re-checks revised outputs and checks every synthesis statement, and is the agent role unless set (so with `stage_models.synthesize` on a stronger model, the statements are still checked by another model); **judge**, **judge2** and **reviewer** are used only by `sragent eval`; set **reviewer** explicitly and keep it the same across runs you compare (Claim 1 measures the materials, not the reviewer).
+
+## Recommended models (October 2026 prices)
+
+The rule: a cheap model for the high-volume work whose mistakes a later step catches; a stronger model for the few calls that everything else rests on; and checks by a model of another family than the writer. `review/adhd_appetite_adverse_events/` is set up this way.
+
+| Where | Model, effort | Why |
+|---|---|---|
+| `plan`, `search` | Sonnet, high | one call each; the criteria and the query decide what the review can find |
+| `screen` (title/abstract), `snowball` | Haiku, medium | hundreds of calls, inclusive by design; a wrong forward is caught at full text |
+| `fulltext` | Haiku, high | decides inclusion; high effort costs a few cents more and stays ~10x cheaper than Sonnet (Sonnet medium is the upgrade if the budget allows: about $1.5 per 130 full texts) |
+| `extract` | Sonnet, medium | the values the synthesis, the risk of bias and every revision rest on; the benchmark showed the largest quality gap between the two models here |
+| `rob` | Haiku, medium | drafts a person confirms |
+| `synthesize` | Sonnet, high | the conclusions; a handful of calls |
+| `feedback` | Sonnet, medium | revisions and propagation: few calls, high stakes |
+| `roles.verifier` | GPT-6.1 Sol, medium | checks statements and feedback: a third family, independent of the writer (Claude) and the judge (Gemini) |
+| `roles.judge` | Gemini 3.1 Pro, low | evaluation; another family than the agent |
+| `roles.judge2` | GPT-6.1 Sol, low | second judge of a third family, so judge agreement bounds family bias |
+| `roles.reviewer` | Gemini 3.8 Flash, low | Claim 1's simulated reviewer; keep it fixed across the runs you compare |
+
+Costs (benchmark sizes: about 300 records, 130 full texts, 26 included): a review runs for about $2, of which extraction with Sonnet is about $1. Haiku everywhere was $1.36; Sonnet everywhere would be about $12.
 
 ## How to write a config
 

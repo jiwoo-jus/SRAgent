@@ -30,7 +30,8 @@ def test_api_transport(provider, monkeypatch):
         assert calls["client"]["base_url"].startswith("https://generativelanguage.googleapis.com/")
 
 def test_unsupported_provider():
-    cfg = load_config(None, {"llm_defaults": {"provider": "unsupported"}})
+    cfg = load_config(None, {"llm_defaults": {"provider": "unsupported", "model": "not-in-the-catalog"}})   # a catalogued model's provider is a fact
+    assert role_cfg(load_config(None, {"llm_defaults": {"provider": "unsupported"}}), "agent")["provider"] == "openai"   # gpt-6.1-sol: from the catalog
     with pytest.raises(ValueError, match="Unsupported API provider"):
         LLM(cfg, "agent", CostTracker(1), None)
 
