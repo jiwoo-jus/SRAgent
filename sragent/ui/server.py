@@ -662,7 +662,16 @@ class App:
         for t in tlist:
             t["pending"] = t["id"] in pend
         nf = new_local_files(ctx) if ctx.store.get("protocol") else []
+        sync_t = next((t for t in tlist if t["kind"] == "sync"), None)
+        from .. import graph
+        stale = graph.stale_summary(ctx.store) if ctx.store.get("protocol") else {"n": 0, "by_type": {}, "pinned": 0}
+        stale["est_usd"] = None
+        if sync_t:
+            import re as _re
+            m = _re.search(r"\$([0-9.]+)", sync_t["question"])
+            stale["est_usd"] = float(m.group(1)) if m else None
         return {"next": todos.next_action(ctx, tlist, self.job is not None, len(nf)),
+                "stale": stale,
                 "ruled": todos.rule_exclusions(ctx),
                 "run": {"name": self.run_dir.name, "run_dir": str(self.run_dir), "config": self.config_path,
                         "config_rel": getattr(self, "config_rel", self.config_path), "benchmark": is_benchmark(self.cfg),
@@ -875,6 +884,9 @@ def make_handler(ws: Workspace):
                     return self._send(200, study_detail(app.ctx(), q.get("rid", [""])[0]))
                 if path == "/api/jobs":
                     return self._send(200, app.jobs())
+                if path == "/api/impact":
+                    from .. import engine
+                    return self._send(200, engine.preview(app.ctx(), q.get("node", [""])[0]))
                 if path == "/api/job_log":
                     return self._send(200, app.job_log(q.get("id", [""])[0]), "text/plain")
                 if path == "/api/history":

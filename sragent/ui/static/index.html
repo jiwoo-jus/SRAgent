@@ -697,7 +697,10 @@ function renderSteps(fromPoll){
       <div class="sa">${s.todos ? `<button class="btn sm" onclick="goTodoStep('${s.key}')">Review ${s.todos} ${ic("arrowR","sm")}</button>` : ""}
         ${s.run_until ? `<button class="btn sm ghost reveal" onclick="presetRun('${s.run_until}')" title="Open Run with this stage selected">${ic("play","sm")} Run to here</button>` : ""}</div></li>`;
   }).join("");
-  $("#v-steps").innerHTML = nextBanner() + kpis + `
+  const stale = S.stale || {n:0};
+  const staleBox = stale.n ? `<div class="callout warn">${ic("refresh")}<div class="grow">${stale.n} output${stale.n>1?"s are":" is"} out of date: a dependency changed after ${stale.n>1?"they were":"it was"} computed (${Object.entries(stale.by_type||{}).map(([t,n]) => `${n} ${t}`).join(", ")}${stale.pinned ? `; ${stale.pinned} decided or edited by you, kept` : ""}).${stale.est_usd != null ? ` Updating costs about ${usd(stale.est_usd)}.` : ""}
+      <button class="link" onclick="goTodoGroup('sync')">See the plan and update</button></div></div>` : "";
+  $("#v-steps").innerHTML = nextBanner() + staleBox + kpis + `
     <div class="card"><div class="card-h"><div class="grow"><h2>Review pipeline</h2><div class="sub">${nDone} of ${S.steps.length} steps done</div></div>
       <div style="width:160px" class="bar" title="${nDone} of ${S.steps.length} done"><i style="width:${Math.round(100*nDone/S.steps.length)}%"></i></div></div>
       <ol class="stepper">${rows}</ol></div>
@@ -1267,7 +1270,7 @@ function renderStudy(){
     <label></label><div class="row"><button class="btn primary" ${rr.step?"":"disabled"} onclick="doRerun()">${ic("play","sm")} Re-run</button><span id="rrest" class="small mut"></span><span id="rrmsg" class="msg"></span></div>
     </div><div class="hint" style="margin-top:14px">The new result is not applied directly. It appears as a proposal (with the dependent changes) in the To-do list and below; accepting it updates everything at once. Comments at the bottom of this page can also be sent to the agent.</div></div></details>`);
 
-  const editBar = (label) => `${editNote()}<div class="row" style="margin-top:12px"><button class="btn primary" onclick="saveEdit()">${label}</button><button class="btn ghost" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg" class="msg"></span></div>`;
+  const editBar = (label) => `${editNote()}${impactLine()}<div class="row" style="margin-top:12px"><button class="btn primary" onclick="saveEdit()">${label}</button><button class="btn ghost" onclick="ST.edit=null;renderStudy()">Cancel</button><span id="edmsg" class="msg"></span></div>`;
   // screening
   if (d.screening) {
     const s = d.screening;
@@ -1357,6 +1360,17 @@ function renderStudy(){
        <td class="small">${esc(h.op)}: ${esc(h.changes.join("; "))}</td><td class="small">${badge(h.actor, h.actor==="user"?"info":"")}</td><td class="small mut">${esc(h.reason)}</td></tr>`).join("")}</tbody></table></div>`, "", "s-hist"));
   $("#v-studies").innerHTML = out.join("");
   studyEst();
+}
+function impactNode(){ const E = ST.edit || {}; if (!ST.d) return null; return E.kind === "syn" ? E.node : E.kind ? `${E.kind}:${ST.d.rid}` : null; }
+function impactLine(){
+  const node = impactNode(); if (!node) return "";
+  if (!ST.impact || ST.impact.node !== node) {
+    if (!ST.impactLoading) { ST.impactLoading = node; api("/api/impact?node=" + encodeURIComponent(node)).then(r => { ST.impactLoading = null; ST.impact = r; if (impactNode() === node) renderStudy(); }); }
+    return `<div class="hint" style="margin-top:8px"><span class="spin" style="display:inline-block;vertical-align:-2px"></span> Checking what this change would reach…</div>`;
+  }
+  const I = ST.impact, reach = Object.entries(I.reach || {});
+  if (!reach.length) return `<div class="hint" style="margin-top:8px">${ic("info","sm")} No other output depends on this one.</div>`;
+  return `<div class="callout info" style="margin:10px 0 0;font-size:12.5px">${ic("info")}<div>This change would reach ${reach.map(([t, ids]) => `<b>${ids.length}</b> ${esc(t)}${ids.length>1?"s":""} (${ids.slice(0,4).map(esc).join(", ")}${ids.length>4?", …":""})`).join(", ")}${I.cost && I.cost.total_usd != null ? `; bringing them up to date costs about ${usd(I.cost.total_usd)}` : ""}. After saving, the To-do list offers the update.</div></div>`;
 }
 function editNote(){ return `<div class="form" style="margin-top:12px"><label>Note (kept in the history)</label><input placeholder="Optional" value="${esc((ST.edit||{}).note||"")}" oninput="ST.edit.note=this.value"></div>`; }
 function editSyn(id){ const s = ST.d.synthesis.find(x => x.id === id); ST.edit = {kind:"syn", node:id, text:s.text, cites:s.cites.join(", "), note:""}; renderStudy(); }

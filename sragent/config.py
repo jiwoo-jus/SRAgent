@@ -99,7 +99,13 @@ DEFAULTS: dict[str, Any] = {
         "citation_chasing_max_citing": 400,
         "validate_terms": True,
         "verify_synthesis": True,
+        "skip_stages": [],            # stages to leave out, e.g. [rob]; plan, screen and report cannot be skipped
     },
+    # How the update engine treats each kind of output when it is out of date (engine.py):
+    #   auto     bring it up to date and apply (the agent's own work)
+    #   propose  bring it up to date in a sandbox and propose the result for a person to accept
+    #   manual   only list it; a person decides what to do
+    "update_policy": {"screen": "auto", "extraction": "auto", "rob": "auto", "synthesis": "auto"},
     "feedback": {
         "verify_feedback": True,      # check user feedback against evidence first
         "propagate": True,            # dependency-aware (True) vs local-edit (False)
@@ -163,6 +169,12 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
         raise ValueError("pipeline.fulltext_unclear: await leaves records for a person to decide; "
                          "with human_mode: agent_only set it to include or exclude")
     _resolve_stage_models(cfg)
+    for k, v in (cfg.get("update_policy") or {}).items():
+        if k not in ("screen", "extraction", "rob", "synthesis") or v not in ("auto", "propose", "manual"):
+            raise ValueError(f"update_policy.{k}: {v!r}; keys are screen, extraction, rob, synthesis and values auto, propose or manual")
+    bad = [x for x in (p.get("skip_stages") or []) if x in ("plan", "screen", "report")]
+    if bad:
+        raise ValueError(f"pipeline.skip_stages: {', '.join(bad)} cannot be skipped")
     if p["max_records"] and not is_benchmark(cfg):
         raise ValueError("pipeline.max_records drops records at random; it is only for benchmark topics "
                          "(records.source: synergy), where the known answers are always kept")

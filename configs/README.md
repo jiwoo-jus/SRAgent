@@ -172,6 +172,9 @@ Defaults are in parentheses.
 | `citation_chasing` (true), `citation_chasing_rounds` (1), `citation_chasing_max_citing` (400) | follow references and citations of included studies |
 | `validate_terms` (true) | check drug and disease terms in RxNorm, PubChem, ChEMBL, MONDO |
 | `verify_synthesis` (true) | check every synthesis statement against the cited data |
+| `skip_stages` ([]) | stages to leave out, e.g. `[rob]` or `[snowball]`; `plan`, `screen` and `report` cannot be skipped |
+
+**`update_policy` (run file)**: how the update engine treats each kind of output when it is out of date (a dependency changed after it was computed): `screen`, `extraction`, `rob`, `synthesis`, each `auto` (brought up to date and applied: the default), `propose` (brought up to date in a sandbox and offered in the To-do list to accept or reject) or `manual` (only listed; a person decides). Example: `update_policy: {synthesis: propose}` keeps every change to the conclusions under your approval. Outputs a person decided, confirmed or edited are never overwritten whatever the policy.
 
 **`feedback` (run file)**: `verify_feedback` (true, check feedback against the evidence first), `propagate` (true, revise dependent outputs), `auto_accept` (false, apply proposals without confirmation), `post_check` (true), `max_repair_rounds` (1), `global_audit` (true).
 

@@ -974,3 +974,61 @@ def test_disabled_rule_exclusions_are_undone_and_retired_ids_are_not_revived(tmp
     synthesis.write_statements(ctx, [{"id": sid.split(":")[1], "text": "A new statement about 12 participants.", "cites": ["1001"]}], "test")
     assert st.get(sid)["status"] == synthesis.RETIRED                   # the retired one is untouched
     assert any(n["data"]["text"].startswith("A new statement") and n["status"] == "active" for n in st.by_type("synthesis"))
+
+
+# ---------------------------------------------------------------- flexibility (refactor step 3)
+def test_stages_can_be_skipped_and_the_registry_drives_the_run(tmp_path):
+    from sragent import pipeline
+    assert [s["key"] for s in pipeline.REGISTRY] == pipeline.STAGES
+    ctx = make_ctx(tmp_path, extra_cfg={"pipeline": {"skip_stages": ["rob", "snowball"]}})
+    assert pipeline.enabled(ctx) == [k for k in pipeline.STAGES if k not in ("rob", "snowball")]
+    pipeline.run(ctx)
+    st = ctx.store
+    assert st.by_type("extraction") and not st.by_type("rob") and st.by_type("synthesis", active_only=True)
+    assert "stage rob skipped" in (ctx.run_dir / "run.log").read_text()
+    import pytest
+    with pytest.raises(ValueError, match="cannot be skipped"):
+        load_config(None, {"pipeline": {"skip_stages": ["screen"]}})
+    with pytest.raises(ValueError, match="update_policy"):
+        load_config(None, {"update_policy": {"synthesis": "ask"}})
+
+
+def test_update_policy_propose_keeps_the_live_review_until_accepted(tmp_path):
+    from sragent import actions, engine, feedback, pipeline, sync, todos
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    ctx.cfg["update_policy"]["synthesis"] = "propose"
+    before = {n["id"]: json.dumps(n["data"], sort_keys=True) for n in st.by_type("synthesis", active_only=True)}
+    assert actions.edit(ctx, {"kind": "screen", "rid": "1002", "decision": "exclude", "criterion": "I2", "note": "paediatric"})["ok"]
+    p = engine.plan(ctx)
+    assert any(i["type"] == "synthesis" and i["action"] == "revise" for i in p["items"])
+    r = sync.sync_dependents(ctx)                                  # "Update now"
+    assert st.get("ext:1002")["status"] == "excluded"             # the extraction's retirement is applied (auto)
+    live = {n["id"]: json.dumps(n["data"], sort_keys=True) for n in st.by_type("synthesis", active_only=True)}
+    assert live == before                                          # the statements are untouched...
+    cs_todo = [t for t in todos.build(ctx) if t["kind"] == "changeset"]
+    assert cs_todo and "UP" in cs_todo[0]["id"]                    # ...and offered as a proposal
+    cid = cs_todo[0]["id"].split(":", 1)[1]
+    feedback.accept(ctx, cid)
+    after = [n for n in st.by_type("synthesis") if "1002" in json.dumps(n["history"]) or n["status"] != "active"]
+    assert all("1002" not in n["data"].get("cites", []) for n in st.by_type("synthesis", active_only=True))
+    # manual: only listed
+    ctx.cfg["update_policy"]["synthesis"] = "manual"
+    actions.edit(ctx, {"kind": "ext", "rid": "1001", "fields": {"sample_size": "15 participants"}})
+    cs = engine.execute(ctx, tag="t")
+    assert any(k["node"].startswith("syn:") and k.get("manual") for k in cs["kept"]) and not cs.get("proposed")
+
+
+def test_impact_preview_and_stale_summary(tmp_path):
+    from sragent import engine, pipeline
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    n_calls = sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines())
+    pv = engine.preview(ctx, "ext:1001")
+    assert sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines()) == n_calls   # no model call
+    assert "rob" in pv["reach"] and pv["reach"]["rob"] == ["rob:1001"]
+    assert pv["reach"].get("synthesis") and pv["cost"]["total_usd"] is not None
+    assert all(st_id != "ext:1001" for ids in pv["reach"].values() for st_id in ids)
+    assert ctx.store.get("ext:1001")["version"] == 1 and engine.plan(ctx)["items"] == []       # the preview changed nothing
+    assert engine.preview(ctx, "nope:1")["reach"] == {}

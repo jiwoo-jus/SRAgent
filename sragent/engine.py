@@ -184,10 +184,11 @@ def _cost(ctx: Ctx, items: list[dict]) -> dict:
 # ---------------------------------------------------------------- execution
 
 def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag: str = "update",
-            render: bool = True, max_rounds: int = MAX_ROUNDS) -> dict:
+            render: bool = True, max_rounds: int = MAX_ROUNDS, policy: bool = True) -> dict:
     """Run the plan until nothing in scope is stale. Every change goes into `cs["changes"]` (before/after)
     and `cs["kept"]` lists what a person pinned. On a sandbox store this is a proposal; on the live store
-    it is applied."""
+    it is applied, except what `update_policy` says to propose (done in a sandbox and saved as a proposal,
+    `cs["proposed"]`) or to leave to a person (`manual`). policy=False: the caller is already in a sandbox."""
     from . import rules
     from .stages import report
     cs = cs if cs is not None else {"id": tag, "changes": []}
@@ -196,8 +197,19 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
     cs.setdefault("rounds", [])
     st = ctx.store
     protocol = (st.get("protocol") or {}).get("data") or {}
+    pol = dict(ctx.cfg.get("update_policy") or {}) if policy else {}
+    deferred: dict[str, dict] = {}
     for rnd in range(max_rounds):
         p = plan(ctx, roots)
+        for i in p["items"]:    # the policy: what a person wants to see first is not applied
+            if i["action"] in ("keep", "render", "touch"):
+                continue
+            mode = pol.get(i["type"], "auto")
+            if mode == "propose":
+                deferred.setdefault(i["node"], i)
+                i["action"] = "keep"; i["manual"] = False; i["policy"] = "propose"
+            elif mode == "manual":
+                i["action"] = "keep"; i["manual"] = True; i["policy"] = "manual"
         todo = [i for i in p["items"] if i["action"] not in ("keep", "render")]
         kept = [i for i in p["items"] if i["action"] == "keep"]
         cs["rounds"].append({"round": rnd, "summary": p["summary"], "est_usd": p["cost"].get("total_usd")})
@@ -224,9 +236,60 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
             _rob(ctx, cs, i)
         # 5. the synthesis: revise the statements the changes reach, integrate new studies, check what changed
         _synthesis(ctx, cs, [x for x in todo if x["type"] == "synthesis"], tag)
+    if deferred:
+        cs["proposed"] = propose(ctx, sorted(deferred), tag)
     if render and st.get("protocol") and st.by_type("synthesis", active_only=True) and cs["changes"]:
         report.write_reports(ctx)
     return cs
+
+
+def propose(ctx: Ctx, nodes: list[str], tag: str = "update") -> str | None:
+    """Bring the given out-of-date nodes up to date in a sandbox and save the result as a proposal
+    (a change set the To-do list offers to accept or reject). Returns the change set id."""
+    import dataclasses
+    import time
+    from . import feedback
+    t0, usd0 = time.time(), ctx.hub.tracker.spent
+    sb = dataclasses.replace(ctx, store=ctx.store.clone())
+    cs = {"id": f"UP{int(t0 * 1000) % 10**9}", "kind": "update", "label": "Update of out-of-date outputs",
+          "feedback": f"Bring {len(nodes)} out-of-date output(s) up to date: {', '.join(nodes[:8])}{' …' if len(nodes) > 8 else ''}",
+          "target": nodes[0] if len(nodes) == 1 else None, "verdict": "update", "changes": [], "status": "proposed",
+          "created": t0, "mode": {"verify": False, "propagate": True}, "policy": "propose"}
+    execute(sb, cs, roots=None, tag=tag, render=False, policy=False)
+    cs["changes"] = [c for c in cs["changes"] if c["node"] in set(nodes) or c["node"].startswith("syn:")] or cs["changes"]
+    cs["explanation"] = f"{len(cs['changes'])} output(s) would change (update_policy: propose)."
+    cs["cost_usd"] = round(ctx.hub.tracker.spent - usd0, 5)
+    cs["seconds"] = round(time.time() - t0, 1)
+    if not cs["changes"]:
+        cs["status"] = "no_change"
+        feedback._save_changeset(ctx, cs)
+        return None
+    feedback.sandbox_delta(ctx.store, sb.store, cs)
+    feedback.record_bases(ctx.store, cs)
+    feedback._save_changeset(ctx, cs)
+    for n in nodes[:1]:
+        if ctx.store.get(n):
+            ctx.store.flag(n, f"{cs['label']} {cs['id']} pending review", actor="agent", source="update")
+    return cs["id"]
+
+
+def preview(ctx: Ctx, node_id: str) -> dict:
+    """What a change to this node would reach, before it is made: the plan on a copy where the node has
+    a new version. No model call; the cost is an estimate."""
+    import dataclasses
+    st = ctx.store
+    if not st.get(node_id):
+        return {"node": node_id, "items": [], "summary": {}, "cost": {"total_usd": 0}, "reach": {}, "lines": []}
+    sb = dataclasses.replace(ctx, store=st.clone())
+    sb.store.nodes[node_id]["version"] += 1
+    p = plan(sb, roots={node_id})
+    items = [i for i in p["items"] if i["node"] != node_id]
+    by_type = defaultdict(list)
+    for i in items:
+        by_type[i["type"]].append(i["node"])
+    return {"node": node_id, "items": items, "summary": _summary(items), "cost": _cost(ctx, items),
+            "reach": {t: sorted(v) for t, v in by_type.items()},
+            "lines": describe({"items": items})[:20]}
 
 
 def _record(cs: dict, node: str, before, after, action: str, role: str = "dependent", **extra) -> None:

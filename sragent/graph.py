@@ -158,6 +158,9 @@ def migrate(store, cfg: dict | None = None) -> list[str]:
     """Bring a store from an older schema to SCHEMA. Idempotent. Returns what was done."""
     done = []
     schema = int(store.meta.get("schema") or 1)
+    if schema < 2 and not store.nodes:     # a new review: nothing to migrate
+        store.meta["schema"] = SCHEMA
+        return done
     if schema < 2:
         # dep_versions: nodes made before the field existed are taken as up to date with their inputs
         for n in store.nodes.values():

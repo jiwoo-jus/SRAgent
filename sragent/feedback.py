@@ -367,7 +367,7 @@ def _propagate(sb: Ctx, cs: dict, src_id: str, before: dict, after: dict, reason
     # everything downstream in the graph: the update engine (stale because src_id moved to a new version)
     from . import engine
     before_n = len(cs["changes"])
-    engine.execute(sb, cs, roots={src_id}, tag=tp, render=False, max_rounds=2)
+    engine.execute(sb, cs, roots={src_id}, tag=tp, render=False, max_rounds=2, policy=False)
     done.update(c["node"] for c in cs["changes"][before_n:])
     done.update(st.descendants(src_id))
     if depth >= 2:
