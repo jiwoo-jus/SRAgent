@@ -58,6 +58,12 @@ class Ctx:
         store.run_dir = rd
         if check_config:   # a started review refuses a config whose review-defining settings changed
             config_lock.check(cfg, store, rd)
+        from . import graph
+        for what in graph.migrate(store, cfg):     # an older store: versioned edges, settings nodes
+            print(f"[store] migrated to schema {graph.SCHEMA}: {what}", flush=True)
+        if not fresh or not sp.exists():
+            graph.sync_settings(store, cfg)        # the review's settings as nodes (versions move only on change)
+        store.meta.setdefault("schema", graph.SCHEMA)
         hub = LLMHub(cfg, rd, mock_fn=mock_fn)
         return cls(cfg=cfg, run_dir=rd, hub=hub, store=store, topic=cfg.get("topic", {}))
 

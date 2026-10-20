@@ -11,7 +11,9 @@ Node ids follow a simple convention so that humans can reference them in feedbac
   syn:<k>                  one narrative synthesis statement
   report                   the rendered report (deterministic from the nodes above)
 
-Edges point from a node to the nodes it was derived from (`depends_on`).
+Edges point from a node to the nodes it was derived from (`depends_on`); `dep_versions` records the
+version of each dependency when the node was computed (see graph.py for the node types, the settings
+nodes and staleness).
 `descendants()` gives everything downstream of a change; `related()` adds the
 other outputs derived from the same study, which is what a dependency-aware
 revision must revisit (e.g. a corrected population can change the eligibility
@@ -67,6 +69,8 @@ class ReviewStore:
         self.changelog: list[dict] = []
         self.meta: dict[str, Any] = {}
         self._lock = threading.Lock()   # flag ids and the changelog are written from parallel stage workers
+        self._children: dict[str, set] = {}   # reverse index of depends_on
+        self._flushed = 0                     # changelog entries already on disk (the file is append-only)
 
     # ------------------------------------------------------------ basic ops
     def upsert(self, node_id: str, ntype: str, data: dict, *, depends_on: Iterable[str] = (),
@@ -74,11 +78,13 @@ class ReviewStore:
                actor: str = "agent", reason: str = "created") -> dict:
         now = time.time()
         old = self.nodes.get(node_id)
+        deps = sorted(set(depends_on))
         if old is None:
-            node = {"id": node_id, "type": ntype, "data": data, "depends_on": sorted(set(depends_on)),
+            node = {"id": node_id, "type": ntype, "data": data, "depends_on": deps, "dep_versions": self._dep_versions(deps),
                     "evidence": evidence or [], "status": status, "version": 1, "history": [],
                     "flags": [], "updated": now}
             self.nodes[node_id] = node
+            self._index(node_id, [], deps)
             self._log("create", node_id, actor, reason, None, data)
             return node
         old["history"].append({"version": old["version"], "data": copy.deepcopy(old["data"]),
@@ -86,7 +92,10 @@ class ReviewStore:
                                "ts": old["updated"]})
         prev = copy.deepcopy(old["data"])
         old["data"] = data
-        old["depends_on"] = sorted(set(depends_on)) if depends_on else old["depends_on"]
+        before = list(old["depends_on"])
+        old["depends_on"] = deps if depends_on else old["depends_on"]
+        old["dep_versions"] = self._dep_versions(old["depends_on"])   # computed now: current with its inputs
+        self._index(node_id, before, old["depends_on"])
         if evidence is not None:
             old["evidence"] = evidence
         old["status"] = status
@@ -94,6 +103,30 @@ class ReviewStore:
         old["updated"] = now
         self._log("update", node_id, actor, reason, prev, data)
         return old
+
+    def _dep_versions(self, deps: list[str]) -> dict[str, int]:
+        return {d: self.nodes[d]["version"] for d in deps if d in self.nodes}
+
+    def _index(self, node_id: str, before: list[str], after: list[str]) -> None:
+        for d in set(before) - set(after):
+            self._children.get(d, set()).discard(node_id)
+        for d in set(after) - set(before):
+            self._children.setdefault(d, set()).add(node_id)
+
+    def reindex(self) -> None:
+        """Rebuild the reverse index (after nodes were put or their edges changed directly)."""
+        self._children = {}
+        for n in self.nodes.values():
+            for d in n.get("depends_on", []):
+                self._children.setdefault(d, set()).add(n["id"])
+
+    def put_node(self, node: dict, actor="agent", reason="") -> dict:
+        """Place a whole node (e.g. one made in a sandbox), keeping the index and the log right."""
+        old = self.nodes.get(node["id"])
+        self.nodes[node["id"]] = node
+        self._index(node["id"], old["depends_on"] if old else [], node.get("depends_on", []))
+        self._log("create" if old is None else "update", node["id"], actor, reason, old["data"] if old else None, node["data"])
+        return node
 
     def set_status(self, node_id: str, status: str, actor="agent", reason=""):
         n = self.nodes[node_id]
@@ -145,7 +178,7 @@ class ReviewStore:
 
     # ------------------------------------------------------------ graph
     def children(self, node_id: str) -> list[str]:
-        return sorted(n["id"] for n in self.nodes.values() if node_id in n["depends_on"])
+        return sorted(self._children.get(node_id, ()))
 
     def descendants(self, node_id: str) -> list[str]:
         seen, q = set(), deque([node_id])
@@ -182,8 +215,15 @@ class ReviewStore:
         path = Path(path) if path else self.run_dir / "store.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_atomic(path, lambda f: json.dump({"meta": self.meta, "nodes": self.nodes}, f, indent=1), backup=True)
-        _write_atomic(path.with_name(path.stem + "_changelog.jsonl"),
-                      lambda f: f.writelines(json.dumps(e) + "\n" for e in self.changelog))
+        cl = path.with_name(path.stem + "_changelog.jsonl")
+        with self._lock:
+            new = self.changelog[self._flushed:]
+            if self._flushed and cl.exists():          # append only what is new; the file is never rewritten
+                with open(cl, "a") as f:
+                    f.writelines(json.dumps(e) + "\n" for e in new)
+            else:
+                _write_atomic(cl, lambda f: f.writelines(json.dumps(e) + "\n" for e in self.changelog))
+            self._flushed = len(self.changelog)
 
     @classmethod
     def load(cls, path: str | Path) -> "ReviewStore":
@@ -194,12 +234,15 @@ class ReviewStore:
         cl = path.with_name(path.stem + "_changelog.jsonl")
         if cl.exists():
             s.changelog = [json.loads(l) for l in cl.read_text().splitlines() if l.strip()]
+        s._flushed = len(s.changelog)
+        s.reindex()
         return s
 
     def clone(self) -> "ReviewStore":
         s = ReviewStore(self.run_dir)
         s.nodes = copy.deepcopy(self.nodes)
         s.meta = copy.deepcopy(self.meta)
+        s.reindex()
         return s
 
     def diff(self, base: "ReviewStore") -> dict:

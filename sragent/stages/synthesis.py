@@ -11,7 +11,7 @@ from .rob import rob_text
 
 
 def statement_deps(st, cites: list[str]) -> list[str]:
-    deps = []
+    deps = ["cfg:question"] if st.get("cfg:question") else []
     for rid in cites:
         for kind in ("ext", "rob"):
             if st.get(f"{kind}:{rid}"):

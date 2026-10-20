@@ -69,11 +69,14 @@ def cmd_run(args):
 def cmd_rescreen(args):
     from .stages import screening
     import yaml
+    from . import provenance
+    from .stages.planning import sync_criteria
     ctx = _ctx(args)
+    provenance.require_judgment_allowed(ctx, "re-applying an edited protocol")
     protocol = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
+    provenance.record(ctx, "human_judgment", "protocol_edited")
     ctx.store.upsert("protocol", "protocol", protocol, actor="user", reason="protocol edited by user")
-    for c in protocol.get("criteria", []):
-        ctx.store.upsert(f"crit:{c['id']}", "criterion", c, depends_on=["protocol"], actor="user", reason="protocol edited")
+    print(sync_criteria(ctx.store, protocol, actor="user", reason="protocol edited"))
     print(screening.rescreen_rule_only(ctx, protocol))
 
 
@@ -144,6 +147,10 @@ def cmd_status(args):
     for n in st.nodes.values():
         types[n["type"]] = types.get(n["type"], 0) + 1
     print("nodes:", types)
+    from . import graph
+    ss = graph.stale_summary(st)
+    print(f"out of date (a dependency changed since they were computed): {ss['n']} {ss['by_type']}"
+          + (f"; {ss['pinned']} of them decided or edited by a person (never overwritten)" if ss["pinned"] else ""))
     flags = [(n["id"], f) for n in st.nodes.values() for f in n["flags"] if f["status"] == "open"]
     print(f"open flags: {len(flags)}")
     for nid, f in flags[:40]:

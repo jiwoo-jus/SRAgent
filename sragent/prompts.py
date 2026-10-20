@@ -29,6 +29,7 @@ Return JSON:
           "outcomes": [str], "study_designs": [str]}},
  "criteria": [
    {{"id": "I1", "type": "inclusion", "text": str, "stage": "title_abstract" | "full_text"}},
+   {{"id": "I2", "type": "inclusion", "text": str, "stage": "title_abstract" | "full_text", "any_of": "A"}},
    ...,
    {{"id": "E1", "type": "exclusion", "text": str, "stage": "title_abstract" | "full_text"}},
    {{"id": "P1", "type": "practical", "text": str, "stage": "full_text"}}
@@ -37,6 +38,10 @@ Return JSON:
 }}
 Rules: criteria must be atomic (one condition each), checkable from a paper, and faithful to the
 seed eligibility text when one is given (do not add restrictions the seed does not state).
+A requirement that accepts alternatives ("original PK data, modelled PK data, or PK/PD relationships")
+is NOT several inclusion criteria that must all hold: either keep it as one criterion whose text lists
+the alternatives, or give the alternative criteria the same "any_of" label (a study passes the group
+when it meets any one of them). Never split "A or B" into separate criteria without "any_of".
 Use "full_text" stage only for criteria that usually cannot be judged from an abstract.
 Requirements about document availability or access (e.g. "full text accessible", "abstract available",
 language of the publication) are type "practical": they are checked by the review team from

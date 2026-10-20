@@ -159,7 +159,8 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
             "source_version": ftn["version"] if ftn else None}
     if kept:
         data["kept_human_edits"] = kept
-    st.upsert(f"ext:{rid}", "extraction", data, depends_on=[f"screen:{rid}", src_node, "protocol"],
+    from ..graph import field_deps
+    st.upsert(f"ext:{rid}", "extraction", data, depends_on=[f"screen:{rid}", src_node] + field_deps(ctx.cfg),
               evidence=evidence, reason="extracted")
     n = st.get(f"ext:{rid}")
     uncovered = []

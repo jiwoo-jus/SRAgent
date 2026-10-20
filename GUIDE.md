@@ -231,19 +231,22 @@ Other SYNERGY reviews (26 in total) can be used by changing `records.synergy_key
 
 ### 6.1 The dependency graph
 
-| Node id | Content | Depends on |
-|---|---|---|
-| `protocol`, `crit:I1` | protocol, criteria | |
-| `search` | strategy and hits | protocol |
-| `rec:<id>` | bibliographic record | search |
-| `screen:<id>` | eligibility decision | rec, protocol, criteria (+ ft at full-text stage) |
-| `ft:<id>` | full text or abstract | rec |
-| `ext:<id>` | extracted data | screen, ft, protocol |
-| `rob:<id>` | risk-of-bias draft | ext, ft |
-| `syn:S<k>` | synthesis statement | ext and rob of every cited study |
-| `report` | rendered report | synthesis statements |
+| Node id | Content | Depends on | Brought up to date by |
+|---|---|---|---|
+| `cfg:question`, `cfg:seed_eligibility`, `cfg:screening_rules`, `cfg:records`, `cfg:human_mode`, `cfg:rob_tool`, `field:<name>`, `dom:<name>` | the review's settings, one node each (written from the config; a version changes only when the value does) | | a settings change (section 8.1, `accept-config`) |
+| `protocol`, `crit:I1` | protocol, criteria (a criterion removed from the protocol is retired, not deleted) | cfg:question, cfg:seed_eligibility | re-planning |
+| `search` | strategy and hits | protocol, cfg:records | re-searching |
+| `rec:<id>` | bibliographic record | search | |
+| `screen:<id>` | eligibility decision | rec, protocol, criteria (+ ft at full-text stage) | re-assessing the criteria that changed |
+| `ft:<id>` | full text or abstract | rec | retrieval |
+| `ext:<id>` | extracted data | screen, ft, the `field:` definitions, cfg:question | extracting again |
+| `rob:<id>` | risk-of-bias draft | ext, ft, the `dom:` definitions | assessing again |
+| `syn:S<k>` | synthesis statement | ext and rob of every cited study, cfg:question | revising the statements the change affects |
+| `report` | rendered report | synthesis statements | rendering |
 
 `<id>` is the PMID when available (e.g. `ext:31003963`), otherwise a stable hash (`d6d14f1146b`). Every update keeps the previous version in `history`, and every change is written to `store_changelog.jsonl` with actor (agent, user, injector) and reason.
+
+Every edge carries the version of the dependency at the time the node was computed (`dep_versions`), so whether a node is **out of date** is a comparison, not a guess: it is stale when a dependency has a newer version, was retired or is gone (`sragent/graph.py`; `sragent status` counts them). A node a person decided, confirmed or edited is *pinned*: an update is proposed, never applied over it. The node types, their inputs and how each is brought up to date are declared in `graph.TYPES`; the engine that plans and runs those updates from the stale set is the next refactoring step. Stores written before this schema are migrated on load (edges taken as current, settings nodes added).
 
 `related(node)` is what a dependency-aware revision revisits. It is the node's descendants plus the other outputs derived from the same study (so a corrected population can reach the eligibility decision as well as the synthesis).
 
@@ -399,7 +402,7 @@ A run is one file in `configs/<benchmark|review>/<topic>/` that includes the fol
 | File | Content |
 |---|---|
 | `protocol.yaml` | editable protocol (human checkpoint) |
-| `store.json` | every node with `data`, `evidence`, `depends_on`, `status`, `version`, `history`, `flags`; `meta.config_lock` (the fixed settings and each started stage's model) and `meta.config_changes` (accepted changes). Written atomically; the previous version is kept as `store.json.bak` |
+| `store.json` | every node with `data`, `evidence`, `depends_on` and `dep_versions` (section 6.1), `status` (`active`, `excluded`, `retired`, `superseded`), `version`, `history`, `flags`; `meta.schema`, `meta.config_lock` (the fixed settings and each started stage's model) and `meta.config_changes` (accepted changes). Written atomically; the previous version is kept as `store.json.bak`. `store_changelog.jsonl` is append-only |
 | `store_changelog.jsonl` | every create, update, status change and flag, with actor and reason |
 | `report.md` | report-only view (methods, PRISMA counts, excluded-with-reasons table, study table, RoB table, synthesis, references) |
 | `report_evidence.html` | evidence-linked view, laid out as a formal review document (PRISMA 2020 / Cochrane conventions; prints to A4): status notice, structured summary, methods (PICO, criteria, search, selection, data items, quality domains), PRISMA 2020 flow diagram, numbered tables of study characteristics, results and quality judgements (traffic-light table and summary figure), synthesis with numbered Vancouver citations, references, and appendices with the evidence (statements with links to cited studies and self-check results, each extracted value with its located sentences (click to open the numbered source with the sentence highlighted), DB ids, RoB rationales and evidence, populations of the studies each statement cites, criterion-level decisions for every record, open flags, revision history, feedback boxes) |
@@ -441,7 +444,7 @@ These run during every review, not only in evaluation.
 |---|---|---|---|
 | 9.1 | **Located evidence** | Each source (abstract or full text) is split once into numbered sentences (`s1, s2, ...`) that keep their section heading and character offsets. Prompts show the numbered text, and the model cites the sentence ids behind every eligibility assessment, extracted value and RoB judgment (1 to 4 ids, anywhere in the paper, because evidence is usually spread over several places). An id is resolved by lookup, so the location is exact by construction and no verbatim copying is required. If a model returns text instead of ids, one fuzzy pass picks the closest sentence and nothing more is attempted. Status is soft (`located`, `partial`, `none`); only `none` (a value with no location at all) raises a flag. In the evidence view every location is a link that opens the numbered source and highlights the sentence. | no Every number in an extracted value must be in a cited sentence: one that is not, but occurs in exactly one sentence of the source, gets that sentence cited (`auto_evidence`); any other is listed in `uncovered` and the study is flagged. Nothing is guessed. |
 | 9.2 | **Term validation** | Drug entities are checked in RxNorm, PubChem (compound, then substance for biologics) and ChEMBL; diseases in MONDO via OLS4. Status `validated` (exact match in at least one DB), `approximate` (with the suggested preferred name) or `not_found` (flag). IDs (RxCUI, PubChem CID/SID, ChEMBL ID, MONDO ID) are shown in the evidence view. Validated synonyms also feed the search strategy and the screener (so ACE910 is recognised as emicizumab). | no |
-| 9.3 | **Rule-based eligibility** | The LLM judges each atomic criterion; the decision is derived by a fixed rule (exclude if an inclusion criterion is not met or an exclusion criterion is met; unclear goes forward at title/abstract and becomes "awaiting classification" after full text). Practical criteria (access, language) are left to humans. Every exclusion is therefore traceable to one criterion and one passage. | partly |
+| 9.3 | **Rule-based eligibility** | The LLM judges each atomic criterion; the decision is derived by a fixed rule (exclude if an inclusion criterion is not met or an exclusion criterion is met; unclear goes forward at title/abstract and becomes "awaiting classification" after full text). Practical criteria (access, language) are left to humans. Every exclusion is therefore traceable to one criterion and one passage. | partly Inclusion criteria that share an `any_of` label in the protocol are alternatives (met when any one is met), so "A or B or C" is never split into criteria that must all hold; the planner is told the same. A criterion the model leaves out of its reply counts as unclear. |
 | 9.3b | **Screening rules** | Before any LLM call, deterministic rules exclude records that are obviously ineligible from metadata alone: empty records, conference and meeting abstracts (PubMed "Congress"/"Conference Proceedings", Crossref proceedings, abstract-book titles, meeting-abstract DOI formats such as ASH `blood-2018-99-…`, ISPOR `j.jval`, EULAR codes), errata, editorials, reviews (topic option, because the protocol requires original data) and records with no abstract whose title mentions none of the key concepts or their database synonyms. Letters and case reports are kept (the gold standard includes some). Each rule gives a reason, never overrides a human decision, and can be restored in the UI. Rules are listed per topic (`screening_rules`) and re-applied automatically when they change. | no |
 | 9.4 | **Synthesis self-check** | Each statement is checked against the extracted data and cited sentences of the studies it cites (supported / partially supported / unsupported, overgeneralisation yes/no). Problems become visible flags. | yes The check is made by the `verifier` role (default: the agent role, not the synthesis stage's model). A statement that says something is absent or not reported is checked against every included study's data, not only the studies it cites. |
 | 9.5 | **Feedback verification** | Feedback is checked against the source before anything changes. Unsupported feedback is rejected with an explanation and stays visibly flagged on the node. | yes |
@@ -710,7 +713,7 @@ What was done to save budget, and what it bought.
 * Overgeneralisation detection (0/6 in both Claim 1 conditions) needs a dedicated scope check.
 * Cross-family judging was not possible in v2 (no OpenAI credit). Re-run the `judge` suite with an OpenAI or local judge2 when available; it only re-judges logged items.
 * RoB domains here are PK-study quality items; use RoB 2 or ROBINS-I for intervention reviews.
-* Feedback on the protocol itself is handled by editing `protocol.yaml` and `sragent rescreen`, not by the feedback command.
+* Feedback on the protocol itself is handled by editing `protocol.yaml` and `sragent rescreen`, not by the feedback command. An edited `protocol.yaml` is a person's judgment: it is recorded in `provenance.jsonl` (with the criteria added, removed and changed) and refused in the agent-only condition. Records already screened are not yet re-assessed on an added or changed criterion (the decision is re-derived from the stored assessments); that is what the update engine of the next refactoring step adds.
 * Claim 1 uses an LLM reviewer; the exported materials allow a small human session to check that the effect transfers to people.
 * Sample sizes are still modest (30 planted errors per condition, 10 revision cases per condition). Scale up on OSC before drawing firm conclusions.
 * Research prototype; not for clinical use.

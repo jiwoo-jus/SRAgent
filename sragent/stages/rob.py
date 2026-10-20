@@ -45,7 +45,8 @@ def rob_one(ctx: Ctx, rid: str) -> dict:
             "source_version": ftn["version"] if ftn else None,
             "domains": out.get("domains", []), "overall": out.get("overall", "unclear"),
             "status_note": "DRAFT - requires human confirmation"}
-    st.upsert(f"rob:{rid}", "rob", data, depends_on=[f"ext:{rid}", src_node], evidence=evidence,
+    from ..graph import domain_deps
+    st.upsert(f"rob:{rid}", "rob", data, depends_on=[f"ext:{rid}", src_node] + domain_deps(ctx.cfg), evidence=evidence,
               reason="risk-of-bias draft")
     for d in data["domains"]:
         if d.get("judgment") in ("low", "high") and d["check"]["status"] == "none":

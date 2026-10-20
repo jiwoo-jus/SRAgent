@@ -123,7 +123,7 @@ def search(ctx: Ctx, protocol: dict) -> list[dict]:
             g = gold.load(ctx.run_dir)
             g["benchmark_search_recall"] = bench
             gold.save(ctx.run_dir, g)
-    st.upsert("search", "search", strategy, depends_on=["protocol"], reason="search executed")
+    st.upsert("search", "search", strategy, depends_on=["protocol", "cfg:records"], reason="search executed")
     for r in recs:
         rid = r["rid"]
         if st.get(f"rec:{rid}") is None:

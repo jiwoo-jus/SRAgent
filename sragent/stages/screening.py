@@ -90,19 +90,34 @@ def rederive(protocol: dict, d: dict, policy: str = "await") -> tuple[str, list[
 
 
 def rule_decision(protocol: dict, assessments: list[dict], stage: str) -> tuple[str, list[str]]:
-    types = {c["id"]: c["type"] for c in protocol.get("criteria", [])}
-    stages = {c["id"]: c.get("stage", "title_abstract") for c in protocol.get("criteria", [])}
+    """Exclude if an inclusion criterion is not met or an exclusion criterion is met; uncertain if any is
+    unclear; else include. Inclusion criteria that share an `any_of` label are alternatives: the group
+    is met when any member is met, not met only when every member is not met, otherwise unclear."""
+    crits = {c["id"]: c for c in protocol.get("criteria", [])}
     failed, unclear = [], []
+    groups: dict[str, list[tuple[str, str]]] = {}
     for a in assessments:
         cid, val = a.get("id"), a.get("assessment")
-        if cid not in types or types[cid] == "practical":
+        c = crits.get(cid)
+        if c is None or c["type"] == "practical":
             continue
-        if stage == "title_abstract" and stages[cid] == "full_text":
+        if stage == "title_abstract" and c.get("stage", "title_abstract") == "full_text":
             continue
-        if (types[cid] == "inclusion" and val == "not_met") or (types[cid] == "exclusion" and val == "met"):
+        if c["type"] == "inclusion" and c.get("any_of"):
+            groups.setdefault(str(c["any_of"]), []).append((cid, val))
+            continue
+        if (c["type"] == "inclusion" and val == "not_met") or (c["type"] == "exclusion" and val == "met"):
             failed.append(cid)
         elif val == "unclear":
             unclear.append(cid)
+    for members in groups.values():
+        vals = [v for _, v in members]
+        if "met" in vals:
+            continue
+        if all(v == "not_met" for v in vals):
+            failed += [cid for cid, _ in members]
+        else:
+            unclear += [cid for cid, v in members if v != "not_met"]
     if failed:
         return "exclude", failed
     if unclear:

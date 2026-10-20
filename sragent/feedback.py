@@ -597,8 +597,7 @@ def commit(ctx: Ctx, sandbox, cs: dict, actor: str = "user"):
         live = ctx.store.get(nid)
         why = f"accepted feedback {cs['id']}" + ("" if nid in listed else " (dependent change)")
         if live is None:
-            ctx.store.nodes[nid] = copy.deepcopy(sn)
-            ctx.store._log("create", nid, actor, why, None, sn["data"])
+            ctx.store.put_node(copy.deepcopy(sn), actor=actor, reason=why)
             continue
         if any(live.get(k) != sn.get(k) for k in ("data", "status", "evidence", "depends_on")):
             ctx.store.upsert(nid, sn["type"], copy.deepcopy(sn["data"]), depends_on=sn["depends_on"],

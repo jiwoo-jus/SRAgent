@@ -776,3 +776,129 @@ def test_estimate_counts_rules_snowball_parts_and_updates(tmp_path):
     st.meta["synthesis_considered"] = ["1001"]                    # pretend two included studies were added since
     c3 = remaining_calls(ctx, None, "report")
     assert c3.get("synthesis", 0) == 0 and c3["feedback"] == 2 and c3["synthesis_verify"] == 2
+
+
+# ---------------------------------------------------------------- the graph as an explicit model (refactor step 1)
+def test_edges_carry_versions_and_a_changed_setting_makes_only_its_dependents_stale(tmp_path):
+    from sragent import graph, pipeline
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    assert st.meta["schema"] == graph.SCHEMA
+    ext = st.get("ext:1001")
+    assert "field:sample_size" in ext["depends_on"] and "protocol" not in ext["depends_on"]
+    assert ext["dep_versions"]["screen:1001"] == st.get("screen:1001")["version"]
+    assert graph.stale(st) == {}                                   # a finished review is current with its inputs
+    # the eligibility text changes (as if accepted via config_lock): the protocol is stale, nothing else is
+    cfg = json.loads(json.dumps(ctx.cfg))
+    cfg["topic"]["seed_eligibility"] = "Include everything with emicizumab PK data in any species."
+    changed = graph.sync_settings(st, cfg)
+    assert changed == ["cfg:seed_eligibility"]
+    assert set(graph.stale(st)) == {"protocol"}
+    assert graph.stale_reasons(st, "protocol")[0]["dep"] == "cfg:seed_eligibility"
+    # a changed extraction field makes the extractions stale; one a person edited is reported as pinned
+    from sragent import actions
+    actions.edit(ctx, {"kind": "ext", "rid": "1001", "fields": {"sample_size": "14 participants"}})
+    stale = graph.stale(st)
+    assert "ext:1001" not in stale                                   # the edit is current with its inputs
+    assert "rob:1001" in stale and all(sid in stale for sid in st.children("ext:1001") if sid.startswith("syn:"))
+    assert "ext:1002" not in stale and "rob:1002" not in stale       # the other study is untouched
+    cfg["topic"]["extraction_fields"][0]["description"] += " (with units)"
+    graph.sync_settings(st, cfg)
+    stale = graph.stale(st)
+    assert {"ext:1001", "ext:1002", "ext:1003"} <= set(stale) and "ft:1001" not in stale
+    assert graph.human_pinned(st.get("ext:1001")) and graph.stale_summary(st)["pinned"] >= 1
+    # a recomputed output is current again
+    from sragent.stages import extraction
+    extraction.extract_one(ctx, "1002")
+    assert "ext:1002" not in graph.stale(st)
+
+
+def test_old_store_is_migrated_once(tmp_path):
+    from sragent import graph, pipeline
+    from sragent.store import ReviewStore
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    # make it look like a schema-1 store: no dep_versions, no settings nodes, coarse edges
+    st = ctx.store
+    for n in st.nodes.values():
+        n.pop("dep_versions", None)
+    for nid in [n["id"] for n in st.by_type("setting")]:
+        del st.nodes[nid]
+    for n in st.by_type("extraction"):
+        n["depends_on"] = [d for d in n["depends_on"] if not d.startswith(("field:", "cfg:"))] + ["protocol"]
+    st.meta.pop("schema", None)
+    st.reindex()
+    st.save()
+    old = ReviewStore.load(ctx.run_dir / "store.json")
+    done = graph.migrate(old, ctx.cfg)
+    assert done and old.meta["schema"] == graph.SCHEMA
+    assert graph.migrate(old, ctx.cfg) == []                            # idempotent
+    e = old.get("ext:1001")
+    assert "field:sample_size" in e["depends_on"] and "protocol" not in e["depends_on"]
+    assert graph.stale(old) == {}                                       # migration makes nothing stale
+    assert old.get("cfg:question")["data"]["value"] == ctx.topic["question"]
+    assert set(old.children("cfg:question")) >= {"protocol"}            # reverse index rebuilt
+
+
+def test_removed_criteria_are_retired_and_protocol_edits_are_recorded(tmp_path):
+    import yaml
+    from sragent import pipeline, provenance
+    from sragent.stages import planning
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
+    p["criteria"] = [c for c in p["criteria"] if c["id"] != "I3"] + [{"id": "E9", "type": "exclusion", "text": "x", "stage": "full_text"}]
+    yaml.safe_dump(p, open(ctx.run_dir / "protocol.yaml", "w"), sort_keys=False)
+    r = planning.sync_criteria(st, p, actor="user", reason="test")
+    assert r["retired"] == ["I3"] and r["added"] == ["E9"] and st.get("crit:I3")["status"] == "retired"
+    # the next run notices the edited file: recorded as a person's judgment
+    planning.plan(ctx)
+    ev = provenance.events(ctx.run_dir)
+    assert any(e["action"] == "protocol_edited" and e.get("changed", {}).get("removed") == ["I3"] for e in ev)
+    # in the agent-only condition an edited protocol.yaml is refused
+    (tmp_path / "ao").mkdir()
+    ao = make_ctx(tmp_path / "ao", extra_cfg={"pipeline": {"human_mode": "agent_only", "fulltext_unclear": "include"}})
+    pipeline.run(ao, until="plan")
+    p2 = yaml.safe_load(open(ao.run_dir / "protocol.yaml")); p2["criteria"].pop()
+    yaml.safe_dump(p2, open(ao.run_dir / "protocol.yaml", "w"), sort_keys=False)
+    import pytest
+    with pytest.raises(provenance.NotAllowed):
+        planning.plan(ao)
+
+
+def test_any_of_criteria_are_alternatives():
+    from sragent.stages.screening import rule_decision
+    protocol = {"criteria": [{"id": "I1", "type": "inclusion", "text": "drug"},
+                             {"id": "I3", "type": "inclusion", "text": "original PK", "any_of": "pk"},
+                             {"id": "I4", "type": "inclusion", "text": "modelled PK", "any_of": "pk"},
+                             {"id": "I5", "type": "inclusion", "text": "PK/PD", "any_of": "pk"}]}
+    A = lambda **kw: [{"id": k, "assessment": v} for k, v in kw.items()]
+    assert rule_decision(protocol, A(I1="met", I3="met", I4="not_met", I5="not_met"), "full_text") == ("include", [])
+    assert rule_decision(protocol, A(I1="met", I3="not_met", I4="not_met", I5="unclear"), "full_text") == ("uncertain", ["I5"])
+    assert rule_decision(protocol, A(I1="met", I3="not_met", I4="not_met", I5="not_met"), "full_text") == ("exclude", ["I3", "I4", "I5"])
+    assert rule_decision(protocol, A(I1="not_met", I3="met", I4="met", I5="met"), "full_text") == ("exclude", ["I1"])
+    from sragent.stages.planning import criteria_text
+    assert "any of group pk" in criteria_text(protocol, "full_text")
+
+
+def test_reverse_index_and_append_only_changelog(tmp_path):
+    from sragent import feedback, pipeline
+    from sragent.store import ReviewStore
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    assert st.children("ext:1001") == sorted(n["id"] for n in st.nodes.values() if "ext:1001" in n["depends_on"])
+    n0 = len(st.changelog)
+    cl = ctx.run_dir / "store_changelog.jsonl"
+    size0 = cl.stat().st_size
+    cs = feedback.handle_feedback(ctx, "Population of 1002 is wrong", target="ext:1002", auto_accept=False)
+    feedback.accept(ctx, cs["id"])                                  # nodes put from the sandbox stay indexed
+    assert len(st.changelog) > n0 and cl.stat().st_size > size0
+    on_disk = [json.loads(l) for l in cl.read_text().splitlines()]
+    assert [(e["op"], e["node"]) for e in on_disk] == [(e["op"], e["node"]) for e in st.changelog]   # appended, in order
+    again = ReviewStore.load(ctx.run_dir / "store.json")
+    assert again.children("ext:1002") == st.children("ext:1002")
+    st.nodes["ext:1002"]["depends_on"] = []; st.reindex()
+    assert "ext:1002" not in st.children("screen:1002")

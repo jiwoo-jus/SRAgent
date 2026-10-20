@@ -144,6 +144,7 @@ def build_C(ctx: Ctx, rid: str) -> dict | None:
         c.store.nodes.pop(f"{kind}:{rid}", None)
     for n in c.store.by_type("synthesis"):
         n["depends_on"] = [d for d in n["depends_on"] if not d.endswith(f":{rid}")]
+    st.reindex()
     return {"type": "C_add_paper", "rid": rid, "pmid": rec["data"]["pmid"], "target": f"screen:{rid}", "R1": c.store,
             "error": f"Eligible study {rid} (PMID {rec['data']['pmid']}) is missing from the review.",
             "feedback": f"It looks like PMID {rec['data']['pmid']} was missed. Please add it to the review."}

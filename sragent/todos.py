@@ -347,10 +347,10 @@ def apply(ctx: Ctx, answer: dict) -> dict:
         elif opt == "edited":
             import yaml
             from .stages import screening
+            from .stages.planning import sync_criteria
             protocol = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
             st.upsert("protocol", "protocol", protocol, actor="user", reason="protocol edited by user")
-            for c in protocol.get("criteria", []):
-                st.upsert(f"crit:{c['id']}", "criterion", c, depends_on=["protocol"], actor="user", reason="protocol edited")
+            sync_criteria(st, protocol, actor="user", reason="protocol edited")
             r = screening.rescreen_rule_only(ctx, protocol)
             msg = f"protocol re-applied: {r['changed']} decisions changed"
     elif tid.startswith("elig:"):
