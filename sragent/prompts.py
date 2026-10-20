@@ -42,6 +42,10 @@ A requirement that accepts alternatives ("original PK data, modelled PK data, or
 is NOT several inclusion criteria that must all hold: either keep it as one criterion whose text lists
 the alternatives, or give the alternative criteria the same "any_of" label (a study passes the group
 when it meets any one of them). Never split "A or B" into separate criteria without "any_of".
+Mirror an inclusion requirement about the population or the kind of data with an exclusion criterion
+that names what fails it, so the screener has a concrete target: "data on humans" gets "Study reports
+only animal, in vitro or simulation data"; "original data" gets "Study reports no original data
+(review, editorial, commentary)". This adds no restriction the seed does not state.
 Use "full_text" stage only for criteria that usually cannot be judged from an abstract.
 Requirements about document availability or access (e.g. "full text accessible", "abstract available",
 language of the publication) are type "practical": they are checked by the review team from
@@ -73,20 +77,35 @@ CRITERIA:
 {synonyms}RECORD ({stage}):
 {record}
 
-For each criterion return "met", "not_met" or "unclear" and the ids of the record sentences that
-support the assessment ([] if the record says nothing relevant).
+For each criterion return "met", "not_met" or "unclear", one sentence of reason, whether the record
+reports the information the criterion needs, and the ids of the record sentences that support the
+assessment ([] if the record says nothing relevant).
 For an exclusion criterion, "met" means the exclusion applies.
-Be inclusive at the title/abstract stage: use "unclear" when the record does not give enough
-information, and "not_met" only when the record clearly shows the criterion fails.
-If there is no abstract, judge from the title and publication type: a title that is clearly about
-something else (a methods guideline, another drug, a society meeting programme) is "not_met", not
-"unclear". Reviews, editorials and commentaries do not provide original data.
+{stage_rule}
+Reviews, editorials and commentaries do not provide original data.
 
 Return JSON:
-{{"criteria": [{{"id": str, "assessment": "met"|"not_met"|"unclear", "evidence": ["s3", ...]}}],
+{{"criteria": [{{"id": str, "assessment": "met"|"not_met"|"unclear", "reason": str, "reported": bool,
+               "evidence": ["s3", ...]}}],
   "decision": "include"|"exclude"|"uncertain",
   "reason": str,
   "confidence": float}}"""
+
+# the stage-specific part of SCREEN: inclusive on titles and abstracts, decisive on full texts
+SCREEN_STAGE_RULE = {
+    "title_abstract": """Be inclusive at the title/abstract stage: use "unclear" when the record does not give enough
+information, and "not_met" only when the record clearly shows the criterion fails.
+If there is no abstract, judge from the title and publication type: a title that is clearly about
+something else (a methods guideline, another drug, a society meeting programme) is "not_met", not
+"unclear".""",
+    "full_text": """This is the full-text stage: the eligibility decision is made here, there is no later step.
+"unclear" is allowed only when the paper does not report the information the criterion needs
+(reported = false). When the paper reports it, decide: "met" or "not_met". What the paper reports
+either satisfies the criterion or it does not; doubt about whether the reported content counts
+(e.g. PK data in mice and monkeys when the criterion asks for humans; in vitro or simulated data
+when it asks for patients; a pooled analysis when it asks for original data) is "not_met", not
+"unclear". A criterion requiring humans is not met by animal, in vitro or simulation data alone.""",
+}
 
 # ----------------------------------------------------------------------------- extraction
 EXTRACT = """Extract the following items for one study included in a systematic review.
@@ -112,8 +131,8 @@ Rules:
   secondary numbers out rather than cite them without a sentence.
 - evidence: ids of the sentences that together support the value (1 to 6; they may be in
   different sections, e.g. a number in Results and its population in Methods). Every number in
-  the value must appear in one of the cited sentences; a number you cannot cite does not go in
-  the value.
+  the value should appear in one of the cited sentences; a number that appears nowhere in the
+  source must not go in the value.
 - If the item is not reported, value = "NR" and evidence = [].
 - Do not use outside knowledge about the study."""
 

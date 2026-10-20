@@ -714,8 +714,8 @@ def test_numbers_in_a_value_are_cited_or_flagged():
     item = {"value": "Trough 52 ug/mL at week 5; half-life 27 days; clearance 0.27 L/day in 12 adults"}
     cites = cover_numbers(item, [sid("Trough")], text)
     assert item["auto_evidence"] == [sid("Clearance")] and sid("Clearance") in cites   # 0.27: one sentence, cited
-    assert "27" in item["uncovered"]                                # 27 occurs in two sentences: not guessed, flagged
-    assert "12" in item["uncovered"]                                # "Twelve" is not a digit: flagged for the reviewer
+    assert "27" not in item["uncovered"]                            # 27 occurs in two sentences: in the paper, not guessed, not flagged
+    assert "12" in item["uncovered"]                                # "Twelve" is not a digit: found nowhere, flagged for the reviewer
     assert "52" not in item["uncovered"] and "5" not in item["uncovered"]   # cited / a single digit (not checked)
     plain = {"value": "Adults with haemophilia A"}
     assert cover_numbers(plain, ["s1"], text) == ["s1"] and "uncovered" not in plain
@@ -1058,3 +1058,28 @@ def test_cut_off_replies_are_retried_with_more_room_and_never_salvaged(tmp_path,
     llm.c["pricing"] = {"input_per_m": 1.0, "output_per_m": 1.0}
     assert llm.chat([{"role": "user", "content": "x"}], tag="t") == {"errors": []}
     assert seen == [4000, 8000] and tr.calls == 2
+
+
+def test_full_text_unclear_on_a_reported_criterion_is_not_met():
+    """At full text, "unclear" on an inclusion criterion the paper reports (PK data in mice and monkeys when the
+    criterion asks for humans) is settled as not met; at title/abstract, and when the paper does not report it,
+    the model's answer stands. The reasons travel with the decision."""
+    from sragent.stages.screening import settle, decide, criterion_reasons
+    protocol = {"criteria": [{"id": "I1", "type": "inclusion", "text": "Study is about emicizumab."},
+                             {"id": "I2", "type": "inclusion", "text": "Study provides data on humans."},
+                             {"id": "E1", "type": "exclusion", "text": "Study reports only animal data."}]}
+    A = lambda: [{"id": "I1", "assessment": "met", "reported": True, "reason": "ACE910 is emicizumab"},
+                 {"id": "I2", "assessment": "unclear", "reported": True, "reason": "PK data in mice and monkeys, not humans"},
+                 {"id": "E1", "assessment": "unclear", "reported": True, "reason": "animal and in vitro data only"}]
+    a = settle(protocol, A(), "full_text")
+    i2 = next(x for x in a if x["id"] == "I2")
+    assert i2["assessment"] == "not_met" and i2["model_assessment"] == "unclear" and i2["settled"]
+    assert next(x for x in a if x["id"] == "E1")["assessment"] == "unclear"      # exclusion criteria are not settled
+    assert decide(protocol, a, "full_text", "include")[:2] == ("exclude", ["I2"])  # no "included although unclear"
+    assert all("model_assessment" not in x for x in settle(protocol, A(), "title_abstract"))   # inclusive at T/A
+    b = settle(protocol, [{"id": "I2", "assessment": "unclear", "reported": False, "reason": "no population stated"}], "full_text")
+    assert b[0]["assessment"] == "unclear"                                           # the paper does not say: stays unclear
+    d = {"because": ["I2"], "criteria": a, "reason": "overall"}
+    assert criterion_reasons(protocol, d) == "I2 (Study provides data on humans.): PK data in mice and monkeys, not humans"
+    d2 = {"because": ["I2"], "criteria": [{"id": "I2", "assessment": "unclear"}], "reason": "needs full text"}
+    assert criterion_reasons(protocol, d2) == "I2 (Study provides data on humans.). Agent: needs full text"

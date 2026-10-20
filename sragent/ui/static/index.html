@@ -785,6 +785,7 @@ function eligTable(items){
           ${t.doi ? `<a target="_blank" href="https://doi.org/${esc(t.doi)}">DOI ${ic("ext","sm")}</a>` : ""}
           <button class="link small" onclick="openStudy('${t.rid}')">Study page</button></div>
         <div class="small" style="margin-top:6px"><span class="mut">Undecided:</span> ${esc(t.why)}</div>
+        ${t.agent_reason ? `<div class="xs mut" style="margin-top:4px"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em">Agent</span> ${esc(t.agent_reason)}</div>` : ""}
         ${t.abstract ? `<details data-k="abs-${esc(t.rid)}" style="margin-top:6px"><summary>Abstract</summary><div class="abstract">${esc(t.abstract)}</div></details>` : `<div class="xs mut" style="margin-top:6px">No abstract</div>`}
       </div>
       <div class="dec">${seg}${reason}
@@ -1276,7 +1277,7 @@ function renderStudy(){
     const s = d.screening;
     const AS = {met:"ok", not_met:"bad"};
     const crit = s.criteria.map(c => `<tr><td class="nowrap"><b class="mono">${esc(c.id)}</b><div class="xs mut">${esc(c.type)}</div></td><td class="small" style="min-width:180px">${esc(c.text)}</td>
-        <td>${badge(human(c.assessment), AS[c.assessment] || "warn", "sq")}</td><td style="min-width:300px">${evList(c.evidence)}</td></tr>`).join("");
+        <td>${badge(human(c.assessment), AS[c.assessment] || "warn", "sq")}${c.settled ? `<div class="xs mut" style="margin-top:4px">agent said "${esc(c.model_assessment)}": ${esc(c.settled)}</div>` : ""}${c.reason ? `<div class="xs mut" style="margin-top:4px;max-width:260px">${esc(c.reason)}</div>` : ""}</td><td style="min-width:300px">${evList(c.evidence)}</td></tr>`).join("");
     const crits = s.criteria.map(c => c.id);
     const ed = E.kind === "screen" ? `<div class="robedit"><div class="form">
         <label>Decision</label><div><div class="seg">${["include","exclude","awaiting"].map(v => `<button class="${E.decision===v?"on":""}" onclick="ST.edit.decision='${v}';renderStudy()">${human(v)}</button>`).join("")}</div></div>

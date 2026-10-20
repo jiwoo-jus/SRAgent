@@ -52,7 +52,9 @@ class Ctx:
         rd = Path(run_dir or cfg["run_dir"])
         rd.mkdir(parents=True, exist_ok=True)
         http.init_cache(cfg.get("cache_dir", ".cache"))
-        pubmed.configure(cfg.get("contact_email", ""), cfg.get("ncbi_api_key", ""))
+        from .config import load_secrets, role_cfg
+        sec = load_secrets(role_cfg(cfg, "agent").get("api_env"), cfg.get("_config_dir")) or {}
+        pubmed.configure(cfg.get("contact_email") or sec.get("contact_email") or "", cfg.get("ncbi_api_key") or sec.get("ncbi_api_key") or "")
         sp = rd / "store.json"
         store = ReviewStore.load(sp) if (sp.exists() and not fresh) else ReviewStore(rd)
         store.run_dir = rd

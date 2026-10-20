@@ -246,6 +246,8 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
             "title_abstract": d.get("title_abstract"),
             "criteria": [{"id": a.get("id"), "type": (crit.get(a.get("id")) or {}).get("type"),
                           "text": (crit.get(a.get("id")) or {}).get("text", ""), "assessment": a.get("assessment"),
+                          "reason": a.get("reason") or "", "model_assessment": a.get("model_assessment"),
+                          "settled": a.get("settled"),
                           "evidence": _ev(a), "check": (a.get("check") or {}).get("status")}
                          for a in d.get("criteria", [])]}
     if ext:

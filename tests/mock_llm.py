@@ -42,7 +42,7 @@ def mock_fn(messages, mode):
     if "Build a PubMed search" in u:
         return json.dumps({"concept_blocks": [], "query": "emicizumab[tiab]", "rationale": "mock"})
     if "Assess this record against each eligibility criterion" in u:
-        rec = u.split("RECORD", 1)[1]
+        rec = u.split("RECORD", 1)[1].split("For each criterion return", 1)[0]   # the record only, not the stage rule after it
         ok = "emicizumab" in rec.lower() or "ace910" in rec.lower()
         q = rec.split("Title:", 1)[-1][:40].strip()
         return json.dumps({"criteria": [{"id": i, "assessment": "met" if ok else "not_met", "evidence": ["s1"]} for i in ("I1", "I2", "I3")],

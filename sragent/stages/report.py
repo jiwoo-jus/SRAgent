@@ -147,7 +147,8 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
             continue
         block = [f"[screen:{rid}] decision={d['decision']} stage={d['stage']} because={d.get('because')}"]
         for a in d.get("criteria", []):
-            block.append(f"    {a.get('id')} ({crit.get(a.get('id'), '')[:60]}): {a.get('assessment')} | evidence: {_ev_txt(a)}")
+            block.append(f"    {a.get('id')} ({crit.get(a.get('id'), '')[:60]}): {a.get('assessment')}"
+                         f"{' | ' + str(a['reason'])[:200] if a.get('reason') else ''} | evidence: {_ev_txt(a)}")
         L.append(cap("\n".join(block)))
     L += ["", "### Extracted data with supporting passages"]
     for rid in st.included_ids():
@@ -813,8 +814,12 @@ def report_html(ctx: Ctx) -> str:
         rid = n["id"].split(":", 1)[1]
         d = n["data"]
         rec = (st.get(f"rec:{rid}") or {}).get("data", {})
-        crit_html = "".join(f"<div class='ev'><b>{_e(a.get('id'))}</b> {_badge(a.get('assessment'))} {_ev_html(a, None)}</div>"
+        crit_html = "".join(f"<div class='ev'><b>{_e(a.get('id'))}</b> {_badge(a.get('assessment'))}"
+                            f"{' <span class=note>(agent said ' + _e(a['model_assessment']) + ': ' + _e(a.get('settled', '')) + ')</span>' if a.get('model_assessment') else ''}"
+                            f"{' ' + _e(a['reason']) if a.get('reason') else ''} {_ev_html(a, None)}</div>"
                             for a in d.get("criteria", []))
+        if d.get("reason"):
+            crit_html = f"<div class='note'>Agent: {_e(d['reason'])}</div>" + crit_html
         H.append(f"<tr id='screen:{_e(rid)}'><td style='white-space:normal'><span class='mono'>{_e(rid)}</span> {_e((rec.get('title') or '')[:140])}</td>"
                  f"<td style='white-space:normal'>{_badge(d['decision'])}<div class='note'>{_e(_label(d['stage']))}"
                  f"{'; ' + _e(', '.join(d.get('because', []))) if d.get('because') else ''}</div>{_flags(n)}</td>"

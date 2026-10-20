@@ -67,8 +67,9 @@ _NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])")
 
 def cover_numbers(item: dict, cites: list, text: str) -> list:
     """Every number in a value should be in a cited sentence. A number that is not, but occurs in exactly
-    one sentence of the source, gets that sentence cited (recorded in item["auto_evidence"]); a number found
-    nowhere, or in several sentences, is listed in item["uncovered"] for the reviewer. Nothing is guessed."""
+    one sentence of the source, gets that sentence cited (recorded in item["auto_evidence"]); a number that
+    occurs in several sentences is left as it is (it is in the paper; which sentence is not guessed); a number
+    found nowhere in the source is listed in item["uncovered"] for the reviewer."""
     # single-digit integers (phase 1, 3 cohorts, week 5) carry little and match everywhere: not checked
     nums = [n for n in _NUM.findall(item["value"]) if len(n) <= 12 and not (n.isdigit() and int(n) < 10)]
     if not nums:
@@ -86,7 +87,7 @@ def cover_numbers(item: dict, cites: list, text: str) -> list:
         if len(where) == 1 and where[0]["sid"] not in ids and len(ids) + len(added) < 6:
             added.append(where[0]["sid"])
             cited_text += " " + where[0]["text"]
-        elif not any(rx.search(by_id[a]["text"]) for a in added):
+        elif not where:
             uncovered.append(n)
     if added:
         item["auto_evidence"] = added
@@ -171,7 +172,7 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
         elif item.get("uncovered"):
             uncovered.append(f"{name}: {', '.join(item['uncovered'][:5])}")
     if uncovered:   # one flag per study, not one per field
-        st.flag(n["id"], "Numbers that are not in the cited sentences (check them against the paper): "
+        st.flag(n["id"], "Numbers found nowhere in the paper's text (check them against the paper): "
                 + "; ".join(uncovered[:8]), actor="agent", source="evidence_check")
         for t in item.get("terms", []):
             if t["status"] == "not_found":

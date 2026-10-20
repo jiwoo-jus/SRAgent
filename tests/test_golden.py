@@ -78,7 +78,7 @@ def golden_mock(messages, mode):
     u = messages[-1]["content"]
     if "Assess this record against each eligibility criterion" in u:
         crit_part = u.split("CRITERIA:", 1)[1].split("RECORD (", 1)[0]
-        rec = u.split("RECORD (", 1)[1]
+        rec = u.split("RECORD (", 1)[1].split("For each criterion return", 1)[0]   # the record only, not the stage rule after it
         out = []
         for cid, ctype, text in re.findall(r"^- (\w+) \((\w+)\): (.*)$", crit_part, flags=re.M):
             if cid == "I1":

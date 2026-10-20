@@ -80,7 +80,8 @@ def build(ctx: Ctx) -> list[dict]:
             v = a.get("assessment")
             return v == "unclear" or (c["type"] == "inclusion" and v == "not_met") or (c["type"] == "exclusion" and v == "met")
         unclear = [a for a in d.get("criteria", []) if _bad(a)]
-        why = ", ".join(f"{a['id']} ({_short(crit[a['id']]['text'])})" for a in unclear[:4])
+        why = "; ".join(f"{a['id']} ({_short(crit[a['id']]['text'])})" + (f": {a['reason']}" if a.get("reason") else "")
+                        for a in unclear[:4])
         not_met = [a["id"] for a in unclear if (crit[a["id"]]["type"] == "inclusion" and a.get("assessment") == "not_met")
                    or (crit[a["id"]]["type"] == "exclusion" and a.get("assessment") == "met")]
         has_abs = bool(r.get("abstract"))
@@ -95,6 +96,7 @@ def build(ctx: Ctx) -> list[dict]:
                     f"{', '.join(r.get('pub_types') or [])}",
             "pmid": r.get("pmid", ""), "doi": r.get("doi", ""), "has_abstract": has_abs,
             "abstract": (r.get("abstract") or "")[:1200], "why": why or "criteria unclear",
+            "agent_reason": d.get("reason") or "",
             "suggest": suggest, "criteria": [c for c in crit if crit[c]["type"] != "practical"],
             "question": "Should this study be included?",
             "options": [{"value": "include", "label": "Include"}, {"value": "exclude", "label": "Exclude"},

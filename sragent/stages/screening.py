@@ -67,6 +67,38 @@ def complete_assessments(protocol: dict, out_criteria, stage: str) -> list[dict]
     return assessments
 
 
+def settle(protocol: dict, assessments: list[dict], stage: str) -> list[dict]:
+    """At the full-text stage an inclusion criterion is "unclear" only when the paper does not report the
+    information it needs. If the model said "unclear" and also that the paper reports it (reported: true),
+    the paper's content did not satisfy the criterion: the assessment becomes "not_met". The model's own
+    answer is kept as `model_assessment` so the change is visible. Title/abstract assessments are left alone."""
+    if stage == "full_text":
+        crits = {c["id"]: c for c in protocol.get("criteria", [])}
+        for a in assessments:
+            c = crits.get(a.get("id"))
+            if c and c["type"] == "inclusion" and a.get("assessment") == "unclear" and a.get("reported") is True:
+                a["model_assessment"] = "unclear"
+                a["assessment"] = "not_met"
+                a["settled"] = "the paper reports this and it does not satisfy the criterion"
+    return assessments
+
+
+def criterion_reasons(protocol: dict, d: dict, ids: list[str] | None = None) -> str:
+    """'I2 (Study provides data on humans): <the model's reason>' for the given criteria (default: `because`),
+    falling back to the model's overall reason when it gave none per criterion."""
+    crits = {c["id"]: c for c in protocol.get("criteria", [])}
+    ids = list(ids if ids is not None else d.get("because") or [])
+    parts = []
+    for a in d.get("criteria", []):
+        if a.get("id") in ids:
+            why = (a.get("reason") or "").strip()
+            parts.append(f"{a['id']} ({crits.get(a['id'], {}).get('text', '')})" + (f": {why}" if why else ""))
+    out = "; ".join(parts)
+    if not any(a.get("reason") for a in d.get("criteria", []) if a.get("id") in ids) and d.get("reason"):
+        out += f". Agent: {d['reason']}"
+    return out
+
+
 def decide(protocol: dict, assessments: list[dict], stage: str, policy: str = "await") -> tuple[str, list[str], str | None]:
     """(decision, because, unclear_by_rule). unclear_by_rule is the pipeline.fulltext_unclear policy
     ("include" / "exclude") when it decided a record still unclear after its full text, else None."""
@@ -152,9 +184,10 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
     out = ctx.agent.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(protocol, stage),
                                                         synonyms=synonyms_text(protocol),
-                                                        record=packed(text, limit), stage=stage.replace("_", "/"))),
+                                                        record=packed(text, limit), stage=stage.replace("_", "/"),
+                                                        stage_rule=prompts.SCREEN_STAGE_RULE[stage])),
                          tag=f"screen_{stage}{tag_suffix}")
-    assessments = complete_assessments(protocol, out.get("criteria"), stage)
+    assessments = settle(protocol, complete_assessments(protocol, out.get("criteria"), stage), stage)
     evidence = []
     for a in assessments:
         cites = cites_of(a)
@@ -206,9 +239,10 @@ def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str
     text, src_node = screen_source(st, rid, stage)
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
     out = ctx.agent.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(sub, stage), synonyms=synonyms_text(protocol),
-                                                        record=packed(text, limit), stage=stage.replace("_", "/"))),
+                                                        record=packed(text, limit), stage=stage.replace("_", "/"),
+                                                        stage_rule=prompts.SCREEN_STAGE_RULE[stage])),
                          tag=f"screen_{stage}{tag_suffix}")
-    fresh = complete_assessments(sub, out.get("criteria"), stage)
+    fresh = settle(sub, complete_assessments(sub, out.get("criteria"), stage), stage)
     evidence = list(n.get("evidence") or [])
     for a in fresh:
         cites = cites_of(a)
@@ -339,16 +373,19 @@ def sync_awaiting_flags(ctx: Ctx):
     """Screening flags follow the decision: one 'awaiting classification' flag while a person must decide,
     one 'included although unclear' flag when pipeline.fulltext_unclear: include decided it, none otherwise."""
     st = ctx.store
+    protocol = (st.get("protocol") or {}).get("data") or {}
     for n in st.by_type("screen"):
         d, rid = n["data"], n["id"].split(":", 1)[1]
         dec = d["decision"]
         want = None
         if dec == "awaiting":
             want = ("screening", f"Awaiting classification: criteria {d.get('because')} unclear after "
-                                 f"full-text screening (source: {st.text_of(rid)[1]}). Please decide.")
+                                 f"full-text screening (source: {st.text_of(rid)[1]}). Please decide. "
+                                 f"{criterion_reasons(protocol, d)}".rstrip())
         elif dec == "include" and d.get("unclear_by_rule") == "include":
             want = ("screening_unclear", f"Included by rule although criteria {d.get('because')} were still unclear "
-                                         f"after full-text screening (pipeline.fulltext_unclear: include). Check this inclusion.")
+                                         f"after full-text screening (pipeline.fulltext_unclear: include). Check this inclusion. "
+                                         f"{criterion_reasons(protocol, d)}".rstrip())
         for f in n["flags"]:
             if f["status"] == "open" and f["source"] in SCREEN_FLAG_SOURCES and (not want or f["source"] != want[0]):
                 st.resolve_flag(n["id"], f["id"], f"decision is now '{dec}'")

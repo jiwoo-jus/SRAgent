@@ -130,7 +130,7 @@ Defaults are in parentheses.
 | `run_dir` (derived: `runs/<run file's path under configs/>`) | output folder; write it only to override |
 | `cache_dir` (`.cache`) | LLM and HTTP cache shared by all runs |
 | `budget_usd` (5.0) | cumulative cost cap for `run_dir`; the run stops cleanly when reached |
-| `contact_email` | sent to NCBI, Unpaywall and OpenAlex; Unpaywall needs it |
+| `contact_email` | sent to NCBI, Unpaywall and OpenAlex; Unpaywall needs it. May also be put in `api_env.yaml` (kept out of git) instead of the run file |
 | `ncbi_api_key` | optional, higher PubMed rate limit |
 | `models_file` (`configs/models.yaml`) | the model catalog |
 

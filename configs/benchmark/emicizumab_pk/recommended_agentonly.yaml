@@ -36,7 +36,7 @@ pipeline:
   human_mode: agent_only
   fulltext_unclear: include  # the agent decides: still unclear after the full text -> included and flagged
   max_records: null          # all records
-  context_chars: 30000
+  context_chars: 120000       # ~30k tokens: a whole paper in one read for Claude, GPT and Gemini (30000 forced chunking + merges)
   fulltext_screen_chars: 12000
 eval:
   budget_usd: 8.5            # per evaluation run (each run has its own usage.jsonl)
