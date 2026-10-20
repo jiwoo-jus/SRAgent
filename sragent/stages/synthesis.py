@@ -59,6 +59,11 @@ def write_statements(ctx: Ctx, statements: list[dict], reason: str, actor: str =
         if not isinstance(s, dict) or not s.get("id") or not s.get("text"):
             continue
         sid = f"syn:{s['id']}"
+        old = st.get(sid)
+        if old is not None and old["status"] != "active":   # an id of a retired statement: give the new one a fresh id
+            k = max([int(x["data"]["id"][1:]) for x in st.by_type("synthesis") if str(x["data"].get("id", ""))[1:].isdigit()] + [0]) + 1
+            s = {**s, "id": f"S{k}"}
+            sid = f"syn:{s['id']}"
         keep.add(sid)
         cites = [str(c).strip("[] ") for c in s.get("cites", [])]
         cites, fixes = reconcile_citations(st, s["text"], cites)

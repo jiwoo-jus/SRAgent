@@ -70,6 +70,8 @@ def sync_criteria(st, protocol: dict, actor: str = "agent", reason: str = "proto
         elif old["data"] != c or old["status"] != "active":
             st.upsert(cid, "criterion", c, depends_on=["protocol"], actor=actor, reason=reason)
             out["changed"].append(c["id"])
+        else:
+            st.touch(cid)          # unchanged by this protocol edit: current with the new protocol version
     for n in st.by_type("criterion"):
         if n["id"] not in ids and n["status"] == "active":
             st.set_status(n["id"], "retired", actor=actor, reason="removed from the protocol")

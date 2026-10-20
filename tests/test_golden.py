@@ -8,8 +8,8 @@ extracted values, risk-of-bias judgments, synthesis statements and their citatio
 the change sets. Store internals (node versions, edges, timestamps, costs) are not part of it, so a refactor
 that keeps the behaviour keeps these tests green.
 
-A scenario named *_known_gap freezes a current limitation (e.g. an added criterion is not assessed for records
-already screened). A refactor that fixes it is expected to change that golden file, on purpose.
+A scenario named *_known_gap would freeze a current limitation; a change that fixes it is expected to change
+that golden file, on purpose (none at the moment).
 
 Update the golden files after an intended change:   SRAGENT_UPDATE_GOLDEN=1 pytest -q tests/test_golden.py
 then review the diff of tests/golden/ before committing it.
@@ -283,9 +283,10 @@ def test_golden_protocol_remove_criterion(tmp_path):
     check("protocol_remove_criterion", {"message": r["message"], "after_rescreen": after_rescreen, "after_next_run": view(ctx)})
 
 
-def test_golden_protocol_add_criterion_known_gap(tmp_path):
-    """Protocol edit that adds an exclusion criterion. Today records already screened are not assessed on it
-    (a missing assessment counts as passed): nothing changes for them. Refactor step 2 is meant to change this."""
+def test_golden_protocol_add_criterion(tmp_path):
+    """Protocol edit that adds an exclusion criterion: the next run assesses every screened record on that
+    criterion only (the update engine), re-derives the decisions, and the outputs of a study that is now
+    excluded are retired, including a statement left without a cited study."""
     from sragent import pipeline, todos
     ctx = reviewed(tmp_path)
     p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
@@ -293,7 +294,7 @@ def test_golden_protocol_add_criterion_known_gap(tmp_path):
     (ctx.run_dir / "protocol.yaml").write_text(yaml.safe_dump(p, sort_keys=False))
     r = todos.apply(ctx, {"todo_id": "protocol", "option": "edited"})
     pipeline.run(ctx)
-    check("protocol_add_criterion_known_gap", {"message": r["message"], "review": view(ctx)})
+    check("protocol_add_criterion", {"message": r["message"], "review": view(ctx)})
 
 
 def test_golden_manual_edit_then_propagate(tmp_path):

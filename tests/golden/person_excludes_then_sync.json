@@ -7,7 +7,22 @@
   "has_synthesis": true,
   "need_extract": [],
   "need_rob": [],
-  "new_for_synthesis": []
+  "new_for_synthesis": [],
+  "stale": {
+   "est_usd": 0.0,
+   "kept": [],
+   "lines": [
+    "ext:G02: retire (screen:G02 v2 -> v3)",
+    "rob:G02: retire (study no longer included)",
+    "syn:S2: revise (cites excluded G02)"
+   ],
+   "n": 3,
+   "summary": {
+    "extraction:retire": 1,
+    "rob:retire": 1,
+    "synthesis:revise": 1
+   }
+  }
  },
  "review": {
   "criteria": {

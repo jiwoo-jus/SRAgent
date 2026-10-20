@@ -402,7 +402,8 @@ def test_chunked_extraction_and_feedback_loops(tmp_path):
     cs = feedback.handle_feedback(ctx, "The sample size of 1002 is wrong", target="ext:1002", auto_accept=False)
     assert cs["status"] == "proposed" and cs["base_versions"] and cs.get("post_checks")
     n = st.get("ext:1002")
-    st.upsert(n["id"], "extraction", dict(n["data"]), depends_on=n["depends_on"], evidence=n["evidence"], actor="user", reason="edit")
+    d = json.loads(json.dumps(n["data"])); d["fields"]["sample_size"]["value"] = "61 children"   # a real edit in between
+    st.upsert(n["id"], "extraction", d, depends_on=n["depends_on"], evidence=n["evidence"], actor="user", reason="edit")
     r = todos.apply(ctx, {"todo_id": f"cs:{cs['id']}", "option": "accept"})
     assert not r["ok"] and "out of date" in r["message"]
     # vague feedback is split into several requests
@@ -902,3 +903,74 @@ def test_reverse_index_and_append_only_changelog(tmp_path):
     assert again.children("ext:1002") == st.children("ext:1002")
     st.nodes["ext:1002"]["depends_on"] = []; st.reindex()
     assert "ext:1002" not in st.children("screen:1002")
+
+
+# ---------------------------------------------------------------- the update engine (refactor step 2)
+def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
+    import yaml
+    from sragent import actions, engine, pipeline, todos
+    from sragent.stages import planning
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    assert engine.plan(ctx)["items"] == []                              # a finished review: nothing to do
+    # a person decides 1002 and edits 1001's extraction; then a criterion is added to the protocol
+    n = st.get("screen:1002")
+    st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "stage": "full_text"}, depends_on=n["depends_on"])
+    assert todos.apply(ctx, {"todo_id": "elig:1002", "option": "include", "text": "PK table"})["ok"]
+    actions.edit(ctx, {"kind": "ext", "rid": "1001", "fields": {"sample_size": "14 participants"}, "note": "Table 1"})
+    p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
+    p["criteria"].append({"id": "E1", "type": "exclusion", "text": "studies only in children", "stage": "title_abstract"})
+    yaml.safe_dump(p, open(ctx.run_dir / "protocol.yaml", "w"), sort_keys=False)
+    n_calls = sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines())
+    planning.plan(ctx)
+    plan = engine.plan(ctx)
+    assert sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines()) == n_calls   # planning made no model call
+    by = {i["node"]: i for i in plan["items"]}
+    assert by["screen:1001"]["action"] == "reassess" and by["screen:1001"]["criteria"] == ["E1"]
+    assert by["screen:1002"]["action"] == "reassess" and by["screen:1002"]["pinned"]              # assessed, decision kept
+    assert by["screen:1004"]["action"] == "reassess"                                             # excluded ones too
+    assert plan["cost"]["total_usd"] is not None and plan["summary"]["screen:reassess"] >= 3
+    cs = engine.execute(ctx, tag="test")
+    d2 = st.get("screen:1002")["data"]
+    assert d2["decision"] == "include" and d2["human_decision"] and "E1" in {a["id"] for a in d2["criteria"]}
+    assert "agent_decision" in d2                                                                # shown beside the decision
+    assert {a["id"] for a in st.get("screen:1001")["data"]["criteria"]} >= {"I1", "I2", "I3", "E1"}
+    assert st.get("ext:1001")["data"]["fields"]["sample_size"]["value"] == "14 participants"      # the edit survived
+    left = engine.plan(ctx)["items"]                                    # nothing left to do: only notes for a person
+    assert [i for i in left if i["action"] not in ("keep", "render")] == []
+    assert {i["node"] for i in left} <= {"search", "report"}            # the search was built from the old protocol
+
+
+def test_engine_identical_recomputation_reaches_nothing(tmp_path):
+    from sragent import engine, graph, pipeline
+    from sragent.stages import extraction
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    v = {k: st.get(k)["version"] for k in ("ext:1001", "rob:1001")}
+    extraction.extract_one(ctx, "1001")                                 # same source, same values
+    assert st.get("ext:1001")["version"] == v["ext:1001"]              # not a new version
+    assert graph.stale(st) == {} and engine.plan(ctx)["items"] == []    # so the risk of bias and statements stay current
+
+
+def test_disabled_rule_exclusions_are_undone_and_retired_ids_are_not_revived(tmp_path):
+    from sragent import pipeline, rules
+    from sragent.stages import synthesis
+    ctx = make_ctx(tmp_path)
+    ctx.topic["screening_rules"] = ["conference_abstract"]
+    pipeline.run(ctx, until="screen")
+    st = ctx.store
+    n = st.get("screen:1004")
+    st.upsert(n["id"], "screen", {**n["data"], "decision": "exclude", "because": ["rule:editorial"], "rule": "editorial",
+                                  "decision_before_rule": "exclude"}, depends_on=n["depends_on"], actor="rule")
+    ch = rules.apply(ctx)                                               # 'editorial' is not enabled: undone
+    assert any(c.get("restored") and c["rid"] == "1004" for c in ch)
+    d = st.get("screen:1004")["data"]
+    assert "rule" not in d and d.get("rule_restored", {}).get("rule") == "editorial"
+    pipeline.run(ctx)
+    sid = st.by_type("synthesis", active_only=True)[0]["id"]
+    st.set_status(sid, synthesis.RETIRED, reason="test")
+    synthesis.write_statements(ctx, [{"id": sid.split(":")[1], "text": "A new statement about 12 participants.", "cites": ["1001"]}], "test")
+    assert st.get(sid)["status"] == synthesis.RETIRED                   # the retired one is untouched
+    assert any(n["data"]["text"].startswith("A new statement") and n["status"] == "active" for n in st.by_type("synthesis"))

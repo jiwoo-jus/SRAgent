@@ -68,53 +68,32 @@ def pending_changes(ctx: Ctx) -> dict:
         considered = cited | {r for r in inc if st.get(f"ext:{r}")}
     new_for_syn = sorted(r for r in inc if r not in considered) if has_syn else []
     removed = sorted(c for c in cited if c not in inc)
+    from . import engine
+    p = engine.plan(ctx)
+    work = [i for i in p["items"] if i["action"] not in ("keep", "render")]
     return {"need_extract": need_extract, "need_rob": need_rob, "new_for_synthesis": new_for_syn,
-            "excluded_but_cited": removed, "has_synthesis": has_syn}
+            "excluded_but_cited": removed, "has_synthesis": has_syn,
+            "stale": {"n": len(work), "summary": p["summary"], "est_usd": p["cost"].get("total_usd"),
+                      "kept": [i["node"] for i in p["items"] if i["action"] == "keep"], "lines": engine.describe(p)[:30]}}
 
 
 def update_synthesis(ctx: Ctx, tp: str = "sync", pc: dict | None = None) -> dict:
-    """Bring an existing synthesis in line with the included studies statement by statement: statements
-    citing a study that is no longer included are revised (and retired when no cited study is left), newly
-    included studies are integrated, and every changed statement is checked again. Unaffected statements
-    are left as they are. Returns the change set."""
-    from . import feedback  # local import (feedback imports stages)
-    st = ctx.store
-    pc = pc or pending_changes(ctx)
-    cs = {"id": tp, "changes": []}
-    if not pc["has_synthesis"]:
-        return cs
-    for rid in pc["excluded_but_cited"]:
-        for sid in [n["id"] for n in st.by_type("synthesis", active_only=True) if rid in n["data"]["cites"]]:
-            feedback._revise_dependent(ctx, cs, sid, f"screen:{rid}", {"included": True, "study": rid},
-                                       {"included": False, "study": rid}, tp=tp)
-    for rid in pc["new_for_synthesis"]:
-        feedback._include_study(ctx, cs, rid, tp=tp, integrate=True)
-    for sid in sorted({c["node"] for c in cs["changes"] if c["node"].startswith("syn:")}):
-        if st.get(sid) and st.get(sid)["status"] == "active":
-            synthesis.verify_one(ctx, sid)
-    st.meta["synthesis_considered"] = sorted(st.included_ids())
-    return cs
+    """Bring the review up to date (the update engine): screening re-assessed on changed criteria, the
+    outputs of studies that left or joined the review, and the synthesis revised statement by statement.
+    Returns the change set."""
+    from . import engine
+    return engine.execute(ctx, {"id": tp, "changes": []}, tag=tp, render=False)
 
 
 def sync_dependents(ctx: Ctx) -> dict:
-    from . import feedback  # local import (feedback imports stages)
-    st = ctx.store
+    """'Update now': everything out of date after a person's decisions, applied on the live store."""
+    from . import engine
     pc = pending_changes(ctx)
-    inc = set(st.included_ids())
-    for kind in ("extraction", "rob"):
-        for n in st.by_type(kind):
-            rid = n["id"].split(":", 1)[1]
-            want = "active" if rid in inc else "excluded"
-            if n["status"] != want:
-                st.set_status(n["id"], want, actor="agent", reason="sync with eligibility decisions")
-    if pc["need_extract"]:
-        extraction.extract_all(ctx, only=pc["need_extract"])
-    need_rob = [r for r in inc if st.get(f"rob:{r}") is None and st.get(f"ext:{r}")]
-    if need_rob:
-        rob.rob_all(ctx, only=need_rob)
-    cs = update_synthesis(ctx, "sync", pc)
-    report.write_reports(ctx)
+    cs = engine.execute(ctx, {"id": "sync", "changes": []}, tag="sync", render=True)
+    if not cs["changes"]:
+        report.write_reports(ctx)
     ctx.save()
-    summary = {**pc, "synthesis_changes": sorted({c["node"] for c in cs["changes"]})}
+    summary = {**{k: v for k, v in pc.items() if k != "stale"}, "synthesis_changes": sorted({c["node"] for c in cs["changes"] if c["node"].startswith("syn:")}),
+               "changes": sorted({c["node"] for c in cs["changes"]}), "kept": [k["node"] for k in cs["kept"]]}
     ctx.log(f"[sync] {summary}")
     return summary

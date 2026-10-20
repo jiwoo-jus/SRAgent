@@ -106,6 +106,11 @@ def apply(ctx, protocol: dict | None = None) -> list[dict]:
             if f["status"] == "open":
                 st.resolve_flag(f"screen:{rid}", f["id"], f"excluded by rule {hit[0]}", actor="rule")
         changes.append({"rid": rid, "rule": hit[0], "before": before})
+    for n in st.by_type("screen"):   # a rule switched off: its exclusions are undone (back to review)
+        r = n["data"].get("rule")
+        if r and r not in rules and n["data"].get("decision") == "exclude" and r != "outside_date_range":
+            restore(ctx, n["id"].split(":", 1)[1], note=f"rule {r} is no longer enabled")
+            changes.append({"rid": n["id"].split(":", 1)[1], "rule": r, "before": "exclude", "restored": True})
     st.meta["rules_applied"] = {"rules": rules, "version": RULES_VERSION, "n": len(changes)}
     return changes
 

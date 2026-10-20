@@ -251,7 +251,8 @@ def build(ctx: Ctx) -> list[dict]:
     # -- out-of-date outputs
     from .sync import pending_changes
     pc = pending_changes(ctx)
-    if st.by_type("extraction") and (pc["need_extract"] or pc["new_for_synthesis"] or pc["excluded_but_cited"]):
+    stale = pc.get("stale") or {}
+    if st.by_type("extraction") and stale.get("n"):
         lines = []
         if pc["need_extract"]:
             lines.append(f"Included but not yet extracted / assessed: {', '.join(pc['need_extract'])}")
@@ -259,13 +260,18 @@ def build(ctx: Ctx) -> list[dict]:
             lines.append(f"Included but not yet considered in the synthesis: {', '.join(pc['new_for_synthesis'])}")
         if pc["excluded_but_cited"]:
             lines.append(f"Excluded but still cited by the synthesis: {', '.join(pc['excluded_but_cited'])}")
+        lines.append("Planned: " + ", ".join(f"{k.replace(':', ' ')} ×{v}" for k, v in stale["summary"].items()))
+        if stale.get("kept"):
+            lines.append("Kept as you decided or edited them: " + ", ".join(stale["kept"][:8]))
+        cost = f" (about ${stale['est_usd']:.2f})" if stale.get("est_usd") is not None else ""
         todos.append({
             "id": "sync", "step": "synthesis", "kind": "sync", "priority": 1,
-            "title": "Some outputs are out of date after your decisions",
-            "question": "Update them now?",
+            "title": "Some outputs are out of date after your decisions or a protocol change",
+            "question": f"Update them now?{cost}",
             "context": lines,
             "options": [{"value": "sync", "label": "Update now",
-                         "hint": "Extracts and assesses new studies, then revises only the affected synthesis statements."},
+                         "hint": "Re-assesses screening on the changed criteria only, extracts and assesses new studies, "
+                                 "and revises only the affected synthesis statements. Outputs you decided or edited are kept."},
                         {"value": "later", "label": "Later"}],
             "free_text": None})
 

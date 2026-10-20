@@ -87,6 +87,9 @@ class ReviewStore:
             self._index(node_id, [], deps)
             self._log("create", node_id, actor, reason, None, data)
             return node
+        same = old["data"] == data and old["status"] == status and (evidence is None or old["evidence"] == evidence)
+        if same:   # recomputed with the same result: current with its inputs, but not a new version
+            return self.touch(node_id, deps if depends_on else None)
         old["history"].append({"version": old["version"], "data": copy.deepcopy(old["data"]),
                                "evidence": copy.deepcopy(old["evidence"]), "status": old["status"],
                                "ts": old["updated"]})
@@ -103,6 +106,17 @@ class ReviewStore:
         old["updated"] = now
         self._log("update", node_id, actor, reason, prev, data)
         return old
+
+    def touch(self, node_id: str, depends_on: list[str] | None = None) -> dict:
+        """Mark a node current with its inputs (dep_versions refreshed) without a new version: its content
+        was checked or recomputed and is unchanged."""
+        n = self.nodes[node_id]
+        if depends_on is not None:
+            before = list(n["depends_on"])
+            n["depends_on"] = sorted(set(depends_on))
+            self._index(node_id, before, n["depends_on"])
+        n["dep_versions"] = self._dep_versions(n["depends_on"])
+        return n
 
     def _dep_versions(self, deps: list[str]) -> dict[str, int]:
         return {d: self.nodes[d]["version"] for d in deps if d in self.nodes}

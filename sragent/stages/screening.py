@@ -193,6 +193,59 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     return data
 
 
+def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str, tag_suffix: str = "") -> dict:
+    """Assess one record on only the given criteria (added or changed since it was screened), merge them
+    into the stored assessments and re-derive the decision. A person's decision is kept."""
+    st = ctx.store
+    n = st.get(f"screen:{rid}")
+    if not n or not crit_ids:
+        return n["data"] if n else {}
+    sub = {**protocol, "criteria": [c for c in protocol.get("criteria", []) if c["id"] in crit_ids]}
+    if not sub["criteria"]:
+        return n["data"]
+    text, src_node = screen_source(st, rid, stage)
+    limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
+    out = ctx.agent.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(sub, stage), synonyms=synonyms_text(protocol),
+                                                        record=packed(text, limit), stage=stage.replace("_", "/"))),
+                         tag=f"screen_{stage}{tag_suffix}")
+    fresh = complete_assessments(sub, out.get("criteria"), stage)
+    evidence = list(n.get("evidence") or [])
+    for a in fresh:
+        cites = cites_of(a)
+        a.pop("quote", None)
+        if cites:
+            evidence.append(attach(a, cites, text, f"{a.get('id')}={a.get('assessment')}", src_node))
+        a["reassessed"] = True
+    kept = [a for a in n["data"].get("criteria", []) if a.get("id") not in crit_ids]
+    d = dict(n["data"], criteria=kept + fresh)
+    dec, because, by_rule = decide(protocol, d["criteria"], n["data"]["stage"] if n["data"]["stage"] != "retrieval" else "title_abstract",
+                                   ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
+    if n["data"]["stage"] == "retrieval":   # still waiting for its full text: it stays waiting unless excluded now
+        if dec != "exclude":
+            dec, because = n["data"]["decision"], n["data"].get("because", [])
+        else:
+            d["stage"] = "title_abstract"
+    hd = n["data"].get("human_decision")
+    agent_dec = dec
+    if hd:
+        dec, because = hd["decision"], n["data"].get("because", [])
+        d["agent_decision"] = agent_dec
+    d.update({"decision": dec, "because": because})
+    d.pop("unclear_by_rule", None)
+    if by_rule and not hd:
+        d["unclear_by_rule"] = by_rule
+    deps = [x for x in n["depends_on"] if not x.startswith("crit:")] + [f"crit:{c['id']}" for c in protocol.get("criteria", [])]
+    if "protocol" not in deps:
+        deps.append("protocol")
+    st.upsert(n["id"], "screen", d, depends_on=deps, evidence=evidence,
+              reason=f"re-assessed on criteria {', '.join(crit_ids)} (protocol changed)")
+    if hd and agent_dec != hd["decision"] and agent_dec in ("include", "exclude", "forward") and \
+            not any(f["status"] == "open" and f["source"] == "reassess" for f in n["flags"]):
+        st.flag(n["id"], f"The protocol changed (criteria {', '.join(crit_ids)}): the agent would now say "
+                f"'{agent_dec}', your decision '{hd['decision']}' is kept. Please check.", actor="agent", source="reassess")
+    return d
+
+
 def screen_all(ctx: Ctx, protocol: dict) -> dict:
     from .. import rules
     st = ctx.store

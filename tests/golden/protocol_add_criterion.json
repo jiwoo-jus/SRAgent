@@ -57,12 +57,11 @@
      "sample_size": "sample_size value 60 children",
      "study_design": "study_design value 60 children"
     },
-    "status": "active"
+    "status": "excluded"
    }
   },
   "included": [
-   "G01",
-   "G02"
+   "G01"
   ],
   "open_flags": {},
   "prisma": {
@@ -70,14 +69,15 @@
    "awaiting_fulltext_review": 0,
    "duplicates": 0,
    "excluded_by_rules": 1,
-   "excluded_fulltext": 1,
+   "excluded_fulltext": 2,
    "excluded_fulltext_reasons": {
+    "E1": 1,
     "I2": 1
    },
    "excluded_title_abstract": 2,
    "fulltext_assessed": 3,
    "identified": 7,
-   "included": 2,
+   "included": 1,
    "reports_not_retrieved": 1,
    "reports_sought": 4,
    "reports_unreadable": 0,
@@ -92,6 +92,7 @@
     "because": [],
     "by": "agent",
     "criteria": {
+     "E1": "not_met",
      "I1": "met",
      "I2": "met",
      "I3": "met"
@@ -101,14 +102,17 @@
     "status": "active"
    },
    "G02": {
-    "because": [],
+    "because": [
+     "E1"
+    ],
     "by": "agent",
     "criteria": {
+     "E1": "met",
      "I1": "met",
      "I2": "met",
      "I3": "met"
     },
-    "decision": "include",
+    "decision": "exclude",
     "stage": "full_text",
     "status": "active"
    },
@@ -116,6 +120,7 @@
     "because": [],
     "by": "agent",
     "criteria": {
+     "E1": "not_met",
      "I1": "met",
      "I2": "met",
      "I3": "unclear"
@@ -130,6 +135,7 @@
     ],
     "by": "agent",
     "criteria": {
+     "E1": "not_met",
      "I1": "met",
      "I2": "met",
      "I3": "not_met"
@@ -145,6 +151,7 @@
     ],
     "by": "agent",
     "criteria": {
+     "E1": "not_met",
      "I1": "not_met",
      "I2": "met",
      "I3": "not_met"
@@ -159,6 +166,7 @@
     ],
     "by": "agent",
     "criteria": {
+     "E1": "not_met",
      "I1": "met",
      "I2": "not_met",
      "I3": "met"
@@ -201,7 +209,7 @@
      "selective_reporting": "low"
     },
     "overall": "low",
-    "status": "active"
+    "status": "excluded"
    }
   },
   "synthesis": {
@@ -213,11 +221,9 @@
     "text": "Statement 1 reports 12 participants in adults."
    },
    "S2": {
-    "cites": [
-     "G02"
-    ],
-    "status": "active",
-    "text": "Statement 2 reports 12 participants in adults."
+    "cites": [],
+    "status": "retired",
+    "text": "Statement 2 reports 12 participants in adults. [revised]"
    },
    "S3": {
     "cites": [

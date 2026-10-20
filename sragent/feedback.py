@@ -364,8 +364,16 @@ def _propagate(sb: Ctx, cs: dict, src_id: str, before: dict, after: dict, reason
             if final["decision"] == "include":
                 _include_study(sb, cs, rid, tp)
             return
+    # everything downstream in the graph: the update engine (stale because src_id moved to a new version)
+    from . import engine
+    before_n = len(cs["changes"])
+    engine.execute(sb, cs, roots={src_id}, tag=tp, render=False, max_rounds=2)
+    done.update(c["node"] for c in cs["changes"][before_n:])
+    done.update(st.descendants(src_id))
     if depth >= 2:
         return
+    # outputs of the same study that are not downstream (e.g. the eligibility decision after a corrected
+    # population): the model decides whether the change reaches them
     cands = [c for c in st.related(src_id) if c not in done and st.get(c) and st.get(c)["status"] == "active"
              and st.get(c)["type"] not in SKIP_TYPES]
     if not cands:
@@ -455,7 +463,10 @@ def _global_audit(sb: Ctx, cs: dict, tp: str, max_fix: int = 3):
                                                            statements=stm)), tag=f"{tp}_audit")
     found = out.get("contradictions") or []
     cs["global_audit"] = {"found": len(found), "fixed": []}
-    src = next((c for c in cs["changes"] if c.get("role") == "target"), cs["changes"][0])
+    full = [c for c in cs["changes"] if isinstance(c.get("after"), dict) and not ("status" in c["after"] and len(c["after"]) == 1)]
+    if not full:
+        return
+    src = next((c for c in full if c.get("role") == "target"), full[0])
     for con in found:
         for sid in con.get("ids") or []:
             nid = sid if str(sid).startswith("syn:") else f"syn:{str(sid).strip('[]')}"
@@ -483,8 +494,15 @@ def _revise_dependent(sb: Ctx, cs: dict, node_id: str, src_id: str, before: dict
     st = sb.store
     n = st.get(node_id)
     src_t = st.get(src_id)["type"] if st.get(src_id) else "screen"
-    b = before if "included" in before else editable({"type": src_t, "data": before})
-    a = after if "included" in after else editable({"type": src_t, "data": after})
+
+    def view(x):   # a full node's editable view; a status-only or unknown "before" is shown as it is
+        if not isinstance(x, dict) or "included" in x or not x or ("status" in x and len(x) == 1):
+            return x if x else {"(not recorded)": True}
+        try:
+            return editable({"type": src_t, "data": x})
+        except (KeyError, TypeError):
+            return x
+    b, a = view(before), view(after)
     out = sb.agent.chat(sb.msgs(prompts.REVISE_DEPENDENT.format(
         src_id=src_id, before=json.dumps(b, ensure_ascii=False)[:3000], after=json.dumps(a, ensure_ascii=False)[:3000],
         node_id=node_id, ntype=f"{n['type']} — {TYPE_HINTS.get(n['type'], '')}",

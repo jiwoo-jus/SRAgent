@@ -22,6 +22,13 @@ def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
     if "screen" in order:
         with ctx.at("screen"):
             screening.screen_all(ctx, protocol)
+            # records screened before the protocol changed: re-assessed on the changed criteria only
+            from . import engine
+            p = engine.plan(ctx)
+            if any(i["type"] == "screen" and i["action"] in ("reassess", "rederive") for i in p["items"]):
+                cs = engine.execute(ctx, {"id": "pipeline_screen", "changes": []}, tag="pipeline", render=False, max_rounds=1)
+                ctx.log(f"[screen] protocol changed since screening: {p['summary']}; "
+                        f"{len([c for c in cs['changes'] if c['node'].startswith('screen:')])} decisions re-derived")
     if "fulltext" in order:
         with ctx.at("fulltext"):
             screening.fulltext_review(ctx, protocol)     # retrieve + screen every forwarded record on its full text
@@ -44,13 +51,15 @@ def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
     elif "synthesize" in order and not st.by_type("synthesis", active_only=True):
         with ctx.at("synthesize"):
             synthesis.synthesize(ctx)
-    elif "synthesize" in order and considered != set(st.included_ids()):
-        # an existing synthesis is updated, not re-written: only the statements the change affects
-        from . import sync
-        with ctx.at("synthesize"):
-            cs = sync.update_synthesis(ctx, "pipeline")
+    elif "synthesize" in order:
+        # an existing synthesis is updated, not re-written: only what the changes reach (the update engine)
+        from . import engine
+        cs = engine.execute(ctx, {"id": "pipeline", "changes": []}, tag="pipeline", render=False)
         ctx.save()
-        ctx.log(f"[pipeline] included studies changed: statements updated {sorted({c['node'] for c in cs['changes']})}")
+        if cs["changes"]:
+            ctx.log(f"[pipeline] brought up to date: {sorted({c['node'] for c in cs['changes']})}")
+        if cs["kept"]:
+            ctx.log(f"[pipeline] kept as decided or edited by a person: {[k['node'] for k in cs['kept']]}")
     if "report" in order:
         report.write_reports(ctx)
     ctx.save()
