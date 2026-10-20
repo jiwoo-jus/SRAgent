@@ -1219,3 +1219,42 @@ def test_fulltext_falls_back_to_ncbi_when_europe_pmc_is_down(monkeypatch):
     import pytest
     with pytest.raises(RuntimeError, match="NCBI efetch gave no article"):
         europepmc.fulltext("PMC123")
+
+
+def test_reincluded_study_restores_the_statements_that_cited_it(tmp_path):
+    """Dependency-aware re-inclusion: the graph remembers which statements cited the study before it was excluded
+    (their earlier versions) and which were retired for lack of it. Those are revived and shown to the integrate
+    step as they read then, so the citation comes back instead of a new statement being bolted on."""
+    from sragent import feedback, pipeline
+    from sragent.stages import synthesis
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    s1 = st.get("syn:S1")
+    assert "1001" in s1["data"]["cites"]
+    dropped = {**s1["data"], "cites": [c for c in s1["data"]["cites"] if c != "1001"], "text": s1["data"]["text"] + " (revised)"}
+    st.upsert("syn:S1", "synthesis", dropped, depends_on=[f"ext:{c}" for c in dropped["cites"]], reason="study 1001 excluded")
+    s2 = st.get("syn:S2")["data"]
+    st.upsert("syn:S2", "synthesis", {**s2, "cites": ["1001"]}, depends_on=["ext:1001"], reason="cites 1001 only")
+    st.set_status("syn:S2", synthesis.RETIRED, reason="no included study supports it any more")
+    seen = {}
+
+    def integrating(messages, mode):
+        u = messages[-1]["content"]
+        if "Update the narrative synthesis" in u:
+            seen["prompt"] = u
+            stmts = json.loads(u.split("CURRENT STATEMENTS:", 1)[1].split("ALL INCLUDED STUDIES", 1)[0])
+            for x in stmts:
+                if x["id"] == "S1" and "1001" not in x["cites"]:
+                    x["cites"].append("1001")
+            return json.dumps({"statements": stmts, "changed_ids": ["S1"]})
+        return mock_fn(messages, mode)
+    ctx.hub.mock_fn = integrating
+    ctx.hub.cache_read = False
+    ctx.hub._clients.clear()
+    cs = {"id": "t", "changes": []}
+    feedback._include_study(ctx, cs, "1001", tp="t", integrate=True)
+    assert "STATEMENTS THAT CITED THIS STUDY BEFORE IT WAS EXCLUDED" in seen["prompt"] and "- S1 (then cited" in seen["prompt"]
+    assert st.get("syn:S2")["status"] == "active"                       # revived: it cited the study before
+    assert "1001" in st.get("syn:S1")["data"]["cites"]
+    assert any(c["node"] == "syn:S2" and c["after"] == {"status": "active"} for c in cs["changes"])

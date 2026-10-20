@@ -140,12 +140,18 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
     cap = (lambda block: block[:max_chars_per_study] + (" …[cut]" if len(block) > max_chars_per_study else "")) \
         if max_chars_per_study else (lambda block: block)
     L = ["## EVIDENCE-LINKED DETAILS", "", "### Eligibility decisions (criterion level)"]
+    inc = set(st.included_ids())
     for n in st.by_type("screen"):
         rid = n["id"].split(":", 1)[1]
         d = n["data"]
         if d["stage"] == "title_abstract" and d["decision"] == "exclude" and not n["flags"]:
             # keep bundle compact: TA exclusions listed briefly
             L.append(f"[screen:{rid}] {d['decision']} at {d['stage']} because {d.get('because')}")
+            continue
+        if rid not in inc:   # excluded or undecided at full text: the decision and the reasons behind it, no quotes
+            why = "; ".join(f"{a.get('id')}: {a.get('assessment')}" + (f" ({str(a['reason'])[:120]})" if a.get("reason") else "")
+                            for a in d.get("criteria", []) if a.get("id") in (d.get("because") or []))
+            L.append(cap(f"[screen:{rid}] decision={d['decision']} stage={d['stage']} because={d.get('because')}" + (f" | {why}" if why else "")))
             continue
         block = [f"[screen:{rid}] decision={d['decision']} stage={d['stage']} because={d.get('because')}"]
         for a in d.get("criteria", []):

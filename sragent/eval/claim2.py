@@ -88,12 +88,19 @@ def build_A(ctx: Ctx, rnd: random.Random, rid: str) -> dict | None:
     if not n:
         return None
     stmts = " ".join(st.get(s)["data"]["text"] for s in _cites(st, rid))
+    # the number must be this study's own: in a statement that cites it and in no other included study's data,
+    # otherwise the statement keeps it (rightly) when this study's value changes and the corruption never shows
+    others = " ".join(str(v.get("value", "")) for o in st.included_ids() if o != rid and st.get(f"ext:{o}")
+                      for v in st.get(f"ext:{o}")["data"]["fields"].values())
+    own = lambda num: not re.search(r"(?<![\w.])" + re.escape(num) + r"(?![\w])", others)
     best = None
     for f in ("pk_results", "sample_size", "efficacy_safety", "exposure_response", "intervention"):
         v = n["data"]["fields"].get(f, {}).get("value", "NR")
         if v.upper().startswith("NR"):
             continue
-        shared = [m.group(1) for m in NUM.finditer(v) if m.group(1) in stmts and m.group(1) not in ("1", "2", "3")]
+        shared = [m.group(1) for m in NUM.finditer(v)
+                  if re.search(r"(?<![\w.])" + re.escape(m.group(1)) + r"(?![\w])", stmts)
+                  and m.group(1) not in ("1", "2", "3") and own(m.group(1))]
         if shared:
             best = (f, v, shared)
             break

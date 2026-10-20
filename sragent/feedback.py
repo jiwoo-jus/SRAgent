@@ -537,10 +537,30 @@ def _include_study(sb: Ctx, cs: dict, rid: str, tp: str, integrate: bool = True)
             cs["changes"].append({"node": nid, "role": "dependent", "before": None, "after": st.get(nid)["data"]})
     if not integrate:
         return
+    # dependency-aware: the graph remembers which statements cited this study before it was excluded (their earlier
+    # versions) and which were retired for lack of it; those are revived and shown to the integrate step as they read
+    previous = []
+    for n in list(st.nodes.values()):
+        if n["type"] != "synthesis" or n["status"] not in ("active", synthesis.RETIRED):
+            continue
+        if n["status"] == "active" and rid in (n["data"].get("cites") or []):
+            continue
+        then = next((h["data"] for h in reversed(n.get("history") or []) if rid in ((h.get("data") or {}).get("cites") or [])), None)
+        if then is None and rid in (n["data"].get("cites") or []):
+            then = n["data"]
+        if then is None:
+            continue
+        previous.append(f"- {n['data'].get('id')} (then cited {then.get('cites')}): {then.get('text')}")
+        if n["status"] == synthesis.RETIRED:
+            st.set_status(n["id"], "active", reason=f"feedback {cs['id']}: study {rid} re-included; this statement cited it")
+            cs["changes"].append({"node": n["id"], "role": "dependent", "before": {"status": synthesis.RETIRED}, "after": {"status": "active"}})
     cur = synthesis.statements_json(sb)
     out = sb.agent.chat(sb.msgs(prompts.SYNTH_INTEGRATE.format(
         rid=rid, new=extraction.table_text(sb, [rid], with_quotes=True), statements=cur,
-        table=extraction.table_text(sb))), tag=f"{tp}_integrate")
+        table=extraction.table_text(sb),
+        previous=("\nSTATEMENTS THAT CITED THIS STUDY BEFORE IT WAS EXCLUDED (as they read then; restore the citation and "
+                  "the claim its data support, if the data still support it):\n" + "\n".join(previous) + "\n") if previous else "")),
+        tag=f"{tp}_integrate")
     before_nodes = {n["id"]: copy.deepcopy(n["data"]) for n in st.by_type("synthesis", active_only=True)}
     synthesis.write_statements(sb, out.get("statements", []), reason=f"feedback {cs['id']}: integrate {rid}")
     for n in st.by_type("synthesis", active_only=True):

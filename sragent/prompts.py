@@ -319,11 +319,12 @@ CURRENT STATEMENTS:
 
 ALL INCLUDED STUDIES (for context):
 {table}
-
+{previous}
 Return JSON: {{"statements": [{{"id": str, "text": str, "cites": [ids], "scope": str}}],
               "changed_ids": [str]}}
 Keep existing ids and wording unless the new study changes them; add a new statement (next free id)
-only if the study adds a finding no statement covers. Do not over-generalise."""
+only if the study adds a finding no statement covers. A statement listed as having cited this study
+before is revised to cite it again with what its data support. Do not over-generalise."""
 
 CONSISTENCY = """Audit a systematic review for internal contradictions.
 
