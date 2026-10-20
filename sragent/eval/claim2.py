@@ -367,45 +367,60 @@ def judge_unchanged(ctx: Ctx, judge: Judge, k: str, n0: dict, n2: dict, R2, meta
 def run(ctx: Ctx, judge: Judge, out_dir, n_per_type: int = 1, labels: dict | None = None, repeats: int = 1,
         resume: dict | None = None) -> dict:
     """ctx = the review to corrupt (R0; in the stage-wise evaluation the gold-input review).
-    resume = the partial results of an interrupted run: its cases (with their saved R1 stores) and finished
-    runs are kept; only the missing case/condition runs are executed."""
+    Every case is saved the moment it is built (claim2_built.json + claim2_R1/<id>.json), so an interrupted build
+    loses nothing. resume = the partial results of an interrupted run: its built cases and finished runs are kept;
+    the build continues from the cases that exist and only the missing case/condition runs are executed."""
     global _RUNS_DIR
     from pathlib import Path
-    _RUNS_DIR = Path(out_dir) / "claim2_runs"
+    from ..store import ReviewStore
+    out_dir = Path(out_dir)
+    _RUNS_DIR = out_dir / "claim2_runs"
     _BASELINE.clear()
     labels = labels or {}
+    r1_dir, built_path = out_dir / "claim2_R1", out_dir / "claim2_built.json"
     prev, done = {}, []
-    if resume and resume.get("cases"):
-        from ..store import ReviewStore
-        for c in resume["cases"]:
-            c = dict(c)
-            c["R1"] = ReviewStore.load(Path(out_dir) / "claim2_R1" / f"{c['id']}.json")
-            prev[c["id"]] = c
+    if resume:
+        recorded = list(resume.get("cases") or [])
+        if built_path.exists():
+            have = {c["id"] for c in recorded}
+            recorded += [c for c in json.loads(built_path.read_text()) if c["id"] not in have]
+        for c in recorded:
+            p = r1_dir / f"{c['id']}.json"
+            if p.exists():
+                c = dict(c)
+                c["R1"] = ReviewStore.load(p)
+                prev[c["id"]] = c
         done = [r for r in resume.get("runs", []) if "error" not in r]
-        n_built = max(len(list((Path(out_dir) / "claim2_R1").glob("*.json"))), len(resume.get("all_case_ids") or []))
-        ctx.log(f"[claim2] resuming: {len(prev)} recorded cases, {len(done)} finished runs kept")
-        if n_built <= len(prev):
-            return _execute(ctx, judge, out_dir, list(prev.values()), repeats,
-                            Path(resume.get("R0_snapshot") or Path(out_dir) / "claim2_R0_store.json"), done)
-        ctx.log(f"[claim2] {n_built - len(prev)} cases were built but not yet run: rebuilding them with the same seed")
+        ctx.log(f"[claim2] resuming: {len(prev)} built cases kept, {len(done)} finished runs kept")
     rnd = random.Random(ctx.cfg.get("eval", {}).get("seed", 2026) + 1)
     R0 = ctx.store
-    r0_path = Path(out_dir) / "claim2_R0_store.json"
-    R0.save(r0_path)                     # this experiment's reference; re-scoring always uses this file
+    r0_path = out_dir / "claim2_R0_store.json"
+    if not r0_path.exists():
+        R0.save(r0_path)                 # this experiment's reference; re-scoring always uses this file
     inc = R0.included_ids()
     cited = [r for r in inc if _cites(R0, r)]
     rnd.shuffle(cited)
     has_ft = lambda r: (R0.get(f"ft:{r}") or {}).get("data", {}).get("kind") == "fulltext"
     gold_ft = [r for r in cited if labels.get(r) == 1 and has_ft(r)]       # eligible-study recovery: gold includes only
-    cases = []
     pools = {"A": list(cited), "B": list(gold_ft), "C": [r for r in gold_ft if (R0.get(f"rec:{r}") or {}).get("data", {}).get("pmid")],
              "D": list(inc)}
-    used = set()
+    used = {c["rid"] for c in prev.values()}
+    cases = list(prev.values())
+    n_have = lambda t: sum(1 for c in cases if c["type"].startswith(t))
+
+    def record(case: dict):   # saved the moment it is built: an interrupted build loses nothing
+        gold_agreement(ctx, judge, case, R0, labels)
+        r1_dir.mkdir(exist_ok=True)
+        case["R1"].save(r1_dir / f"{case['id']}.json")
+        cases.append(case)
+        built_path.write_text(json.dumps([{k: v for k, v in c.items() if k != "R1"} for c in cases], indent=1, default=str))
+
     max_attempts = ctx.cfg.get("eval", {}).get("claim2_build_attempts", 3)
     # eligible-study cases (B, C) first: they need gold includes with a full text, which are scarce;
     # A and D then use the remaining studies
     for typ in ("B", "C", "A", "D"):
-        k = attempts = 0
+        k = n_have(typ)
+        attempts = 0
         for rid in pools[typ]:
             if k >= n_per_type or attempts >= max_attempts * n_per_type:
                 break
@@ -419,30 +434,19 @@ def run(ctx: Ctx, judge: Judge, out_dir, n_per_type: int = 1, labels: dict | Non
                 continue
             if case:
                 case["id"] = f"{typ}{k + 1}_{rid}"
-                cases.append(case)
-                pools["A"] = [r for r in pools["A"] if r != rid] if typ in "BC" else pools["A"]
+                if typ in "BC":
+                    pools["A"] = [r for r in pools["A"] if r != rid]
                 used.add(rid)
                 k += 1
-    for k in range(n_per_type):
+                record(case)
+    for k in range(n_have("E"), n_per_type):
         e = build_E(ctx, rnd, labels, used)
         if e:
             e["id"] = f"E{k + 1}_{e['rid']}"
             used.add(e["rid"])
-            cases.append(e)
+            record(e)
     cases.sort(key=lambda c: "ABCDE".index(c["type"][0]))
-    if prev:   # keep the recorded definitions (and R1) of cases that already ran; rebuilt ones are new to run
-        want = set(resume.get("all_case_ids") or [])
-        missing = sorted(want - {c["id"] for c in cases})
-        if missing:
-            ctx.log(f"[claim2] rebuilt cases differ from the recorded ids; not reproduced: {missing}")
-        cases = [prev.get(c["id"], c) for c in cases] + [c for i, c in prev.items() if i not in {x["id"] for x in cases}]
-    for case in cases:
-        if case["id"] not in prev:
-            gold_agreement(ctx, judge, case, R0, labels)
-            case["R1"].save(Path(out_dir) / "claim2_R1" / f"{case['id']}.json")
-            if prev:
-                case["rebuilt_on_resume"] = True
-    ctx.log(f"[claim2] built {len(cases)} cases: {[(c['id'], c.get('primary')) for c in cases]}")
+    ctx.log(f"[claim2] {len(cases)} cases ({len(cases) - len(prev)} built now): {[(c['id'], c.get('primary')) for c in cases]}")
     return _execute(ctx, judge, out_dir, cases, repeats, r0_path, done)
 
 
@@ -455,8 +459,7 @@ def _execute(ctx: Ctx, judge: Judge, out_dir, cases: list[dict], repeats: int, r
              "D": [("verify_off", False, True), ("verify_on", True, True)],
              "E": [("dependency_aware", True, True)]}
     results = {"R0_snapshot": str(r0_path), "cases": [{k: v for k, v in c.items() if k != "R1"} for c in cases],
-               "runs": list(done_runs), "repeats": repeats,   # every case recorded up front (resumable)
-               "all_case_ids": [c["id"] for c in cases]}
+               "runs": list(done_runs), "repeats": repeats}   # every case recorded up front (resumable)
     finished = {(r["case"], r["condition"], r.get("repeat", 0)) for r in done_runs}
     for case in cases:
         for rep in range(repeats):

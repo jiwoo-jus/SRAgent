@@ -91,6 +91,8 @@ def synthesize(ctx: Ctx) -> int:
     ctx.log(f"[synthesis] {len(statements)} statements")
     if ctx.cfg["pipeline"].get("verify_synthesis", True):
         verify_all(ctx)
+        if ctx.cfg["pipeline"].get("repair_synthesis", True):
+            repair_all(ctx)
     ctx.save()
     return len(statements)
 
@@ -128,6 +130,58 @@ def verify_one(ctx: Ctx, sid: str, tag: str = "synthesis_verify") -> dict:
         st.flag(sid, f"Self-check: {res.get('support')}; overgeneralization={res.get('overgeneralization')}; "
                 f"{'; '.join(res.get('issues', []))[:300]}", actor="agent", source="synthesis_verify")
     return res
+
+
+def needs_repair(res: dict | None) -> bool:
+    return bool(res) and (res.get("support") in ("unsupported", "partially_supported") or bool(res.get("overgeneralization")))
+
+
+def repair_one(ctx: Ctx, sid: str) -> str:
+    """One repair of a statement the self-check faulted: the stage model narrows it to what the cited data show
+    (or retires it), then the checker looks again. Still faulted after that: retired. Returns what happened."""
+    st = ctx.store
+    n = st.get(sid)
+    d = n["data"]
+    res = d.get("verification") or {}
+    issues = f"{res.get('support')}; overgeneralization={res.get('overgeneralization')}; " + "; ".join(res.get("issues") or [])
+    out = ctx.agent.chat(ctx.msgs(prompts.SYNTH_REPAIR.format(sid=d["id"], text=d["text"], scope=d.get("scope", ""),
+                                                               cites=", ".join(d["cites"]), issues=issues,
+                                                               evidence=statement_evidence(ctx, d["cites"], d["text"]))),
+                         tag="synthesis_repair")
+    for f in n["flags"]:
+        if f["status"] == "open" and f.get("source") == "synthesis_verify":
+            st.resolve_flag(sid, f["id"], "repaired after the self-check", actor="agent")
+    if out.get("retire") or not out.get("text"):
+        st.set_status(sid, RETIRED, reason=f"retired after the self-check: {str(out.get('why') or 'no supported version')[:200]}")
+        return "retired"
+    cites = [str(c).strip("[] ") for c in out.get("cites") or d["cites"]]
+    cites = [c for c in cites if c in d["cites"]] or list(d["cites"])      # no study the check did not see
+    cites, fixes = reconcile_citations(st, out["text"], cites)
+    data = {"id": d["id"], "text": str(out["text"]), "cites": cites, "scope": str(out.get("scope") or d.get("scope", "")),
+            "repaired_from": {"text": d["text"], "cites": d["cites"], "check": res}}
+    if fixes:
+        data["citation_fixes"] = fixes
+    st.upsert(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason="repaired after the self-check")
+    if retire_if_uncited(st, sid, True):
+        return "retired"
+    again = verify_one(ctx, sid, tag="synthesis_verify_repair")
+    if needs_repair(again) and again.get("support") == "unsupported":
+        st.set_status(sid, RETIRED, reason="still unsupported by the cited data after one repair")
+        return "retired"
+    return "repaired" if not needs_repair(again) else "repaired_partial"
+
+
+def repair_all(ctx: Ctx) -> dict:
+    """One repair round: every active statement the self-check faulted is repaired once (or retired)."""
+    sids = [n["id"] for n in ctx.store.by_type("synthesis", active_only=True) if needs_repair(n["data"].get("verification"))]
+    if not sids:
+        return {}
+    res = ctx.map(lambda s: repair_one(ctx, s), sids)
+    c = {}
+    for r in res:
+        c[r] = c.get(r, 0) + 1
+    ctx.log(f"[synthesis] repair round on {len(sids)} faulted statements: {c}")
+    return c
 
 
 def verify_all(ctx: Ctx):

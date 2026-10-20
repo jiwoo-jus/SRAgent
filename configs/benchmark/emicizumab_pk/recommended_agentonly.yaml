@@ -19,7 +19,7 @@ roles:
   verifier: {model: gpt-6.1-sol, reasoning_effort: medium}        # checks statements and feedback: independent of the writer (Claude) and the judge (Gemini)
   judge:    {model: gemini-3.1-pro-preview, reasoning_effort: medium}   # sragent eval only
   judge2:   {model: gpt-6.1-sol, reasoning_effort: medium}        # second judge of another family than the judge
-  reviewer: {model: gemini-3.8-flash, reasoning_effort: medium}   # Claim 1's simulated reviewer (the baseline used effort low)
+  reviewer: {model: gemini-3.8-flash, reasoning_effort: low}   # a simulated reviewer reading long materials: low keeps replies short and cheap   # Claim 1's simulated reviewer (the baseline used effort low)
 stage_models:                # a stage's model is fixed once that stage has started
   plan:       {model: claude-sonnet-5-5, reasoning_effort: high}
   search:     {model: claude-sonnet-5-5, reasoning_effort: high}
@@ -42,8 +42,8 @@ eval:
   budget_usd: 8.5            # per evaluation run (each run has its own usage.jsonl)
   grounding_max_studies: null   # all supplied studies
   claim1_sets: 3
-  claim1_repeats: 2
+  claim1_repeats: 1            # development: single runs
   claim1_genuine_checks: 4
-  claim2_cases_per_type: 4
+  claim2_cases_per_type: 2     # development: 10 cases, 18 feedback runs (about $8 at Sonnet high)
   judge_agreement_items: 40
   human_audit_items: 15

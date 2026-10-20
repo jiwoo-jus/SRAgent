@@ -96,6 +96,7 @@
    "fulltext_assessed": 3,
    "identified": 7,
    "included": 1,
+   "included_by_rule": 0,
    "reports_not_retrieved": 1,
    "reports_sought": 4,
    "reports_unreadable": 0,

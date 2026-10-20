@@ -42,7 +42,8 @@ def prisma(ctx: Ctx) -> dict:
             "fulltext_assessed": len(ft), "excluded_fulltext": len(ft_excl),
             "excluded_fulltext_reasons": reasons,
             "awaiting_classification": sum(1 for n in ft if dec(n) == "awaiting"),
-            "included": len(st.included_ids())}
+            "included": len(st.included_ids()),
+            "included_by_rule": sum(1 for n in ft if dec(n) == "include" and n["data"].get("unclear_by_rule") == "include")}
 
 
 def review_title(p: dict) -> str:
@@ -470,7 +471,10 @@ def _flow(ctx: Ctx) -> dict:
          "excluded_before_assessment": sum(1 for n in ret if D(n)["decision"] == "exclude"),
          "assessed": len(ft), "excluded_fulltext": len(ft_ex), "reasons": reasons.most_common(),
          "awaiting_classification": sum(1 for n in ft if D(n)["decision"] == "awaiting"),
-         "included": len(st.included_ids())}
+         "included": len(st.included_ids()),
+         "included_by_rule": sum(1 for n in ft if D(n)["decision"] == "include" and D(n).get("unclear_by_rule") == "include"),
+         "included_doubt": sum(1 for n in ft if D(n)["decision"] == "include" and
+                               any(x["status"] == "open" and x.get("source") == "eligibility_doubt" for x in n["flags"]))}
     f["reconciles"] = identified - dups - f["not_sampled"] + f["citation"] == f["screened"]
     return f
 
@@ -519,7 +523,9 @@ def _prisma_figure(ctx: Ctx, f: dict, crit_by_id: dict, n_fig: int) -> str:
             f"<div class='bx main down' style='grid-row:4;grid-column:2'><b>Reports assessed for eligibility (n = {f['assessed']})</b></div>"
             f"<div class='arr' style='grid-row:4;grid-column:3'></div><div class='side' style='grid-row:4;grid-column:4'><div class='bx'>{ftx}</div>{aw}</div>"
             f"<div class='stage' style='grid-row:5'>Included</div>"
-            f"<div class='bx main' style='grid-row:5;grid-column:2'><b>Studies included in the review (n = {f['included']})</b></div>"
+            f"<div class='bx main' style='grid-row:5;grid-column:2'><b>Studies included in the review (n = {f['included']})</b>"
+            + (f"<ul><li>Included by the pipeline rule although a criterion stayed unclear at full text, flagged (n = {f['included_by_rule']})</li></ul>"
+               if f.get("included_by_rule") else "") + "</div>"
             f"</div>")
     note = ("" if f["reconciles"] else
             f"<p class='foot'>Note: the identification counts do not add up to the records screened "
@@ -678,7 +684,11 @@ def report_html(ctx: Ctx) -> str:
              + f". {f['excluded_screen']} were excluded on title and abstract or by publication-type rules, and {f['sought']} reports were sought. "
              f"Of these, {f['not_retrieved']} could not be retrieved and {f['assessed']} were assessed in full; {f['excluded_fulltext']} were excluded "
              f"(Appendix B) and {f['included']} studies were included (Figure 1)."
-             + (f" {f['awaiting_classification']} reports await classification." if f["awaiting_classification"] else "") + "</p></div>")
+             + (f" {f['awaiting_classification']} reports await classification." if f["awaiting_classification"] else "")
+             + (f" {f['included_by_rule']} of the included studies were included by the pipeline rule although a criterion was still "
+                f"unclear after full-text screening; they are flagged in Appendix C." if f.get("included_by_rule") else "")
+             + (f" For {f['included_doubt']} included studies the data-extraction step raised a doubt about eligibility "
+                f"(flagged in Appendix C)." if f.get("included_doubt") else "") + "</p></div>")
     H.append(_prisma_figure(ctx, f, crit_by_id, 1))
 
     # characteristics / results tables: short items describe the studies, long items report their results

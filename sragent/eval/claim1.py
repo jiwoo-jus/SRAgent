@@ -77,6 +77,16 @@ def materials(ctx: Ctx, condition: str, source_rids: list[str], max_src_chars: i
     return "\n\n".join(parts)
 
 
+def fit_cap(ctx: Ctx, source_rids: list[str], max_src_chars: int, max_total_chars: int) -> int:
+    """The per-study cap both conditions use: max_src_chars, lowered until the larger bundle (evidence-linked)
+    fits max_total_chars. One cap for both conditions, so they differ in what the reviewer sees, not in how much
+    of each study, and neither exceeds what the reviewer model can read."""
+    cap = max_src_chars
+    while max_total_chars and cap > 500 and len(materials(ctx, "evidence_linked", source_rids, cap)) > max_total_chars:
+        cap = int(cap * 0.7)
+    return cap
+
+
 def _loc_match(planted: dict, flag: dict) -> bool:
     loc = (flag.get("location") or "") + " " + (flag.get("description") or "")
     key = planted["node"].split(":", 1)[1]  # study id or statement id
@@ -152,7 +162,7 @@ def _content_at(ctx: Ctx, loc: str) -> tuple[str, str]:
 
 
 def run(ctx: Ctx, judge: Judge, out_dir, n_sets: int = 2, repeats: int = 1, max_src_chars: int = 5000,
-        max_errors: int = 12, max_genuine_checks: int = 5) -> dict:
+        max_errors: int = 12, max_genuine_checks: int = 5, max_total_chars: int = 300000) -> dict:
     rnd = random.Random(ctx.cfg.get("eval", {}).get("seed", 2026))
     inc = ctx.store.included_ids()
     sids = [n["id"] for n in ctx.store.by_type("synthesis", active_only=True)]
@@ -162,7 +172,9 @@ def run(ctx: Ctx, judge: Judge, out_dir, n_sets: int = 2, repeats: int = 1, max_
     if not (ctx.cfg.get("roles") or {}).get("reviewer"):
         ctx.log("[claim1] WARNING: roles.reviewer is not set, so the simulated reviewer is the agent model; "
                 "Claim 1 then measures that model's reading as much as the materials. Fix roles.reviewer across runs.")
-    results["reviewer"] = {"model": reviewer.name, "configured": bool((ctx.cfg.get("roles") or {}).get("reviewer"))}
+    results["reviewer"] = {"model": reviewer.name, "configured": bool((ctx.cfg.get("roles") or {}).get("reviewer")),
+                           "reasoning_effort": reviewer.c.get("reasoning_effort"),
+                           "source_chars": max_src_chars, "total_chars_cap": max_total_chars}
     for s in range(n_sets):
         rids = inc[s * half:(s + 1) * half] if s < n_sets - 1 else inc[s * half:]
         sset = [sids[(s + k) % len(sids)] for k in range(len(sids))]
@@ -170,9 +182,13 @@ def run(ctx: Ctx, judge: Judge, out_dir, n_sets: int = 2, repeats: int = 1, max_
         set_id = "ABCDEFGH"[s] if s < 8 else str(s)
         results["sets"].append({"set": set_id, "planted": planted})
         export_human_materials(cctx, out_dir, set_id)
+        cap = fit_cap(cctx, inc, max_src_chars, max_total_chars)
+        if cap != max_src_chars:
+            ctx.log(f"[claim1] set {set_id}: per-study cap lowered to {cap} chars so the evidence-linked bundle fits {max_total_chars} chars")
+        results["sets"][-1]["source_chars_used"] = cap
         for cond in ("report_only", "evidence_linked"):
             for r in range(repeats):
-                mats = materials(cctx, cond, inc, max_src_chars)
+                mats = materials(cctx, cond, inc, cap)
                 prompt = prompts.REVIEWER_TASK.format(materials=mats, max_errors=max_errors)
                 t0 = time.time()
                 usd0 = ctx.hub.tracker.spent

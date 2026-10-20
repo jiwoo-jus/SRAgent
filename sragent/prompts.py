@@ -112,6 +112,9 @@ EXTRACT = """Extract the following items for one study included in a systematic 
 
 REVIEW QUESTION: {question}
 
+ELIGIBILITY CRITERIA OF THE REVIEW (for reference; the study was included at screening):
+{criteria}
+
 ITEMS:
 {fields}
 
@@ -122,8 +125,13 @@ SOURCE ({kind}) — study id {rid}:
 
 The source is split into numbered sentences [s1], [s2], ... under section headings.
 
-Return JSON: {{"fields": {{"<item name>": {{"value": str, "evidence": ["s12", "s40"], "entities": [str]}} , ...}}}}
+Return JSON: {{"fields": {{"<item name>": {{"value": str, "evidence": ["s12", "s40"], "entities": [str]}} , ...}},
+              "eligibility_doubt": null | {{"criterion": "<criterion id>", "why": str}}}}
 Rules:
+- eligibility_doubt: set it only when the whole paper shows that the study fails an inclusion criterion or
+  meets an exclusion criterion (e.g. all data are from animals or in vitro when humans are required; no
+  original data); otherwise null. Do not re-judge borderline cases: this is a safety check, not a second
+  screening.
 - entities: ONLY for items marked [drug] or [disease]: the bare generic drug / disease names mentioned
   in the value (e.g. ["emicizumab"], ["haemophilia A"]), no doses or qualifiers; [] otherwise.
 - value: concise (at most about 40 words: the main finding with its units and the population or
@@ -171,10 +179,12 @@ RISK OF BIAS (overall per study):
 Return JSON:
 {{"statements": [{{"id": "S1", "text": str, "cites": [study ids], "scope": str}}]}}
 Rules:
-- 4 to 8 statements covering design/populations, main PK findings, exposure-response or efficacy,
+- 5 to 10 statements covering design/populations, main PK findings, exposure-response or efficacy,
   safety if reported, and limitations / certainty.
-- Every statement must cite the study ids that support it; cite only studies whose extracted data
-  actually support the statement.
+- One claim per statement: one finding or quantity in one population or regimen. A finding that
+  differs by population, regimen or subgroup is several statements, not one broad one.
+- Cite at most 6 studies per statement: the ones whose extracted data carry that claim, not every
+  study on the topic. Cite only studies whose extracted data actually support the statement.
 - Do not over-generalise: keep population, dose regimen and subgroup qualifiers that the data carry
   (e.g. "in children <12 years", "with inhibitors"). `scope` states the population the statement
   applies to.
@@ -195,6 +205,23 @@ Return JSON: {{"support": "supported"|"partially_supported"|"unsupported",
 the data. "overgeneralization": the statement applies a finding to a broader population, regimen or
 outcome than the cited data show. If the statement says something is absent, not reported or not
 available, it is "unsupported" when any study's data below contains it."""
+
+SYNTH_REPAIR = """A synthesis statement was checked against the extracted data it cites and the check found problems.
+Rewrite the statement so that the cited data support every part of it, or retire it.
+
+STATEMENT [{sid}]: {text}
+SCOPE: {scope}
+CITED STUDIES: {cites}
+
+CHECK RESULT: {issues}
+
+CITED STUDY DATA:
+{evidence}
+
+Return JSON: {{"text": str, "cites": [study ids], "scope": str}}  (the repaired statement)
+        or {{"retire": true, "why": str}}  (no version of this claim is supported by the data).
+Rules: narrow the claim to what the data show (population, regimen, subgroup, numbers); drop studies whose
+data do not carry it; add no study that is not listed above; use only numbers from the data."""
 
 # ----------------------------------------------------------------------------- feedback
 LOCATE = """A user left feedback on a systematic review. Identify which output it targets.

@@ -94,6 +94,7 @@
    "fulltext_assessed": 4,
    "identified": 7,
    "included": 3,
+   "included_by_rule": 1,
    "reports_not_retrieved": 0,
    "reports_sought": 4,
    "reports_unreadable": 0,

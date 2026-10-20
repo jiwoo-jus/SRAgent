@@ -174,6 +174,17 @@ def test_eval_suites_offline(tmp_path):
     assert R3["manifest"]["run_id"] == rid_ and R3["manifest"]["resumed"]
     c2r = R3["results"]["claim2"]
     assert len(c2r["runs"]) == len(disk_runs) and all(k in c2r["runs"] for k in kept)   # finished runs kept, rest re-run
+    # a stop during the Claim 2 build: every built case was saved at once, so a resume keeps them (same ids, same R0)
+    built = json.loads((out / "claim2_built.json").read_text())
+    assert sorted(c["id"] for c in built) == sorted(c["id"] for c in c2["cases"])   # built order B, C, A, D, E; reported by type
+    disk = json.loads((out / "results.json").read_text())
+    for k in ("claim2", "judge_validation"):
+        disk["results"].pop(k)
+    (out / "results.json").write_text(json.dumps(disk))
+    (out / "claim2_partial.json").unlink()                 # as if interrupted before any case ran
+    R4 = run_all.run(ctx, resume=rid_)
+    assert sorted(c["id"] for c in R4["results"]["claim2"]["cases"]) == sorted(c["id"] for c in c2["cases"])
+    assert len(R4["results"]["claim2"]["runs"]) == len(disk_runs)
     # re-scoring uses the original experiment's R0, in a new run
     R2 = run_all.run(ctx, suite="claim2_rescore", from_run=R["manifest"]["run_id"])
     assert R2["results"]["claim2"]["rescored_against"].endswith("claim2_R0_store.json")
@@ -1083,3 +1094,99 @@ def test_full_text_unclear_on_a_reported_criterion_is_not_met():
     assert criterion_reasons(protocol, d) == "I2 (Study provides data on humans.): PK data in mice and monkeys, not humans"
     d2 = {"because": ["I2"], "criteria": [{"id": "I2", "assessment": "unclear"}], "reason": "needs full text"}
     assert criterion_reasons(protocol, d2) == "I2 (Study provides data on humans.). Agent: needs full text"
+
+
+def test_extraction_doubt_about_eligibility_rechecks_or_flags(tmp_path):
+    """The upward check: extraction read the whole paper and says the study fails a criterion. Agent-only: the
+    record is screened again on its full text with that doubt as a note and the exclusion stands (the extraction is
+    retired). Human-in-the-loop: nothing is decided for the person; the screening node is flagged, the extraction kept."""
+    import re as _re
+    from sragent import pipeline
+    from sragent.stages import extraction
+
+    def doubting(messages, mode):
+        u = messages[-1]["content"]
+        if "Extract the following items" in u and "study id 1001" in u:
+            base = json.loads(mock_fn(messages, mode))
+            base["eligibility_doubt"] = {"criterion": "I2", "why": "all PK data are from cynomolgus monkeys"}
+            return json.dumps(base)
+        if "Assess this record against each eligibility criterion" in u and "REVIEWER NOTE" in u:
+            return json.dumps({"criteria": [{"id": i, "assessment": "not_met" if i == "I2" else "met", "reported": True,
+                                             "reason": "monkeys only", "evidence": ["s1"]} for i in ("I1", "I2", "I3")],
+                               "decision": "exclude", "reason": "animal data only", "confidence": 0.9})
+        return mock_fn(messages, mode)
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "h").mkdir()
+    ctx = make_ctx(tmp_path / "a", extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
+                                                            "human_mode": "agent_only", "fulltext_unclear": "include"}})
+    pipeline.run(ctx)
+    assert ctx.store.get("screen:1001")["data"]["decision"] == "include" and ctx.store.get("ext:1001")
+    ctx.hub.mock_fn = doubting
+    ctx.hub.cache_read = False          # the same extraction prompt as before: not from the cache
+    ctx.hub._clients.clear()
+    with ctx.at("extract"):
+        extraction.extract_all(ctx, only=["1001"])
+    sc = ctx.store.get("screen:1001")["data"]
+    assert sc["decision"] == "exclude" and sc["because"] == ["I2"] and "1001" not in ctx.store.included_ids()
+    assert ctx.store.get("ext:1001")["status"] == "retired"
+    rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
+    assert any(r["tag"] == "screen_full_text_recheck" for r in rows)
+
+    ctx2 = make_ctx(tmp_path / "h")
+    pipeline.run(ctx2)
+    ctx2.hub.mock_fn = doubting
+    ctx2.hub.cache_read = False
+    ctx2.hub._clients.clear()
+    with ctx2.at("extract"):
+        extraction.extract_all(ctx2, only=["1001"])
+    n = ctx2.store.get("screen:1001")
+    assert n["data"]["decision"] == "include"
+    assert [f for f in n["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
+    assert ctx2.store.get("ext:1001")["data"]["eligibility_doubt"]["criterion"] == "I2"
+    assert not _re.search("REVIEWER NOTE", json.dumps(ctx2.store.get("ext:1001")["data"]))
+
+
+def test_faulted_synthesis_statements_get_one_repair_round(tmp_path):
+    """A statement the self-check faults is repaired once by the stage model (narrowed to what the cited data show)
+    and checked again; one the data cannot support at all is retired. Supported statements are left alone."""
+    import re as _re
+    from sragent import pipeline
+
+    def checking(messages, mode):
+        u = messages[-1]["content"]
+        if "Check whether a synthesis statement is supported" in u:
+            if "[S1]" in u and "Repaired" not in u:
+                return json.dumps({"support": "partially_supported", "issues": ["broader than the data"], "overgeneralization": True})
+            if "[S2]" in u:
+                return json.dumps({"support": "unsupported", "issues": ["no study reports this"], "overgeneralization": False})
+            return json.dumps({"support": "supported", "issues": [], "overgeneralization": False})
+        if "Rewrite the statement so that the cited data support" in u:
+            if "[S2]" in u:
+                return json.dumps({"retire": True, "why": "nothing in the data"})
+            cites = _re.search(r"CITED STUDIES: (.*)", u).group(1).split(", ")
+            return json.dumps({"text": "Repaired statement 1: 12 participants in adults.", "cites": cites[:1], "scope": "adults"})
+        return mock_fn(messages, mode)
+
+    ctx = make_ctx(tmp_path)
+    ctx.hub.mock_fn = checking
+    ctx.hub._clients.clear()
+    pipeline.run(ctx)
+    st = ctx.store
+    s1 = st.get("syn:S1")
+    assert s1["status"] == "active" and s1["data"]["text"].startswith("Repaired") and s1["data"]["repaired_from"]["text"]
+    assert s1["data"]["verification"]["support"] == "supported"
+    assert not [f for f in s1["flags"] if f["status"] == "open" and f["source"] == "synthesis_verify"]
+    assert st.get("syn:S2")["status"] == "retired"
+    assert st.get("syn:S3")["status"] == "active" and "repaired_from" not in st.get("syn:S3")["data"]
+    rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
+    assert sum(r["tag"] == "synthesis_repair" for r in rows) == 2 and sum(r["tag"] == "synthesis_verify_repair" for r in rows) == 1
+
+
+def test_claim1_materials_fit_one_total_cap(monkeypatch):
+    """One per-study cap for both conditions, lowered until the larger (evidence-linked) bundle fits the total cap."""
+    from sragent.eval import claim1
+    monkeypatch.setattr(claim1, "materials", lambda ctx, cond, rids, cap: "x" * (cap * 40 + (100 if cond == "evidence_linked" else 0)))
+    assert claim1.fit_cap(None, [], 5000, 0) == 5000                       # no total cap: unchanged
+    cap = claim1.fit_cap(None, [], 5000, 100000)
+    assert cap < 5000 and cap * 40 + 100 <= 100000 and int(cap / 0.7) * 40 + 100 > 100000

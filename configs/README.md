@@ -172,13 +172,14 @@ Defaults are in parentheses.
 | `citation_chasing` (true), `citation_chasing_rounds` (1), `citation_chasing_max_citing` (400) | follow references and citations of included studies |
 | `validate_terms` (true) | check drug and disease terms in RxNorm, PubChem, ChEMBL, MONDO |
 | `verify_synthesis` (true) | check every synthesis statement against the cited data |
+| `repair_synthesis` (true) | one repair round: a statement the check faulted is narrowed to what the data show, checked again, and retired if still unsupported |
 | `skip_stages` ([]) | stages to leave out, e.g. `[rob]` or `[snowball]`; `plan`, `screen` and `report` cannot be skipped |
 
 **`update_policy` (run file)**: how the update engine treats each kind of output when it is out of date (a dependency changed after it was computed): `screen`, `extraction`, `rob`, `synthesis`, each `auto` (brought up to date and applied: the default), `propose` (brought up to date in a sandbox and offered in the To-do list to accept or reject) or `manual` (only listed; a person decides). Example: `update_policy: {synthesis: propose}` keeps every change to the conclusions under your approval. Outputs a person decided, confirmed or edited are never overwritten whatever the policy.
 
 **`feedback` (run file)**: `verify_feedback` (true, check feedback against the evidence first), `propagate` (true, revise dependent outputs), `auto_accept` (false, apply proposals without confirmation), `post_check` (true), `max_repair_rounds` (1), `global_audit` (true).
 
-**`eval` (run file; `sragent eval` only)**: `budget_usd` (8.0 per evaluation run), `seed` (2026), `grounding_max_studies` (15; null = all), `claim1_sets` (2), `claim1_repeats` (1), `claim1_source_chars` (5000), `claim1_genuine_checks` (5), `claim2_cases_per_type` (1), `claim2_repeats` (1), `claim2_build_attempts` (3), `judge_agreement_items` (25), `human_audit_items` (15). See GUIDE section 10.
+**`eval` (run file; `sragent eval` only)**: `budget_usd` (8.0 per evaluation run), `seed` (2026), `grounding_max_studies` (15; null = all), `claim1_sets` (2), `claim1_repeats` (1), `claim1_source_chars` (5000), `claim1_total_chars` (300000; the per-study cap shrinks for both conditions until the evidence-linked bundle fits), `claim1_genuine_checks` (5), `claim2_cases_per_type` (1), `claim2_repeats` (1), `claim2_build_attempts` (3), `judge_agreement_items` (25), `human_audit_items` (15). See GUIDE section 10.
 
 **`topic` (topic file)**
 

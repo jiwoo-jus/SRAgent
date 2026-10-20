@@ -135,29 +135,83 @@ def _merge(ctx: Ctx, rid: str, outs: list[dict], text: str) -> tuple[dict, list]
     return final, merge_info
 
 
+def _protocol(st) -> dict:
+    return (st.get("protocol") or {}).get("data") or {}
+
+
+def _doubt(st, raw) -> dict | None:
+    """A valid eligibility doubt from the extraction reply: a known, non-practical criterion id and a reason."""
+    crits = {c["id"]: c for c in _protocol(st).get("criteria", [])}
+    if not isinstance(raw, dict) or not raw.get("why"):
+        return None
+    c = crits.get(str(raw.get("criterion", "")).strip())
+    if not c or c.get("type") == "practical":
+        return None
+    return {"criterion": c["id"], "text": c["text"], "why": str(raw["why"])[:400]}
+
+
+DOUBT_SOURCE = "eligibility_doubt"
+
+
+def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
+    """Extraction read the whole paper and doubts the inclusion (the upward check). In agent-only mode the record
+    is screened again on its full text with that doubt as a note; an exclusion stands. Otherwise, or when the
+    re-screen keeps it, the screening node is flagged for a person. Returns 'exclude' or 'flagged'."""
+    import dataclasses
+    from .screening import human_decided, screen_one
+    st = ctx.store
+    what = f"{doubt['criterion']} ({doubt['text']}): {doubt['why']}"
+    sc = st.get(f"screen:{rid}")
+    agent_only = ctx.cfg["pipeline"].get("human_mode") == "agent_only"
+    if agent_only and sc and not human_decided(sc["data"]) and st.get(f"ft:{rid}"):
+        c = dataclasses.replace(ctx, stage="fulltext",
+                                note=f"The data-extraction step read the whole paper and reports a doubt about eligibility: "
+                                     f"{what}. Check this criterion against the whole paper and decide.")
+        d = screen_one(c, _protocol(st), rid, "full_text", tag_suffix="_recheck")
+        if d["decision"] == "exclude":
+            ctx.log(f"[extract] {rid}: excluded after the eligibility doubt raised at extraction ({what[:120]})")
+            return "exclude"
+    if sc and not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in sc["flags"]):
+        st.flag(sc["id"], f"Data extraction read the whole paper and doubts this inclusion: {what}. Check this inclusion.",
+                actor="agent", source=DOUBT_SOURCE)
+    return "flagged"
+
+
 def extract_one(ctx: Ctx, rid: str) -> dict:
     st = ctx.store
     text, kind = st.text_of(rid)
     src_node = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
     budget = context_budget(ctx)
     fields_spec = fields_text(ctx.topic["extraction_fields"])
+    from .planning import criteria_text
+    crit_spec = criteria_text(_protocol(st), "full_text") or "(none recorded)"
     mode, merged = "single", []
     if data_chars(text) <= budget:
-        out = ctx.agent.chat(ctx.msgs(prompts.EXTRACT.format(question=ctx.topic["question"], fields=fields_spec,
+        out = ctx.agent.chat(ctx.msgs(prompts.EXTRACT.format(question=ctx.topic["question"], fields=fields_spec, criteria=crit_spec,
                                                               kind=kind, rid=rid, text=packed(text, budget))), tag="extract")
         raw_fields = out.get("fields", {})
+        doubt = _doubt(st, out.get("eligibility_doubt"))
     else:   # long paper: read it in consecutive parts (same sentence ids), then merge differing values
         parts = chunks(text, budget)
         outs = [ctx.agent.chat(ctx.msgs(prompts.EXTRACT.format(
-            question=ctx.topic["question"], fields=fields_spec, kind=f"{kind}, part {i} of {len(parts)}", rid=rid, text=part)),
-            tag="extract") for i, part in enumerate(parts, 1)]
+            question=ctx.topic["question"], fields=fields_spec, criteria=crit_spec, kind=f"{kind}, part {i} of {len(parts)}",
+            rid=rid, text=part)), tag="extract") for i, part in enumerate(parts, 1)]
         raw_fields, merged = _merge(ctx, rid, outs, text)
         mode = f"{len(parts)} parts"
+        doubt = next((d for d in (_doubt(st, o.get("eligibility_doubt")) for o in outs) if d), None)
+    if doubt:
+        if recheck_eligibility(ctx, rid, doubt) == "exclude":
+            old = st.get(f"ext:{rid}")
+            if old and old["status"] == "active":
+                st.set_status(old["id"], "retired", reason="the study was excluded after an eligibility doubt raised at extraction")
+            return {}
     fields, evidence = postprocess(ctx, rid, raw_fields, text, src_node)
     kept = keep_human_edits(st.get(f"ext:{rid}"), fields)
     ftn = st.get(f"ft:{rid}")
     data = {"rid": rid, "source_kind": kind, "fields": fields, "read_mode": mode, "merged_fields": merged,
             "source_version": ftn["version"] if ftn else None}
+    if doubt:
+        data["eligibility_doubt"] = doubt
     if kept:
         data["kept_human_edits"] = kept
     from ..graph import field_deps

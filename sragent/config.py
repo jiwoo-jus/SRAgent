@@ -72,6 +72,7 @@ DEFAULTS: dict[str, Any] = {
         "claim1_sets": 2,
         "claim1_repeats": 1,
         "claim1_source_chars": 5000,
+        "claim1_total_chars": 300000,   # cap on the whole materials bundle; the per-study cap shrinks (for both conditions) to fit
         "claim1_genuine_checks": 5,
         "claim2_cases_per_type": 1,
         "claim2_repeats": 1,
@@ -99,6 +100,7 @@ DEFAULTS: dict[str, Any] = {
         "citation_chasing_max_citing": 400,
         "validate_terms": True,
         "verify_synthesis": True,
+        "repair_synthesis": True,     # one repair round for statements the self-check faulted (narrow or retire)
         "skip_stages": [],            # stages to leave out, e.g. [rob]; plan, screen and report cannot be skipped
     },
     # How the update engine treats each kind of output when it is out of date (engine.py):
