@@ -180,10 +180,13 @@ def run(ctx: Ctx, judge: Judge, out_dir, n_sets: int = 2, repeats: int = 1, max_
                 out = reviewer.chat([{"role": "user", "content": prompt}], tag=f"claim1_reviewer_{cond}",
                                     temperature=temp, use_cache=(r == 0))
                 dt = time.time() - t0
-                flags = out.get("errors", [])[:max_errors]
+                flags = (out.get("errors") if isinstance(out.get("errors"), list) else [])[:max_errors]
+                reply_ok = isinstance(out.get("errors"), list)
+                if not reply_ok:
+                    ctx.log(f"[claim1] set {set_id} {cond} repeat {r}: the reviewer's reply had no 'errors' list; counted as 0 flags (reply_ok=false)")
                 sc = score(cctx, judge, planted, flags, ctx, max_genuine_checks,
                            {"claim": 1, "set": set_id, "condition": cond, "repeat": r})
-                sc.update({"set": set_id, "condition": cond, "repeat": r, "temperature": temp, "reviewer_seconds": round(dt, 1),
+                sc.update({"set": set_id, "condition": cond, "repeat": r, "temperature": temp, "reviewer_seconds": round(dt, 1), "reply_ok": reply_ok,
                            "reviewer_usd": round(ctx.hub.tracker.spent - usd0, 5),
                            "materials_chars": len(mats), "flags": flags})
                 n_rep = sum(x["correction_correct"] for x in sc["per_error"])

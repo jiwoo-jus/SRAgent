@@ -28,6 +28,7 @@ from .config import deep_merge, load_secrets, role_cfg, stage_cfg
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 JSON_ONLY = "Reply with a single JSON object only, without code fences or commentary."
 # Errors that retrying cannot fix (account, key or permission problems).
+MAX_OUTPUT_TOKENS = 65536   # the most a cut-off reply is retried with
 FATAL_ERRORS = ("insufficient_quota", "credit_balance", "credit balance", "invalid_api_key",
                 "PERMISSION_DENIED", "authentication_error", "permission_error")
 
@@ -38,6 +39,14 @@ class BudgetExceeded(RuntimeError):
 
 class Refused(RuntimeError):
     """The model declined the request. Not retried; the tokens are still paid for and recorded."""
+
+    def __init__(self, msg: str, pin: int = 0, pout: int = 0):
+        super().__init__(msg)
+        self.pin, self.pout = pin, pout
+
+
+class Truncated(RuntimeError):
+    """The reply stopped at max_tokens (thinking counts for reasoning models). Retried with a larger limit."""
 
     def __init__(self, msg: str, pin: int = 0, pout: int = 0):
         super().__init__(msg)
@@ -158,9 +167,13 @@ def _parse_json(text: str) -> Any:
         return json.loads(t)
     except json.JSONDecodeError:
         pass
-    # first balanced {...} or [...]
+    # the first balanced {...} or [...]; it must begin at the text's first bracket: an object found further on
+    # is an inner piece of a reply that was cut off, not the reply
+    first = min((i for i in (t.find("{"), t.find("[")) if i >= 0), default=-1)
     for open_c, close_c in (("{", "}"), ("[", "]")):
         start = t.find(open_c)
+        if start != first:
+            continue
         while start != -1:
             depth, in_str, esc = 0, False, False
             for i in range(start, len(t)):
@@ -183,7 +196,7 @@ def _parse_json(text: str) -> Any:
                             return json.loads(t[start:i + 1])
                         except json.JSONDecodeError:
                             break
-            start = t.find(open_c, start + 1)
+            break   # only the value at the first bracket counts; anything after a cut-off one is a fragment
     raise ValueError(f"could not parse JSON from: {t[:300]}")
 
 
@@ -273,6 +286,13 @@ class LLM:
             except Refused as e:   # paid for, recorded, not retried
                 self.tracker.add(self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
                 raise
+            except Truncated as e:   # paid for, recorded; asked again with room for the whole reply
+                self.tracker.add(self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
+                last_err = e
+                if max_tokens >= MAX_OUTPUT_TOKENS:
+                    raise RuntimeError(f"{self.name}: the reply did not fit in {max_tokens} output tokens (tag={tag})") from e
+                max_tokens = min(max_tokens * 2, MAX_OUTPUT_TOKENS)
+                continue
             except Exception as e:  # network / rate limit / server errors
                 last_err = e
                 if "per_day" in str(e).lower() or "PerDay" in str(e):
@@ -394,6 +414,8 @@ class LLM:
         pin = getattr(u, "prompt_tokens", 0) or 0
         total = getattr(u, "total_tokens", 0) or 0
         pout = max(getattr(u, "completion_tokens", 0) or 0, total - pin)  # includes thinking tokens
+        if getattr(r.choices[0], "finish_reason", None) == "length":
+            raise Truncated(f"{self.name}: reply cut off at {max_tokens} output tokens", pin, pout)
         return text, pin, pout
 
     def _anthropic_call(self, messages, json_out, max_tokens):
@@ -424,6 +446,8 @@ class LLM:
             raise Refused(f"{self.name} declined the request (refusal, category "
                           f"{getattr(d, 'category', None)}): {getattr(d, 'explanation', '')}", pin, u.output_tokens or 0)
         text = "".join(b.text for b in r.content if b.type == "text")
+        if r.stop_reason == "max_tokens":
+            raise Truncated(f"{self.name}: reply cut off at {max_tokens} output tokens", pin, u.output_tokens or 0)
         return text, pin, u.output_tokens or 0   # output_tokens includes thinking
 
     def map(self, fn: Callable, items: list, concurrency: int | None = None) -> list:

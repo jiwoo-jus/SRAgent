@@ -1032,3 +1032,29 @@ def test_impact_preview_and_stale_summary(tmp_path):
     assert all(st_id != "ext:1001" for ids in pv["reach"].values() for st_id in ids)
     assert ctx.store.get("ext:1001")["version"] == 1 and engine.plan(ctx)["items"] == []       # the preview changed nothing
     assert engine.preview(ctx, "nope:1")["reach"] == {}
+
+
+def test_cut_off_replies_are_retried_with_more_room_and_never_salvaged(tmp_path, monkeypatch):
+    from sragent.llm import LLM, CostTracker, Truncated, json_object, parse_json
+    import pytest
+    # a reply cut off inside the errors list: the inner object must not pass as the reply
+    cut = '{"errors": [{"location": "ext:1 sample_size", "error_type": "extraction", "description": "wrong"}, {"location": "S2", "err'
+    with pytest.raises(ValueError):
+        parse_json(cut)
+    with pytest.raises(ValueError):
+        json_object(cut)
+    assert parse_json('Sure: {"errors": []}') == {"errors": []}                     # prose before the object is fine
+    # the provider says the reply hit max_tokens: asked again with twice the room, and both calls are paid for
+    seen = []
+    def call(self, msgs, json_out, max_tokens, temperature):
+        seen.append(max_tokens)
+        if len(seen) == 1:
+            raise Truncated("cut", pin=100, pout=max_tokens)
+        return '{"errors": []}', 100, 50
+    monkeypatch.setattr(LLM, "_call", call)
+    cfg = load_config(None, {"llm_defaults": {"provider": "mock", "model": "mock", "max_tokens": 4000, "max_retries": 3}})
+    tr = CostTracker(1.0)
+    llm = LLM(cfg, "agent", tr, None, mock_fn=lambda m, mode: "{}")
+    llm.c["pricing"] = {"input_per_m": 1.0, "output_per_m": 1.0}
+    assert llm.chat([{"role": "user", "content": "x"}], tag="t") == {"errors": []}
+    assert seen == [4000, 8000] and tr.calls == 2
