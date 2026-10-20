@@ -220,7 +220,8 @@
   "synthesis": {
    "S1": {
     "cites": [
-     "G01"
+     "G01",
+     "G04"
     ],
     "status": "active",
     "text": "Statement 1 reports 12 participants in adults."
@@ -234,7 +235,7 @@
    },
    "S3": {
     "cites": [
-     "G04"
+     "G01"
     ],
     "status": "active",
     "text": "Statement 3 reports 12 participants in adults."

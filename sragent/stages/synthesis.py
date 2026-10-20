@@ -38,6 +38,19 @@ def reconcile_citations(st, text: str, cites: list[str]) -> tuple[list[str], lis
     return out, fixes
 
 
+RETIRED = "retired"   # a statement that cited studies and has none left: no included study supports it
+
+
+def retire_if_uncited(st, sid: str, had_cites: bool) -> bool:
+    """A statement whose every cited study is gone is taken out of the synthesis (status retired),
+    not left standing without evidence. Statements written without citations are left alone."""
+    n = st.get(sid)
+    if had_cites and n and n["status"] == "active" and not n["data"].get("cites"):
+        st.set_status(sid, RETIRED, reason="no included study supports it any more (all cited studies removed)")
+        return True
+    return False
+
+
 def write_statements(ctx: Ctx, statements: list[dict], reason: str, actor: str = "agent"):
     st = ctx.store
     keep = set()
@@ -55,6 +68,8 @@ def write_statements(ctx: Ctx, statements: list[dict], reason: str, actor: str =
         if old is None or {k: old["data"].get(k) for k in ("id", "text", "cites", "scope")} != \
                 {k: data[k] for k in ("id", "text", "cites", "scope")}:
             st.upsert(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason=reason, actor=actor)
+            if retire_if_uncited(st, sid, bool(old and old["data"].get("cites"))):
+                keep.discard(sid)
     return keep
 
 

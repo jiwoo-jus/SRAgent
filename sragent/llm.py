@@ -123,7 +123,24 @@ _THINK = re.compile(r"<(think|thought)>.*?</(think|thought)>", re.S)
 
 
 def parse_json(text: str) -> Any:
-    """Robustly parse a JSON object from model output (handles <think>, fences, prose)."""
+    """Robustly parse a JSON object from model output (handles <think>, fences, prose). Every prompt asks
+    for one object; an object wrapped in a one-element list ([{...}], seen from Gemini) is unwrapped."""
+    v = _parse_json(text)
+    if isinstance(v, list) and len(v) == 1 and isinstance(v[0], dict):
+        return v[0]
+    return v
+
+
+def json_object(text: str) -> dict:
+    """parse_json, and the reply must be one JSON object (every prompt asks for one): anything else, e.g.
+    only the list of issues a check was asked to return inside its object, is treated as invalid JSON."""
+    v = parse_json(text)
+    if not isinstance(v, dict):
+        raise ValueError(f"expected one JSON object, got {type(v).__name__}: {json.dumps(v)[:120]}")
+    return v
+
+
+def _parse_json(text: str) -> Any:
     if text is None:
         raise ValueError("empty response")
     t = _THINK.sub("", text).strip()
@@ -226,10 +243,14 @@ class LLM:
         key = hashlib.sha256(key_src.encode()).hexdigest()
         if use_cache and self.cache and self.cache_read:
             hit = self.cache.get(key)
-            if hit is not None:
+            try:
+                val = (json_object(hit["text"]) if json_out else hit["text"]) if hit is not None else None
+            except ValueError:   # a cached reply that is not one JSON object: ask again
+                val = None
+            if val is not None:
                 self.tracker.add(self.role, self.model, tag, hit.get("pin", 0), hit.get("pout", 0),
                                  self._cost(hit.get("pin", 0), hit.get("pout", 0)), 0.0, True)
-                return parse_json(hit["text"]) if json_out else hit["text"]
+                return val
 
         self.tracker.check()
         msgs = list(messages)
@@ -242,12 +263,12 @@ class LLM:
                 self.tracker.add(self.role, self.model, tag, pin, pout, self._cost(pin, pout), dt, False)
                 if json_out:
                     try:
-                        val = parse_json(text)
+                        val = json_object(text)
                     except ValueError as e:
                         last_err = e
                         msgs = messages + [{"role": "assistant", "content": text[:4000]},
-                                           {"role": "user", "content": "Your reply was not valid JSON. "
-                                            "Return ONLY the JSON object, nothing else."}]
+                                           {"role": "user", "content": "Your reply was not one valid JSON object. "
+                                            "Return ONLY the JSON object the instructions describe, nothing else."}]
                         continue
                 else:
                     val = text
@@ -285,10 +306,14 @@ class LLM:
                 ["local", entry["_key"], entry.get("revision", ""), payload], sort_keys=True).encode()).hexdigest()
             if use_cache and self.cache and self.cache_read:
                 hit = self.cache.get(cache_key)
-                if hit is not None:
+                try:
+                    val = (json_object(hit["text"]) if json_out else hit["text"]) if hit is not None else None
+                except ValueError:   # a cached reply that is not one JSON object: ask again
+                    val = None
+                if val is not None:
                     self.tracker.add(self.role, hit["model"], tag, hit["pin"], hit["pout"], 0, 0, True,
                                      endpoint=entry["_key"], provider="local")
-                    return parse_json(hit["text"]) if json_out else hit["text"]
+                    return val
             for attempt in range(self.c["max_retries"] + 1):
                 t0 = time.time()
                 result = completion(url, headers, payload, self.c["timeout"])
@@ -303,7 +328,7 @@ class LLM:
                 self.tracker.add(self.role, actual_model, tag, pin, pout, 0, time.time() - t0, False,
                                  endpoint=entry["_key"], provider="local")
                 try:
-                    value = parse_json(text) if json_out else text
+                    value = json_object(text) if json_out else text
                 except ValueError:
                     if attempt == self.c["max_retries"]:
                         raise LocalRequestError("Local model did not return valid JSON after repair attempts")

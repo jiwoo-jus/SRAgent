@@ -1,0 +1,40 @@
+# Benchmark run: emicizumab_pk · Claude per stage · all records · AGENT ONLY. The baseline before the
+# dependency-graph refactor (compare with gemini_agentonly, the main results of GUIDE 11.0).
+# Claude Sonnet (high effort) writes the protocol, the search and the synthesis; Claude Haiku (medium) does
+# everything else. The evaluation judges stay on another family (Gemini) to avoid self-preference.
+# Same review settings and evaluation sizes as gemini_agentonly; the same user-supplied PDFs are in
+# runs/benchmark/emicizumab_pk/claude_stages_agentonly/fulltext/.
+#   sragent run  --config configs/benchmark/emicizumab_pk/claude_stages_agentonly.yaml
+#   sragent eval --config configs/benchmark/emicizumab_pk/claude_stages_agentonly.yaml --suite all
+include:
+  - topic.yaml
+llm_defaults:                # models by name; provider and price come from configs/models.yaml
+  model: claude-haiku-5-5      # the agent, and every role and stage that does not say otherwise
+  api_env: ../../../api_env.yaml
+  reasoning_effort: medium
+  max_tokens: 16000
+  concurrency: 6
+roles:                         # evaluation roles (sragent eval): another model family than the agent
+  judge: {model: gemini-3.1-pro-preview, reasoning_effort: low}
+  judge2: {model: gemma-4-31b-it, reasoning_effort: null}   # second judge, another lineage
+stage_models:                  # fixed for a stage once it has started
+  plan:       {model: claude-sonnet-5-5, reasoning_effort: high}
+  search:     {model: claude-sonnet-5-5, reasoning_effort: high}
+  synthesize: {model: claude-sonnet-5-5, reasoning_effort: high}
+cache_dir: .cache
+budget_usd: 4.0              # hard cap for this run folder (the review itself)
+pipeline:
+  human_mode: agent_only
+  fulltext_unclear: include  # the agent decides: still unclear after the full text -> included and flagged
+  max_records: null          # all records
+  context_chars: 30000
+  fulltext_screen_chars: 12000
+eval:
+  budget_usd: 8.5            # per evaluation run (each run has its own usage.jsonl); review ($1.36) + eval <= $10
+  grounding_max_studies: null   # all supplied studies
+  claim1_sets: 3
+  claim1_repeats: 2
+  claim1_genuine_checks: 4
+  claim2_cases_per_type: 4
+  judge_agreement_items: 40
+  human_audit_items: 15

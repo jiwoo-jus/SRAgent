@@ -34,6 +34,7 @@ Evaluation is not a separate kind of run: `sragent eval` reads a finished benchm
 | Run file | Models | Records | People |
 |---|---|---|---|
 | `benchmark/emicizumab_pk/gemini_agentonly.yaml` | Gemini (agent gemini-3.8-flash, judge gemini-3.1-pro-preview, second judge gemma-4-31b-it) | all | agent only (people only supply PDFs). The main results (GUIDE 11.0); `runs/.../gemini_agentonly/eval/README.md` lists its evaluations |
+| `benchmark/emicizumab_pk/claude_stages_agentonly.yaml` | Claude per stage: Sonnet high for protocol, search and synthesis, Haiku medium for the rest; Gemini judges | all | agent only. The baseline before the dependency-graph refactor (evaluation `20261019-184008_all`) |
 | `review/_template/run.yaml` | Gemini | all | human in the loop; template |
 
 Other runs are made from these when needed, e.g. the second evaluation condition (GUIDE 10.0): copy `gemini_agentonly.yaml` as `gemini_humanloop.yaml`, set `human_mode: human_in_the_loop` and drop `fulltext_unclear`. For another model, change `llm_defaults.model` (and the roles) to names from the catalog. For your own vLLM servers, write `provider: local` and `model: auto` under `llm_defaults` (below).

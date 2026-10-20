@@ -145,11 +145,14 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
             a.pop("quote", None)
             if cites:
                 attach(a, cites, text, "", "")
-        decision, because, stage = screening.rederive(p, {**n["data"], "criteria": crits},
-                                                      ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
+        decision, because, stage, by_rule = screening.rederive(p, {**n["data"], "criteria": crits},
+                                                               ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
         if decision == "include" and st.text_of(sid)[1] != "fulltext":
             decision, because = "fulltext_unavailable", []   # final inclusion only after a full-text review
         data = {**n["data"], "criteria": crits, "decision": decision, "because": because, "stage": stage}
+        data.pop("unclear_by_rule", None)
+        if by_rule and decision in ("include", "exclude"):
+            data["unclear_by_rule"] = by_rule
         st.upsert(node_id, t, data, depends_on=n["depends_on"], reason=reason, actor=actor)
     elif t == "rob":
         sid = study_of(node_id)
@@ -162,12 +165,14 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
         data = {**n["data"], "domains": doms, "overall": revised.get("overall", n["data"]["overall"])}
         st.upsert(node_id, t, data, depends_on=n["depends_on"], reason=reason, actor=actor)
     elif t == "synthesis":
+        had_cites = bool(n["data"].get("cites"))
         cites = [str(c).strip("[] ") for c in revised.get("cites", n["data"]["cites"])]
         cites, _ = synthesis.reconcile_citations(st, revised.get("text", n["data"]["text"]), cites)
         data = {**n["data"], "text": revised.get("text", n["data"]["text"]), "cites": cites,
                 "scope": revised.get("scope", n["data"].get("scope", ""))}
         data.pop("verification", None)
         st.upsert(node_id, t, data, depends_on=synthesis.statement_deps(st, cites), reason=reason, actor=actor)
+        synthesis.retire_if_uncited(st, node_id, had_cites)
     else:
         raise ValueError(f"cannot revise node type {t}")
     return before, st.get(node_id)["data"]
@@ -333,6 +338,18 @@ def _propagate(sb: Ctx, cs: dict, src_id: str, before: dict, after: dict, reason
         if after["decision"] == "include":
             _include_study(sb, cs, rid, tp)
             return
+        if after["decision"] == "forward":
+            # forwarded past title/abstract: its full-text review is done now, not left to the next run
+            screening.review_one(sb, st.get("protocol")["data"], rid)
+            screening.sync_awaiting_flags(sb)
+            final = st.get(src_id)["data"]
+            for c in cs["changes"]:
+                if c["node"] == src_id and c.get("role") == "target":
+                    c["after"] = copy.deepcopy(final)
+                    c["explanation"] = (c.get("explanation", "") + f" Full-text review: {final['decision']}.").strip()
+            if final["decision"] == "include":
+                _include_study(sb, cs, rid, tp)
+            return
     if depth >= 2:
         return
     cands = [c for c in st.related(src_id) if c not in done and st.get(c) and st.get(c)["status"] == "active"
@@ -463,9 +480,12 @@ def _revise_dependent(sb: Ctx, cs: dict, node_id: str, src_id: str, before: dict
     if not isinstance(rev, dict):
         return None
     bd, ad = apply_revised(sb, node_id, rev, reason=f"feedback {cs['id']} (propagated from {src_id})")
-    if _changed(bd, ad, n["type"]):
+    retired = st.get(node_id)["status"] == synthesis.RETIRED
+    if _changed(bd, ad, n["type"]) or retired:
         cs["changes"].append({"node": node_id, "role": "dependent", "before": bd, "after": ad,
-                              "explanation": out.get("explanation", "")})
+                              "explanation": out.get("explanation", "")
+                              + (" Retired: no included study supports it any more." if retired else ""),
+                              **({"status": synthesis.RETIRED} if retired else {})})
         return bd, ad
     return None
 

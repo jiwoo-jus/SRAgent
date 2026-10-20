@@ -42,17 +42,26 @@ def finalize(decision: str, stage: str, policy: str = "await") -> str:
     return decision
 
 
-def rederive(protocol: dict, d: dict, policy: str = "await") -> tuple[str, list[str], str]:
-    """(decision, because, stage) for a stored screen node's assessments under a (revised) protocol.
-    A record waiting at full-text retrieval was assessed on its title/abstract only: it keeps waiting
-    unless those assessments now exclude it (it is never included without a full-text review)."""
+def decide(protocol: dict, assessments: list[dict], stage: str, policy: str = "await") -> tuple[str, list[str], str | None]:
+    """(decision, because, unclear_by_rule). unclear_by_rule is the pipeline.fulltext_unclear policy
+    ("include" / "exclude") when it decided a record still unclear after its full text, else None."""
+    dec, because = rule_decision(protocol, assessments, stage)
+    final = finalize(dec, stage, policy)
+    by_rule = policy if stage != "title_abstract" and dec == "uncertain" and final in ("include", "exclude") else None
+    return final, because, by_rule
+
+
+def rederive(protocol: dict, d: dict, policy: str = "await") -> tuple[str, list[str], str, str | None]:
+    """(decision, because, stage, unclear_by_rule) for a stored screen node's assessments under a (revised)
+    protocol. A record waiting at full-text retrieval was assessed on its title/abstract only: it keeps
+    waiting unless those assessments now exclude it (it is never included without a full-text review)."""
     if d["stage"] == "retrieval":
         dec, because = rule_decision(protocol, d.get("criteria", []), "title_abstract")
         if dec == "exclude":
-            return "exclude", because, "title_abstract"
-        return d["decision"], d.get("because", []), "retrieval"
-    dec, because = rule_decision(protocol, d.get("criteria", []), d["stage"])
-    return finalize(dec, d["stage"], policy), because, d["stage"]
+            return "exclude", because, "title_abstract", None
+        return d["decision"], d.get("because", []), "retrieval", None
+    dec, because, by_rule = decide(protocol, d.get("criteria", []), d["stage"], policy)
+    return dec, because, d["stage"], by_rule
 
 
 def rule_decision(protocol: dict, assessments: list[dict], stage: str) -> tuple[str, list[str]]:
@@ -109,12 +118,13 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
         a.pop("quote", None)
         if cites:
             evidence.append(attach(a, cites, text, f"{a.get('id')}={a.get('assessment')}", src_node))
-    decision, because = rule_decision(protocol, assessments, stage)
-    decision = finalize(decision, stage, ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
+    decision, because, by_rule = decide(protocol, assessments, stage, ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
     data = {"stage": stage, "decision": decision, "because": because, "criteria": assessments,
             "source_kind": "title_abstract" if stage == "title_abstract" else st.text_of(rid)[1],
             "llm_decision": out.get("decision"), "reason": out.get("reason", ""),
             "confidence": out.get("confidence")}
+    if by_rule:
+        data["unclear_by_rule"] = by_rule
     if stage == "full_text":
         prev = st.get(f"screen:{rid}")
         if prev:
@@ -216,19 +226,28 @@ def fulltext_review(ctx: Ctx, protocol: dict) -> dict:
     return {"outcomes": dict(c), "included": len(st.included_ids())}
 
 
+SCREEN_FLAG_SOURCES = ("screening", "screening_unclear")
+
+
 def sync_awaiting_flags(ctx: Ctx):
-    """One open 'awaiting classification' flag per undecided record, and none once it is decided."""
+    """Screening flags follow the decision: one 'awaiting classification' flag while a person must decide,
+    one 'included although unclear' flag when pipeline.fulltext_unclear: include decided it, none otherwise."""
     st = ctx.store
     for n in st.by_type("screen"):
-        open_flags = [f for f in n["flags"] if f["source"] == "screening" and f["status"] == "open"]
-        dec = n["data"]["decision"]
-        if dec == "awaiting" and not open_flags:
-            st.flag(n["id"], f"Awaiting classification: criteria {n['data'].get('because')} unclear after "
-                    f"full-text screening (source: {st.text_of(n['id'].split(':', 1)[1])[1]}). Please decide.",
-                    actor="agent", source="screening")
-        elif dec != "awaiting":
-            for f in open_flags:
+        d, rid = n["data"], n["id"].split(":", 1)[1]
+        dec = d["decision"]
+        want = None
+        if dec == "awaiting":
+            want = ("screening", f"Awaiting classification: criteria {d.get('because')} unclear after "
+                                 f"full-text screening (source: {st.text_of(rid)[1]}). Please decide.")
+        elif dec == "include" and d.get("unclear_by_rule") == "include":
+            want = ("screening_unclear", f"Included by rule although criteria {d.get('because')} were still unclear "
+                                         f"after full-text screening (pipeline.fulltext_unclear: include). Check this inclusion.")
+        for f in n["flags"]:
+            if f["status"] == "open" and f["source"] in SCREEN_FLAG_SOURCES and (not want or f["source"] != want[0]):
                 st.resolve_flag(n["id"], f["id"], f"decision is now '{dec}'")
+        if want and not any(f["status"] == "open" and f["source"] == want[0] for f in n["flags"]):
+            st.flag(n["id"], want[1], actor="agent", source=want[0])
 
 
 def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
@@ -243,14 +262,18 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
         if n["data"].get("rule") or n["data"].get("human_decision"):
             continue
         d = dict(n["data"])
-        dec, because, stage = rederive(protocol, d, policy)
-        if (dec, because, stage) != (d["decision"], d.get("because"), d["stage"]):
+        dec, because, stage, by_rule = rederive(protocol, d, policy)
+        if (dec, because, stage, by_rule) != (d["decision"], d.get("because"), d["stage"], d.get("unclear_by_rule")):
             d.pop("note", None)
             d["decision"], d["because"], d["stage"] = dec, because, stage
+            if by_rule:
+                d["unclear_by_rule"] = by_rule
+            else:
+                d.pop("unclear_by_rule", None)
             st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user",
                       reason="protocol revised: decision re-derived from stored assessments")
             for f in n["flags"]:
-                if f["status"] == "open" and f["source"] == "screening":
+                if f["status"] == "open" and f["source"] in SCREEN_FLAG_SOURCES:
                     st.resolve_flag(n["id"], f["id"], "protocol revised")
             changed += 1
     changed += len(rules.apply(ctx, protocol))

@@ -54,6 +54,12 @@ def make_ctx(tmp_path, fulltexts=("1001", "1002", "1003"), extra_cfg: dict | Non
 def test_parse_json_variants():
     assert parse_json('<think>x</think>```json\n{"a": 1}\n```') == {"a": 1}
     assert parse_json('Sure! {"a": {"b": [1,2]}} trailing') == {"a": {"b": [1, 2]}}
+    assert parse_json('[{"label": "supported"}]') == {"label": "supported"}      # one object wrapped in a list
+    assert parse_json('[{"a": 1}, {"a": 2}]') == [{"a": 1}, {"a": 2}]
+    import pytest
+    from sragent.llm import json_object
+    with pytest.raises(ValueError):                                              # only a list of issues: re-asked
+        json_object('["the phrase only is not supported", "no data for adults"]')
 
 
 def test_sentence_evidence():
@@ -530,3 +536,13 @@ def test_rescreen_keeps_records_waiting_for_full_text(tmp_path):
     for w in waiting:
         d = st.get(w)["data"]
         assert (d["decision"], d["stage"]) == ("exclude", "title_abstract") and ta["id"] in d["because"]
+
+
+def test_reply_that_is_not_one_object_is_asked_again(tmp_path):
+    """A reply that is not one JSON object (e.g. only the list a check returns inside it) is re-asked once,
+    and such a reply is never served from the cache."""
+    from sragent.llm import LLM, CostTracker, DiskCache
+    replies = iter(['["only the issues"]', '{"support": "supported", "issues": []}'])
+    cfg = load_config(None, {"llm_defaults": {"provider": "mock", "model": "mock"}})
+    llm = LLM(cfg, "agent", CostTracker(1), DiskCache(tmp_path / "c.sqlite"), mock_fn=lambda m, mode: next(replies))
+    assert llm.chat([{"role": "user", "content": "check"}], tag="t") == {"support": "supported", "issues": []}

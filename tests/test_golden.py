@@ -247,8 +247,8 @@ def test_golden_feedback_proposal_accept_reject(tmp_path):
 
 
 def test_golden_feedback_eligibility_flip(tmp_path):
-    """Feedback that a title/abstract exclusion was wrong: re-assessed and forwarded; its full text is
-    screened by the next run (not right away), and the outputs follow."""
+    """Feedback that a title/abstract exclusion was wrong: re-assessed, forwarded and screened on its full
+    text right away (here the full text rules it out); a later run changes nothing more."""
     from sragent import feedback, pipeline
     ctx = reviewed(tmp_path)
     cs = feedback.handle_feedback(ctx, "G04 should not have been excluded: it reports drug levels.", target="screen:G04",
@@ -259,7 +259,8 @@ def test_golden_feedback_eligibility_flip(tmp_path):
 
 
 def test_golden_person_excludes_then_sync(tmp_path):
-    """A person excludes an included study; 'Update now' retires its outputs and revises the statements."""
+    """A person excludes an included study; 'Update now' retires its outputs, revises the statements that
+    cited it, and retires a statement left with no cited study."""
     from sragent import actions, sync
     ctx = reviewed(tmp_path)
     r = actions.edit(ctx, {"kind": "screen", "rid": "G02", "decision": "exclude", "criterion": "I2", "note": "paediatric only"})
@@ -270,7 +271,7 @@ def test_golden_person_excludes_then_sync(tmp_path):
 
 def test_golden_protocol_remove_criterion(tmp_path):
     """Protocol edit that drops a criterion: decisions are re-derived; a newly forwarded record is screened
-    at full text by the next run."""
+    at full text by the next run, which integrates it into the existing synthesis (not re-written)."""
     from sragent import pipeline, todos
     ctx = reviewed(tmp_path)
     p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
@@ -330,8 +331,8 @@ def test_golden_pdf_supplied_then_sync(tmp_path):
 
 
 def test_golden_agent_only(tmp_path):
-    """Agent-only condition: a record still unclear after its full text is included and flagged; a person's
-    judgment is refused."""
+    """Agent-only condition: a record still unclear after its full text is included by rule and flagged; a
+    person's judgment is refused."""
     from sragent import actions
     unclear = {**FULLTEXTS, "G03": "Emicizumab exposure was described in 140 patients; bleeding rates fell."}
     ctx = reviewed(tmp_path, unclear, pipeline={"human_mode": "agent_only", "fulltext_unclear": "include"})

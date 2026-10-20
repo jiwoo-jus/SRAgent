@@ -78,7 +78,9 @@
    "G02",
    "G03"
   ],
-  "open_flags": {},
+  "open_flags": {
+   "screen:G03": 1
+  },
   "prisma": {
    "awaiting_classification": 0,
    "awaiting_fulltext_review": 0,

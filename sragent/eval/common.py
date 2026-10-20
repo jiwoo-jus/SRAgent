@@ -25,6 +25,8 @@ class Judge:
         llm = self.ctx.hub[self.role]
         res = llm.chat([{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": prompt}],
                        tag=f"{tag}_{kind}")
+        if not isinstance(res, dict):   # not one JSON object: logged without a label instead of failing the run
+            res = {"_unparsed": res}
         rec = {"ts": time.time(), "kind": kind, "role": self.role, "model": llm.name, "label_key": label_key,
                "label": res.get(label_key), "result": res, "prompt": prompt, "meta": meta or {}}
         with open(self.log_path, "a") as f:

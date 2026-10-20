@@ -72,6 +72,30 @@ def pending_changes(ctx: Ctx) -> dict:
             "excluded_but_cited": removed, "has_synthesis": has_syn}
 
 
+def update_synthesis(ctx: Ctx, tp: str = "sync", pc: dict | None = None) -> dict:
+    """Bring an existing synthesis in line with the included studies statement by statement: statements
+    citing a study that is no longer included are revised (and retired when no cited study is left), newly
+    included studies are integrated, and every changed statement is checked again. Unaffected statements
+    are left as they are. Returns the change set."""
+    from . import feedback  # local import (feedback imports stages)
+    st = ctx.store
+    pc = pc or pending_changes(ctx)
+    cs = {"id": tp, "changes": []}
+    if not pc["has_synthesis"]:
+        return cs
+    for rid in pc["excluded_but_cited"]:
+        for sid in [n["id"] for n in st.by_type("synthesis", active_only=True) if rid in n["data"]["cites"]]:
+            feedback._revise_dependent(ctx, cs, sid, f"screen:{rid}", {"included": True, "study": rid},
+                                       {"included": False, "study": rid}, tp=tp)
+    for rid in pc["new_for_synthesis"]:
+        feedback._include_study(ctx, cs, rid, tp=tp, integrate=True)
+    for sid in sorted({c["node"] for c in cs["changes"] if c["node"].startswith("syn:")}):
+        if st.get(sid) and st.get(sid)["status"] == "active":
+            synthesis.verify_one(ctx, sid)
+    st.meta["synthesis_considered"] = sorted(st.included_ids())
+    return cs
+
+
 def sync_dependents(ctx: Ctx) -> dict:
     from . import feedback  # local import (feedback imports stages)
     st = ctx.store
@@ -88,19 +112,7 @@ def sync_dependents(ctx: Ctx) -> dict:
     need_rob = [r for r in inc if st.get(f"rob:{r}") is None and st.get(f"ext:{r}")]
     if need_rob:
         rob.rob_all(ctx, only=need_rob)
-    cs = {"id": "sync", "changes": []}
-    if pc["has_synthesis"]:
-        for rid in pc["excluded_but_cited"]:
-            for sid in [n["id"] for n in st.by_type("synthesis", active_only=True) if rid in n["data"]["cites"]]:
-                feedback._revise_dependent(ctx, cs, sid, f"screen:{rid}", {"included": True, "study": rid},
-                                           {"included": False, "study": rid}, tp="sync")
-        for rid in pc["new_for_synthesis"]:
-            feedback._include_study(ctx, cs, rid, tp="sync", integrate=True)
-        if cs["changes"]:
-            for sid in sorted({c["node"] for c in cs["changes"] if c["node"].startswith("syn:")}):
-                if st.get(sid) and st.get(sid)["status"] == "active":
-                    synthesis.verify_one(ctx, sid)
-        st.meta["synthesis_considered"] = sorted(st.included_ids())
+    cs = update_synthesis(ctx, "sync", pc)
     report.write_reports(ctx)
     ctx.save()
     summary = {**pc, "synthesis_changes": sorted({c["node"] for c in cs["changes"]})}
