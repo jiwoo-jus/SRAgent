@@ -13,7 +13,7 @@ llm_defaults:                # models by name; provider and price come from conf
   concurrency: 6
 roles:                         # evaluation roles (sragent eval)
   judge: {model: gemini-3.1-pro-preview}
-  judge2: {model: gemma-4-31b-it, reasoning_effort: null}   # second judge, another lineage
+  judge2: {model: gemma-4-31b-it, reasoning_effort: null}   # second judge (same family as the judge: see GUIDE 4.3)
 cache_dir: .cache
 budget_usd: 10.0           # hard cap for this run folder
 contact_email: ""          # recommended: needed for Unpaywall open-access full texts

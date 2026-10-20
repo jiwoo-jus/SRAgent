@@ -700,3 +700,79 @@ def test_llm_refusal_is_paid_once_and_cache_failures_do_not_cost_a_call(tmp_path
     from sragent.llm import BudgetExceeded
     with pytest.raises(BudgetExceeded):
         llm.chat([{"role": "user", "content": "x"}])
+
+
+# ---------------------------------------------------------------- evidence density, synthesis checks, evaluation bookkeeping
+def test_numbers_in_a_value_are_cited_or_flagged():
+    from sragent.stages.extraction import cover_numbers
+    text = ("## Methods\nTwelve adults were enrolled; the mean age was 34 years. Dosing was 3 mg/kg weekly.\n"
+            "## Results\nTrough concentrations reached 52 ug/mL at week 5. The half-life was 27 days. Clearance was 0.27 L/day.\n"
+            "## Discussion\nA half-life near 27 days is consistent with earlier reports.")
+    from sragent.evidence import segment
+    sid = lambda frag: next(s["sid"] for s in segment(text) if frag in s["text"])
+    item = {"value": "Trough 52 ug/mL at week 5; half-life 27 days; clearance 0.27 L/day in 12 adults"}
+    cites = cover_numbers(item, [sid("Trough")], text)
+    assert item["auto_evidence"] == [sid("Clearance")] and sid("Clearance") in cites   # 0.27: one sentence, cited
+    assert "27" in item["uncovered"]                                # 27 occurs in two sentences: not guessed, flagged
+    assert "12" in item["uncovered"]                                # "Twelve" is not a digit: flagged for the reviewer
+    assert "52" not in item["uncovered"] and "5" not in item["uncovered"]   # cited / a single digit (not checked)
+    plain = {"value": "Adults with haemophilia A"}
+    assert cover_numbers(plain, ["s1"], text) == ["s1"] and "uncovered" not in plain
+
+
+def test_synthesis_is_checked_by_another_model_and_absence_claims_see_every_study(tmp_path):
+    from sragent import pipeline
+    from sragent.stages import synthesis
+    big = {"model": "mock-writer", "reasoning_effort": "high", "pricing": {"input_per_m": 1, "output_per_m": 1}}
+    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"synthesize": big}})
+    pipeline.run(ctx)
+    rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
+    assert {r["model"] for r in rows if r["tag"] == "synthesis"} == {"mock-writer"}
+    assert {r["model"] for r in rows if r["tag"] == "synthesis_verify"} == {"mock"}      # the agent, not the writer
+    with ctx.at("synthesize"):
+        assert synthesis.checker(ctx).model == "mock"
+    ctx.cfg["roles"]["verifier"] = {"model": "mock-checker", "pricing": {"input_per_m": 1, "output_per_m": 1}}
+    ctx.hub._clients.clear()
+    assert synthesis.checker(ctx).model == "mock-checker"
+    cites = ["1001"]
+    plain = synthesis.statement_evidence(ctx, cites, "Trough levels were 52 ug/mL in adults.")
+    absent = synthesis.statement_evidence(ctx, cites, "Clearance was not reported in any study.")
+    assert "ALL OTHER INCLUDED STUDIES" in absent and "ALL OTHER INCLUDED STUDIES" not in plain
+    assert "[1002]" in absent and "[1002]" not in plain
+
+
+def test_end_to_end_eval_reports_unlabelled_inclusions(tmp_path):
+    from sragent import pipeline
+    from sragent.eval.screening_eval import end_to_end
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    st.upsert("search", "search", {**st.get("search")["data"], "retrieved_pmids": ["1001", "1002", "1003", "1004", "9999"]},
+              depends_on=["protocol"])
+    st.upsert("rec:9999", "record", {"rid": "9999", "pmid": "9999", "title": "Emicizumab PK in a new cohort", "abstract": "x"},
+              depends_on=["search"])
+    st.upsert("screen:9999", "screen", {"stage": "full_text", "decision": "include", "because": [], "criteria": []},
+              depends_on=["rec:9999", "protocol"])
+    e = end_to_end(ctx)
+    assert e["included_unlabelled"] == 1 and e["included_unlabelled_rids"] == ["9999"]
+    assert e["end_to_end_precision"] is not None                # labelled ones only
+
+
+def test_estimate_counts_rules_snowball_parts_and_updates(tmp_path):
+    from sragent import pipeline
+    from sragent.estimate import remaining_calls
+    ctx = make_ctx(tmp_path)
+    c0 = remaining_calls(ctx, None, "report")                     # nothing done yet: a guess from the record file
+    assert c0["screen_title_abstract"] >= 4 and c0["synthesis"] == 1
+    pipeline.run(ctx, until="screen")
+    st = ctx.store
+    st.meta.pop("snowball", None); ctx.cfg["pipeline"]["citation_chasing"] = True
+    c1 = remaining_calls(ctx, None, "report")
+    assert c1["screen_title_abstract"] > 0                        # citation-chasing candidates still to screen
+    ctx.cfg["pipeline"]["citation_chasing"] = False
+    c2 = remaining_calls(ctx, None, "report")
+    assert c2.get("screen_title_abstract", 0) == 0 and c1["screen_title_abstract"] > c2.get("screen_title_abstract", 0)
+    pipeline.run(ctx)                                             # done: an existing synthesis is updated, not re-written
+    st.meta["synthesis_considered"] = ["1001"]                    # pretend two included studies were added since
+    c3 = remaining_calls(ctx, None, "report")
+    assert c3.get("synthesis", 0) == 0 and c3["feedback"] == 2 and c3["synthesis_verify"] == 2

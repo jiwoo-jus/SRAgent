@@ -8,6 +8,7 @@ which were measured in the v1/v2 runs. Reasoning effort mostly changes output (t
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -30,6 +31,8 @@ ROW_STAGE = {"plan": "plan", "search": "search", "screen_title_abstract": "scree
              "feedback": "feedback"}
 FORWARD_RATE = 0.56     # share of records forwarded past title/abstract (v2)
 INCLUDE_RATE = 0.09     # share of records finally included (v2)
+RETRIEVED_RATE = 0.6    # share of forwarded records whose full text can be retrieved (benchmark runs: 25/42, 36/55)
+SNOWBALL_PER_SEED = 6   # candidates citation chasing adds per included study (64/13 and 115/15 in the benchmark runs)
 N_STATEMENTS = 7
 
 
@@ -75,21 +78,45 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
                 guess = sum(1 for _ in open(p))
         n_records = min(guess, max_records) if max_records else guess
     screened = len(st.by_type("screen"))
+    unscreened = max(0, n_records - screened)
     if "screen" in order:
-        calls["screen_title_abstract"] = max(0, n_records - screened)
+        # records the screening rules will exclude cost nothing: count them out when the records are here
+        from . import rules
+        p = (st.get("protocol") or {}).get("data", {})
+        ruled = sum(1 for n in st.by_type("record") if not st.get("screen:" + n["id"].split(":", 1)[1])
+                    and rules.classify(n["data"], rules.key_terms(p), rules.enabled_rules(ctx)))
+        calls["screen_title_abstract"] = max(0, unscreened - ruled)
     forwarded_known = [n for n in st.by_type("screen") if n["data"]["stage"] == "title_abstract"
                        and n["data"]["decision"] in ("include", "uncertain", "forward")]
+    waiting = sum(1 for n in st.by_type("screen") if n["data"]["stage"] == "retrieval")   # no full text yet: no call
     if "fulltext" in order:
-        calls["screen_full_text"] = len(forwarded_known) + int(calls["screen_title_abstract"] * FORWARD_RATE)
+        calls["screen_full_text"] = int((len(forwarded_known) + calls["screen_title_abstract"] * FORWARD_RATE) * RETRIEVED_RATE)
     inc = st.included_ids()
-    n_inc_future = int((calls["screen_title_abstract"]) * INCLUDE_RATE)
+    pending_ft = sum(1 for n in forwarded_known if not st.get(f"ext:{n['id'].split(':', 1)[1]}"))
+    n_inc_future = int(calls["screen_title_abstract"] * INCLUDE_RATE) + math.ceil(pending_ft * INCLUDE_RATE / FORWARD_RATE)
+    if "snowball" in order and ctx.cfg["pipeline"].get("citation_chasing", True) and not st.meta.get("snowball"):
+        cand = int((len(inc) + n_inc_future) * SNOWBALL_PER_SEED)     # found papers go through both screening steps
+        calls["screen_title_abstract"] += cand
+        calls["screen_full_text"] += int(cand * FORWARD_RATE * RETRIEVED_RATE)
+        n_inc_future += int(cand * INCLUDE_RATE)
     if "extract" in order:
-        calls["extract"] = sum(1 for r in inc if not st.get(f"ext:{r}")) + n_inc_future
+        budget = int(ctx.cfg["pipeline"].get("context_chars", 60000))
+        for r in inc:
+            if st.get(f"ext:{r}"):
+                continue
+            parts = -(-len(st.text_of(r)[0]) // budget) if st.get(f"ft:{r}") else 1
+            calls["extract"] += parts + (1 if parts > 1 else 0)                     # one call per part, plus the merge
+        calls["extract"] += n_inc_future
     if "rob" in order:
         calls["rob"] = sum(1 for r in inc if not st.get(f"rob:{r}")) + n_inc_future
-    if "synthesize" in order and not st.by_type("synthesis"):
-        calls["synthesis"] = 1
-        calls["synthesis_verify"] = N_STATEMENTS
+    if "synthesize" in order:
+        if not st.by_type("synthesis", active_only=True):
+            calls["synthesis"] = 1
+            calls["synthesis_verify"] = N_STATEMENTS
+        elif set(st.meta.get("synthesis_considered") or []) != set(inc) or n_inc_future:
+            n_new = len(set(inc) - set(st.meta.get("synthesis_considered") or [])) + n_inc_future
+            calls["feedback"] = n_new                 # one integrate call per new study
+            calls["synthesis_verify"] = min(N_STATEMENTS, max(1, n_new))
     return dict(calls)
 
 

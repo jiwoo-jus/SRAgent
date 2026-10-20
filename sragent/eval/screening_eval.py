@@ -87,6 +87,7 @@ def end_to_end(ctx: Ctx) -> dict:
     included_ret = [rid for rid in st.included_ids() if found_by(rid)]
     tp = sum(1 for p in per if p["outcome"] == "included")
     labelled_inc_ret = [r for r in included_ret if r in labels]
+    unlabelled_inc = [r for r in included_ret if r not in labels]   # found by citation chasing etc.: no gold label
     pool_pmids = {d.get("pmid") for d in recs.values() if d.get("pmid")}
     ret_rids = [rid for rid in recs if found_by(rid)]
     return {
@@ -103,6 +104,7 @@ def end_to_end(ctx: Ctx) -> dict:
         "end_to_end_recall_95ci": wilson(tp, len(gold_inc)),
         "end_to_end_precision": round(sum(1 for r in labelled_inc_ret if labels[r]) / len(labelled_inc_ret), 3) if labelled_inc_ret else None,
         "included_from_search": len(included_ret),
+        "included_unlabelled": len(unlabelled_inc), "included_unlabelled_rids": unlabelled_inc,
         "status_of_retrieved_records": dict(Counter(category(st, r) for r in ret_rids)),
         "per_gold_study": per,
         "note": ("Retrieved records outside the benchmark pool have no gold label and were not screened in benchmark "

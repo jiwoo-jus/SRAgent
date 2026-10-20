@@ -7,6 +7,7 @@ Fields whose evidence cannot be located in the source are flagged for the review
 from __future__ import annotations
 
 import json
+import re
 
 from .. import prompts, terms
 from ..context import Ctx
@@ -51,13 +52,47 @@ def postprocess(ctx: Ctx, rid: str, fields_out: dict, text: str, src_node: str) 
         ents = raw.get("entities") if isinstance(raw.get("entities"), list) else None
         item = {"value": str(raw.get("value", "NR"))}
         if item["value"].strip().upper() != "NR":
-            evidence.append(attach(item, cites_of(raw), text, f"{name}={item['value'][:80]}", src_node))
+            cites = cover_numbers(item, cites_of(raw), text)
+            evidence.append(attach(item, cites, text, f"{name}={item['value'][:80]}", src_node))
             if f.get("kind") in ("drug", "disease") and ctx.cfg["pipeline"].get("validate_terms", True):
                 item["terms"] = validate_field_terms(item["value"], f["kind"], ents, known_terms(ctx))
                 if ents:
                     item["entities"] = ents
         clean[name] = item
     return clean, evidence
+
+
+_NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])")
+
+
+def cover_numbers(item: dict, cites: list, text: str) -> list:
+    """Every number in a value should be in a cited sentence. A number that is not, but occurs in exactly
+    one sentence of the source, gets that sentence cited (recorded in item["auto_evidence"]); a number found
+    nowhere, or in several sentences, is listed in item["uncovered"] for the reviewer. Nothing is guessed."""
+    # single-digit integers (phase 1, 3 cohorts, week 5) carry little and match everywhere: not checked
+    nums = [n for n in _NUM.findall(item["value"]) if len(n) <= 12 and not (n.isdigit() and int(n) < 10)]
+    if not nums:
+        return cites
+    segs = segment(text)
+    by_id = {s["sid"]: s for s in segs}
+    ids = [c for c in cites if isinstance(c, str) and c in by_id]
+    cited_text = " ".join(by_id[i]["text"] for i in ids)
+    added, uncovered = [], []
+    for n in dict.fromkeys(nums):
+        rx = re.compile(r"(?<![\w.])" + re.escape(n) + r"(?![\w.])")
+        if rx.search(cited_text):
+            continue
+        where = [s for s in segs if rx.search(s["text"])]
+        if len(where) == 1 and where[0]["sid"] not in ids and len(ids) + len(added) < 6:
+            added.append(where[0]["sid"])
+            cited_text += " " + where[0]["text"]
+        elif not any(rx.search(by_id[a]["text"]) for a in added):
+            uncovered.append(n)
+    if added:
+        item["auto_evidence"] = added
+    if uncovered:
+        item["uncovered"] = uncovered
+    return list(cites) + added
 
 
 def context_budget(ctx: Ctx) -> int:
@@ -127,10 +162,16 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
     st.upsert(f"ext:{rid}", "extraction", data, depends_on=[f"screen:{rid}", src_node, "protocol"],
               evidence=evidence, reason="extracted")
     n = st.get(f"ext:{rid}")
+    uncovered = []
     for name, item in fields.items():
         if item.get("check", {}).get("status") == "none":
             st.flag(n["id"], f"No source location cited for '{name}'; please check the value.",
                     actor="agent", source="evidence_check")
+        elif item.get("uncovered"):
+            uncovered.append(f"{name}: {', '.join(item['uncovered'][:5])}")
+    if uncovered:   # one flag per study, not one per field
+        st.flag(n["id"], "Numbers that are not in the cited sentences (check them against the paper): "
+                + "; ".join(uncovered[:8]), actor="agent", source="evidence_check")
         for t in item.get("terms", []):
             if t["status"] == "not_found":
                 st.flag(n["id"], f"Term '{t['term']}' in '{name}' not found in RxNorm/PubChem/ChEMBL/MONDO.",

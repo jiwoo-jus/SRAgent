@@ -130,9 +130,13 @@ def report_markdown(ctx: Ctx) -> str:
 
 
 def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
-    """Plain-text evidence-linked bundle (used by the simulated reviewer in Claim 1)."""
+    """Plain-text evidence-linked bundle (used by the simulated reviewer in Claim 1). With max_chars_per_study,
+    each study's block (its screening, extraction or risk-of-bias lines) is cut to that many characters, the
+    same cap the source papers get, so the length of the materials does not depend on how verbose the agent was."""
     st = ctx.store
     crit = _crit_lookup(ctx)
+    cap = (lambda block: block[:max_chars_per_study] + (" …[cut]" if len(block) > max_chars_per_study else "")) \
+        if max_chars_per_study else (lambda block: block)
     L = ["## EVIDENCE-LINKED DETAILS", "", "### Eligibility decisions (criterion level)"]
     for n in st.by_type("screen"):
         rid = n["id"].split(":", 1)[1]
@@ -141,27 +145,30 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
             # keep bundle compact: TA exclusions listed briefly
             L.append(f"[screen:{rid}] {d['decision']} at {d['stage']} because {d.get('because')}")
             continue
-        L.append(f"[screen:{rid}] decision={d['decision']} stage={d['stage']} because={d.get('because')}")
+        block = [f"[screen:{rid}] decision={d['decision']} stage={d['stage']} because={d.get('because')}"]
         for a in d.get("criteria", []):
-            L.append(f"    {a.get('id')} ({crit.get(a.get('id'), '')[:60]}): {a.get('assessment')} | evidence: {_ev_txt(a)}")
+            block.append(f"    {a.get('id')} ({crit.get(a.get('id'), '')[:60]}): {a.get('assessment')} | evidence: {_ev_txt(a)}")
+        L.append(cap("\n".join(block)))
     L += ["", "### Extracted data with supporting passages"]
     for rid in st.included_ids():
         n = st.get(f"ext:{rid}")
         if not n:
             continue
-        L.append(f"[ext:{rid}] (source: {n['data']['source_kind']})")
+        block = [f"[ext:{rid}] (source: {n['data']['source_kind']})"]
         for k, v in n["data"]["fields"].items():
             chk = v.get("check", {}).get("status", "-")
             tm = "; ".join(f"{t['term']}->{t['status']} {t['ids']}" for t in v.get("terms", []))
-            L.append(f"    {k}: {v['value']} | evidence[{chk}]: {_ev_txt(v)}" + (f" | terms: {tm}" if tm else ""))
+            block.append(f"    {k}: {v['value']} | evidence[{chk}]: {_ev_txt(v)}" + (f" | terms: {tm}" if tm else ""))
+        L.append(cap("\n".join(block)))
     L += ["", "### Risk-of-bias rationales"]
     for rid in st.included_ids():
         n = st.get(f"rob:{rid}")
         if not n:
             continue
-        L.append(f"[rob:{rid}] overall={n['data']['overall']}")
+        block = [f"[rob:{rid}] overall={n['data']['overall']}"]
         for d in n["data"]["domains"]:
-            L.append(f"    {d.get('domain')}: {d.get('judgment')} | {d.get('rationale', '')} | evidence: {_ev_txt(d)}")
+            block.append(f"    {d.get('domain')}: {d.get('judgment')} | {d.get('rationale', '')} | evidence: {_ev_txt(d)}")
+        L.append(cap("\n".join(block)))
     L += ["", "### Synthesis statements: cited evidence and self-check"]
     for n in st.by_type("synthesis", active_only=True):
         v = n["data"].get("verification") or {}

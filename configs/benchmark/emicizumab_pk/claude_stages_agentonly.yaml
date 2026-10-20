@@ -1,7 +1,8 @@
 # Benchmark run: emicizumab_pk · Claude per stage · all records · AGENT ONLY. The baseline before the
 # dependency-graph refactor (compare with gemini_agentonly, the main results of GUIDE 11.0).
 # Claude Sonnet (high effort) writes the protocol, the search and the synthesis; Claude Haiku (medium) does
-# everything else. The evaluation judges stay on another family (Gemini) to avoid self-preference.
+# everything else. The judge and Claim 1's reviewer stay on another family (Gemini) to avoid self-preference
+# and to keep Claim 1 comparable with gemini_agentonly (same reviewer).
 # Same review settings and evaluation sizes as gemini_agentonly; the same user-supplied PDFs are in
 # runs/benchmark/emicizumab_pk/claude_stages_agentonly/fulltext/.
 #   sragent run  --config configs/benchmark/emicizumab_pk/claude_stages_agentonly.yaml
@@ -15,8 +16,9 @@ llm_defaults:                # models by name; provider and price come from conf
   max_tokens: 16000
   concurrency: 6
 roles:                         # evaluation roles (sragent eval): another model family than the agent
+  reviewer: {model: gemini-3.8-flash, reasoning_effort: low}   # Claim 1's simulated reviewer: fixed across runs (GUIDE 10.3)
   judge: {model: gemini-3.1-pro-preview, reasoning_effort: low}
-  judge2: {model: gemma-4-31b-it, reasoning_effort: null}   # second judge, another lineage
+  judge2: {model: gemma-4-31b-it, reasoning_effort: null}   # second judge (same family as the judge: see GUIDE 4.3)
 stage_models:                  # fixed for a stage once it has started
   plan:       {model: claude-sonnet-5-5, reasoning_effort: high}
   search:     {model: claude-sonnet-5-5, reasoning_effort: high}

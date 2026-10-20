@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .. import prompts
 from ..context import Ctx
@@ -89,16 +90,34 @@ def synthesize(ctx: Ctx) -> int:
     return len(statements)
 
 
-def statement_evidence(ctx: Ctx, cites: list[str]) -> str:
-    return table_text(ctx, cites, with_quotes=True) or "(no active cited studies)"
+ABSENCE = re.compile(r"\b(not (reported|available|extract\w*|provided|stated|measured|assessed|estimated|given)|"
+                     r"no (data|stud(y|ies)|estimates?|values?|parameters?|information)|unavailable|none of the|"
+                     r"could not be|were not|was not)\b", re.I)
+
+
+def checker(ctx: Ctx):
+    """The model that checks statements: roles.verifier if configured, else the agent role itself (not the
+    stage's model), so a synthesis written by a stronger stage model is checked by another model."""
+    return ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub["agent"]
+
+
+def statement_evidence(ctx: Ctx, cites: list[str], text: str = "") -> str:
+    """The cited studies' data with quotes; for a statement that says something is absent or not reported,
+    every included study's data as well, so the check can find what the statement says is missing."""
+    ev = table_text(ctx, cites, with_quotes=True) or "(no active cited studies)"
+    if text and ABSENCE.search(text):
+        others = [r for r in ctx.store.included_ids() if r not in cites]
+        if others:
+            ev += "\n\nALL OTHER INCLUDED STUDIES (the statement claims an absence; check these too):\n" + table_text(ctx, others)
+    return ev
 
 
 def verify_one(ctx: Ctx, sid: str, tag: str = "synthesis_verify") -> dict:
     st = ctx.store
     n = st.get(sid)
     d = n["data"]
-    res = ctx.agent.chat(ctx.msgs(prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"],
-                                                              evidence=statement_evidence(ctx, d["cites"]))), tag=tag)
+    res = checker(ctx).chat(ctx.msgs(prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"],
+                                                                 evidence=statement_evidence(ctx, d["cites"], d["text"]))), tag=tag)
     n["data"]["verification"] = res
     if res.get("support") in ("unsupported", "partially_supported") or res.get("overgeneralization"):
         st.flag(sid, f"Self-check: {res.get('support')}; overgeneralization={res.get('overgeneralization')}; "

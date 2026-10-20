@@ -102,9 +102,13 @@ Return JSON: {{"fields": {{"<item name>": {{"value": str, "evidence": ["s12", "s
 Rules:
 - entities: ONLY for items marked [drug] or [disease]: the bare generic drug / disease names mentioned
   in the value (e.g. ["emicizumab"], ["haemophilia A"]), no doses or qualifiers; [] otherwise.
-- value: concise, include units and the population/subgroup the value applies to.
-- evidence: ids of the sentences that together support the value (1 to 4; they may be in
-  different sections, e.g. a number in Results and its population in Methods).
+- value: concise (at most about 40 words: the main finding with its units and the population or
+  subgroup it applies to), not a summary of the whole paper. Prefer the primary result; leave
+  secondary numbers out rather than cite them without a sentence.
+- evidence: ids of the sentences that together support the value (1 to 6; they may be in
+  different sections, e.g. a number in Results and its population in Methods). Every number in
+  the value must appear in one of the cited sentences; a number you cannot cite does not go in
+  the value.
 - If the item is not reported, value = "NR" and evidence = [].
 - Do not use outside knowledge about the study."""
 
@@ -150,7 +154,9 @@ Rules:
 - Do not over-generalise: keep population, dose regimen and subgroup qualifiers that the data carry
   (e.g. "in children <12 years", "with inhibitors"). `scope` states the population the statement
   applies to.
-- Numbers must come from the extracted data."""
+- Numbers must come from the extracted data.
+- Say that something was not reported or not available only after checking every field of every
+  study in the table; such a statement must cite the studies whose data you checked."""
 
 SYNTH_VERIFY = """Check whether a synthesis statement is supported by the extracted data it cites.
 
@@ -163,7 +169,8 @@ Return JSON: {{"support": "supported"|"partially_supported"|"unsupported",
               "issues": [str], "overgeneralization": bool}}
 "partially_supported": the core is right but a number, qualifier or scope is wrong or broader than
 the data. "overgeneralization": the statement applies a finding to a broader population, regimen or
-outcome than the cited data show."""
+outcome than the cited data show. If the statement says something is absent, not reported or not
+available, it is "unsupported" when any study's data below contains it."""
 
 # ----------------------------------------------------------------------------- feedback
 LOCATE = """A user left feedback on a systematic review. Identify which output it targets.

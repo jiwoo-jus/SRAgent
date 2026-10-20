@@ -51,7 +51,7 @@ Other runs are made from these when needed, e.g. the second evaluation condition
 
 The catalog holds **facts about each model**: `provider`, `pricing` (`{input_per_m, output_per_m}`, optionally `long_context: {threshold_tokens, input_per_m, output_per_m}`), optionally `base_url` and a `note`. A run file chooses models **by name**, and their provider and price are filled in from here, so a price is written in one place only (it drives the budget guard and every cost estimate). Choices (reasoning effort, `max_tokens`, `concurrency`, `api_env`, `fallbacks`) go in the run file, not here. The web interface offers every model in the catalog. To use another model, add it here. Removing a model that a run file still uses is refused by the editor. Local vLLM models need no entry.
 
-Roles: **agent** does the review; **verifier** (optional) checks feedback against the evidence and re-checks revised outputs, and is the agent unless set; **judge**, **judge2** and **reviewer** are used only by `sragent eval`.
+Roles: **agent** does the review; **verifier** (optional) checks feedback against the evidence, re-checks revised outputs and checks every synthesis statement, and is the agent role unless set (so with `stage_models.synthesize` on a stronger model, the statements are still checked by another model); **judge**, **judge2** and **reviewer** are used only by `sragent eval`; set **reviewer** explicitly and keep it the same across runs you compare (Claim 1 measures the materials, not the reviewer).
 
 ## How to write a config
 

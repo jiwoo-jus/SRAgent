@@ -357,6 +357,9 @@ def render(R: dict) -> str:
               f"- **End-to-end recall: {e['end_to_end_recall']}** (95% CI {e['end_to_end_recall_95ci']}); precision {_f(e['end_to_end_precision'])}; "
               f"included from the search: {e['included_from_search']}",
               f"- Gold includes by outcome: {e['gold_outcomes']}",
+              *([f"- **{e['included_unlabelled']} included studies have no gold label** (found outside the benchmark pool, "
+                 f"e.g. by citation chasing) and are left out of the precision above: {', '.join(e['included_unlabelled_rids'][:12])}"
+                 + (" …" if e['included_unlabelled'] > 12 else "")] if e.get("included_unlabelled") else []),
               f"- Status of all retrieved records: {e['status_of_retrieved_records']}", ""]
     s = X.get("stagewise_screening")
     if s and "n_records" in s:

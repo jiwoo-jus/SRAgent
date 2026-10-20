@@ -19,7 +19,7 @@ models:
   gemini-3.1-pro-preview:
     provider: gemini
     pricing: {input_per_m: 2.00, output_per_m: 12.00}
-  gemma-4-31b-it:                 # open model through the Gemini API (a second judge of another lineage)
+  gemma-4-31b-it:                 # Google's open model through the Gemini API: same family as Gemini (not an independent second judge)
     provider: gemini
     pricing: {input_per_m: 0.10, output_per_m: 0.30}
     note: conservative placeholder price

@@ -20,7 +20,7 @@ def run(vctx: Ctx, judge: Judge, input_info: dict) -> dict:
     rows = []
     for n in st.by_type("synthesis", active_only=True):
         d = n["data"]
-        ev = synthesis.statement_evidence(vctx, d["cites"])
+        ev = synthesis.statement_evidence(vctx, d["cites"], d["text"])
         j = judge("synthesis_support", prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"], evidence=ev),
                   "support", {"statement": d["id"]})
         rows.append({"id": d["id"], "text": short(d["text"], 400), "cites": d["cites"],

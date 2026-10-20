@@ -72,7 +72,7 @@ def make_set(base: Ctx, rnd: random.Random, rids: list[str], sids: list[str]) ->
 def materials(ctx: Ctx, condition: str, source_rids: list[str], max_src_chars: int) -> str:
     parts = ["## REPORT", report.report_markdown(ctx)]
     if condition == "evidence_linked":
-        parts.append(report.evidence_text(ctx))
+        parts.append(report.evidence_text(ctx, max_chars_per_study=max_src_chars))   # same cap as the source papers
     parts.append(report.sources_text(ctx, source_rids, max_src_chars))
     return "\n\n".join(parts)
 
@@ -159,6 +159,10 @@ def run(ctx: Ctx, judge: Judge, out_dir, n_sets: int = 2, repeats: int = 1, max_
     half = max(1, len(inc) // n_sets)
     results = {"sets": [], "conditions": {}}
     reviewer = ctx.hub["reviewer"]
+    if not (ctx.cfg.get("roles") or {}).get("reviewer"):
+        ctx.log("[claim1] WARNING: roles.reviewer is not set, so the simulated reviewer is the agent model; "
+                "Claim 1 then measures that model's reading as much as the materials. Fix roles.reviewer across runs.")
+    results["reviewer"] = {"model": reviewer.name, "configured": bool((ctx.cfg.get("roles") or {}).get("reviewer"))}
     for s in range(n_sets):
         rids = inc[s * half:(s + 1) * half] if s < n_sets - 1 else inc[s * half:]
         sset = [sids[(s + k) % len(sids)] for k in range(len(sids))]
