@@ -137,6 +137,9 @@ Rules:
 - value: concise (at most about 40 words: the main finding with its units and the population or
   subgroup it applies to), not a summary of the whole paper. Prefer the primary result; leave
   secondary numbers out rather than cite them without a sentence.
+- The value says only what the cited sentences say. A detail (setting, site, design label, subgroup,
+  regimen, number) that no cited sentence states is left out, or the sentence that states it is
+  cited too. Nothing is inferred from the paper as a whole.
 - evidence: ids of the sentences that together support the value (1 to 6; they may be in
   different sections, e.g. a number in Results and its population in Methods). Every number in
   the value should appear in one of the cited sentences; a number that appears nowhere in the
@@ -203,8 +206,10 @@ Return JSON: {{"support": "supported"|"partially_supported"|"unsupported",
               "issues": [str], "overgeneralization": bool}}
 "partially_supported": the core is right but a number, qualifier or scope is wrong or broader than
 the data. "overgeneralization": the statement applies a finding to a broader population, regimen or
-outcome than the cited data show. If the statement says something is absent, not reported or not
-available, it is "unsupported" when any study's data below contains it."""
+outcome than the cited data show. If the statement says that a quantity or finding was not reported
+or not available in the included studies, it is "unsupported" when any study's data below contains
+it. A hedged statement ("evidence is limited", "few studies", "sparse data", "could not be assessed")
+is not an absence claim: judge it on what it cites."""
 
 SYNTH_REPAIR = """A synthesis statement was checked against the extracted data it cites and the check found problems.
 Rewrite the statement so that the cited data support every part of it, or retire it.

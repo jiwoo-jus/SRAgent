@@ -158,7 +158,7 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     is screened again on its full text with that doubt as a note; an exclusion stands. Otherwise, or when the
     re-screen keeps it, the screening node is flagged for a person. Returns 'exclude' or 'flagged'."""
     import dataclasses
-    from .screening import human_decided, screen_one
+    from .screening import SCREEN_FLAG_SOURCES, human_decided, screen_one
     st = ctx.store
     what = f"{doubt['criterion']} ({doubt['text']}): {doubt['why']}"
     sc = st.get(f"screen:{rid}")
@@ -169,6 +169,9 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
                                      f"{what}. Check this criterion against the whole paper and decide.")
         d = screen_one(c, _protocol(st), rid, "full_text", tag_suffix="_recheck")
         if d["decision"] == "exclude":
+            for f in st.get(sc["id"])["flags"]:   # the screening flags of the old decision ('included by rule' ...) are settled
+                if f["status"] == "open" and f.get("source") in SCREEN_FLAG_SOURCES:
+                    st.resolve_flag(sc["id"], f["id"], f"decision is now 'exclude' ({what[:160]})", actor="agent")
             ctx.log(f"[extract] {rid}: excluded after the eligibility doubt raised at extraction ({what[:120]})")
             return "exclude"
     if sc and not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in sc["flags"]):

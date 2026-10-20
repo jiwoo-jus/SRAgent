@@ -240,6 +240,21 @@ def cmd_eval_audit(args):
     print(json.dumps(run_all.import_audit(ctx, args.run, args.file), indent=1))
 
 
+def cmd_eval_summary(args):
+    from .eval import run_all
+    ctx = _ctx(args)
+    run_id = args.run or (ctx.run_dir / "eval" / "LATEST_RUN.txt").read_text().strip()
+    row = run_all.summary_row(ctx, run_id, note=args.note or "", run_file=args.config)
+    if args.append:
+        p = Path(args.append)
+        text = p.read_text() if p.exists() else ""
+        has_header = "| " + run_all.SUMMARY_COLUMNS[0] + " |" in text
+        with open(p, "a") as f:
+            f.write(("" if text.endswith("\n") or not text else "\n") + run_all.summary_markdown([row], header=not has_header) + "\n")
+        print(f"appended to {p}")
+    print(run_all.summary_markdown([row]))
+
+
 def cmd_data(args):
     from .sources import http, synergy
     http.init_cache(".cache")
@@ -325,6 +340,12 @@ def main(argv=None):
     p.add_argument("--run", required=True)
     p.add_argument("--file", required=True)
     p.set_defaults(fn=cmd_eval_audit)
+
+    p = sub.add_parser("eval-summary", help="one comparable Markdown row for an evaluation run (results.json + manifest)"); common(p)
+    p.add_argument("--run", default=None, help="evaluation run id (default: the run's latest)")
+    p.add_argument("--note", default="", help="what changed / what to keep in mind for this run")
+    p.add_argument("--append", default=None, help="append the row to this Markdown file (e.g. docs/RESULTS.md)")
+    p.set_defaults(fn=cmd_eval_summary)
 
     p = sub.add_parser("data"); p.add_argument("--synergy", required=True); p.set_defaults(fn=cmd_data)
 

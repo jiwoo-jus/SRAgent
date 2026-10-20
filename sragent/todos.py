@@ -131,13 +131,17 @@ def build(ctx: Ctx) -> list[dict]:
         if n["type"] in ("extraction", "rob") and n["id"].split(":", 1)[1] not in inc_now:
             continue
         for f in n["flags"]:
-            if f["status"] != "open" or f.get("source") not in ("synthesis_verify", "term_validation", "evidence_check"):
+            if f["status"] != "open" or f.get("source") not in ("synthesis_verify", "term_validation", "evidence_check", "eligibility_doubt"):
                 continue
             step = STEP_OF_TYPE.get(n["type"], "feedback")
             what = n["data"].get("text") if n["type"] == "synthesis" else ""
             if f["source"] == "synthesis_verify":
                 q = f"The self-check thinks statement {n['data'].get('id')} may misstate or overstate the evidence. What should happen?"
                 opts = [{"value": "fix", "label": "Ask the agent to revise it"}, {"value": "ok", "label": "It is fine, keep it"}]
+            elif f["source"] == "eligibility_doubt":
+                q = "Data extraction read the whole paper and doubts that this study is eligible. Keep it included?"
+                opts = [{"value": "ok", "label": "Keep it (the doubt is wrong)"},
+                        {"value": "fix", "label": "Ask the agent to screen it again"}]
             elif f["source"] == "term_validation":
                 q = "A term was not found in RxNorm / PubChem / ChEMBL / MONDO. Is the extracted value right?"
                 opts = [{"value": "ok", "label": "It is fine (e.g. a drug class)"},
@@ -148,13 +152,14 @@ def build(ctx: Ctx) -> list[dict]:
             rid = n["id"].split(":", 1)[1] if ":" in n["id"] else ""
             label = {"synthesis_verify": f"Statement {n['data'].get('id', '')} may overstate the evidence",
                      "term_validation": f"Unrecognised term in study {rid}",
-                     "evidence_check": f"Value without a source location in study {rid}"}[f["source"]]
+                     "evidence_check": f"Value without a source location in study {rid}",
+                     "eligibility_doubt": f"Eligibility doubt for study {rid}"}[f["source"]]
             todos.append({
                 "id": f"flag:{n['id']}:{f['id']}", "step": step, "kind": "flag", "priority": 3,
                 "title": label,
                 "question": q, "context": [x for x in [what, f["text"]] if x],
                 "options": opts, "free_text": "Your comment (sent to the agent if you choose to fix)",
-                "link": f"/report#{n['id'] if n['type'] == 'synthesis' else 'ext:' + rid}"})
+                "link": f"/report#{n['id'] if n['type'] in ('synthesis', 'screen') else 'ext:' + rid}"})
 
     # -- manual edits whose dependents may be stale
     for n in st.nodes.values():

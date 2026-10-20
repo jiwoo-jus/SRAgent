@@ -297,6 +297,88 @@ def usage_totals(out: Path) -> dict:
             "by_suite_all_attempts": {k: round(v, 4) for k, v in by.items()}}
 
 
+# ---------------------------------------------------------------- one comparable row per evaluation run
+SUMMARY_COLUMNS = ["date", "run", "code", "run file", "models", "suites", "e2e recall/precision", "included",
+                   "extraction supported", "evidence located", "synthesis supported", "overgeneralisation",
+                   "claim1 report->evidence", "claim2 downstream local->dep (new errors)", "judge kappa (controls)",
+                   "cost USD", "status", "note"]
+
+
+def _dig(d, *keys, default=None):
+    for k in keys:
+        if not isinstance(d, dict) or k not in d:
+            return default
+        d = d[k]
+    return d
+
+
+def _fmt(x, nd=2):
+    return "–" if x is None else (f"{x:.{nd}f}" if isinstance(x, (int, float)) and not isinstance(x, bool) else str(x))
+
+
+def _short_model(name: str | None) -> str:
+    return (name or "–").replace("claude-", "").replace("-preview", "").replace("gemini-", "gem-")
+
+
+def summary_row(ctx: Ctx, run_id: str, note: str = "", run_file: str = "") -> dict:
+    """The run's headline numbers in a fixed column order, read from results.json and its manifest, so rows of
+    different runs can be compared (the same columns, the same definitions)."""
+    out = ctx.run_dir / "eval" / "runs" / run_id
+    R = json.loads((out / "results.json").read_text())
+    M, X = R["manifest"], R["results"]
+    cfg = M.get("config") or {}
+    models = [f"agent {_short_model(_dig(M, 'models', 'agent', 'model'))} {_dig(M, 'models', 'agent', 'reasoning_effort') or ''}".strip()]
+    by_model: dict[str, list[str]] = {}
+    for stage, mc in (cfg.get("stage_models") or {}).items():
+        if isinstance(mc, dict) and mc.get("model"):
+            by_model.setdefault(f"{_short_model(mc['model'])} {mc.get('reasoning_effort') or ''}".strip(), []).append(stage)
+    models += [f"{'/'.join(stages)} {m}" for m, stages in by_model.items()]
+    for role in ("verifier", "judge", "judge2", "reviewer"):
+        mc = _dig(M, "models", role) or _dig(cfg, "roles", role) or {}
+        if isinstance(mc, dict) and mc.get("model"):
+            models.append(f"{role} {_short_model(mc['model'])} {mc.get('reasoning_effort') or ''}".strip())
+    e2e, g, syn, c1, c2, jv = (X.get(k) or {} for k in ("end_to_end", "stagewise_extraction_rob", "stagewise_synthesis",
+                                                          "claim1", "claim2", "judge_validation"))
+    loc = _dig(g, "evidence_extraction", "located_rate")
+    agg = c2.get("aggregate") or {}
+    def c2_mean(cond, key):
+        v = [a.get(key) for k, a in agg.items() if k.endswith(":" + cond) and a.get(key) is not None]
+        return sum(v) / len(v) if v else None
+    c2_txt = "–"
+    if agg:
+        ne = sum(a.get("new_errors") or 0 for k, a in agg.items() if k.endswith(":dependency_aware"))
+        c2_txt = f"{_fmt(c2_mean('local_edit', 'downstream_completion_mean'))} -> {_fmt(c2_mean('dependency_aware', 'downstream_completion_mean'))} ({ne})"
+    c1_txt = "–"
+    if c1.get("aggregate"):
+        bad = sum(1 for cond in c1.get("conditions", {}).values() for o in cond if o.get("reply_ok") is False)
+        c1_txt = (f"{_fmt(_dig(c1, 'aggregate', 'report_only', 'recall'))} -> {_fmt(_dig(c1, 'aggregate', 'evidence_linked', 'recall'))}"
+                  + (f" ({bad} replies invalid)" if bad else ""))
+    jv_txt = "–"
+    if jv.get("inter_judge"):
+        jv_txt = f"{_fmt(_dig(jv, 'inter_judge', 'kappa_overall'))} ({_fmt(_dig(jv, 'known_answer_controls', 'accuracy'))})"
+    row = {"date": (M.get("created") or "")[:10], "run": run_id, "code": (M.get("code_version") or "")[:7],
+           "run file": run_file or ctx.run_dir.name,
+           "models": "; ".join(models), "suites": ", ".join(sorted(X)),
+           "e2e recall/precision": f"{_fmt(e2e.get('end_to_end_recall'))} / {_fmt(e2e.get('end_to_end_precision'))}" if e2e else "–",
+           "included": _fmt(e2e.get("included_from_search"), 0) if e2e else "–",
+           "extraction supported": _fmt(_dig(g, "judge_value_support", "supported_rate")),
+           "evidence located": _fmt(loc), "synthesis supported": _fmt(syn.get("supported_rate")),
+           "overgeneralisation": _fmt(syn.get("overgeneralization_rate")),
+           "claim1 report->evidence": c1_txt, "claim2 downstream local->dep (new errors)": c2_txt,
+           "judge kappa (controls)": jv_txt, "cost USD": _fmt(_dig(R, "cost", "this_run_usd")),
+           "status": R.get("status", "–"), "note": note}
+    return row
+
+
+def summary_markdown(rows: list[dict], header: bool = True) -> str:
+    lines = []
+    if header:
+        lines += ["| " + " | ".join(SUMMARY_COLUMNS) + " |", "|" + "---|" * len(SUMMARY_COLUMNS)]
+    for r in rows:
+        lines.append("| " + " | ".join(str(r.get(c, "–")).replace("|", "/") for c in SUMMARY_COLUMNS) + " |")
+    return "\n".join(lines)
+
+
 def import_audit(ctx: Ctx, run_id: str, sheet: str) -> dict:
     out = ctx.run_dir / "eval" / "runs" / run_id
     R = json.loads((out / "results.json").read_text())

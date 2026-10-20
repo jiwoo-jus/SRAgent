@@ -23,17 +23,20 @@ DEFAULTS = {
     "rob": (6000, 600, 2000),
     "synthesis": (10000, 1800, 6000),
     "synthesis_verify": (10000, 60, 1500),
+    "synthesis_repair": (10000, 500, 2500),
     "feedback": (12000, 1200, 4000),
 }
 # estimate rows -> pipeline stage whose model does that work (stage_models)
 ROW_STAGE = {"plan": "plan", "search": "search", "screen_title_abstract": "screen", "screen_full_text": "fulltext",
              "extract": "extract", "rob": "rob", "synthesis": "synthesize", "synthesis_verify": "synthesize",
-             "feedback": "feedback"}
+             "synthesis_repair": "synthesize", "feedback": "feedback"}
 FORWARD_RATE = 0.56     # share of records forwarded past title/abstract (v2)
 INCLUDE_RATE = 0.09     # share of records finally included (v2)
 RETRIEVED_RATE = 0.6    # share of forwarded records whose full text can be retrieved (benchmark runs: 25/42, 36/55)
 SNOWBALL_PER_SEED = 6   # candidates citation chasing adds per included study (64/13 and 115/15 in the benchmark runs)
-N_STATEMENTS = 7
+N_STATEMENTS = 8        # statements per synthesis (the prompt asks for 5 to 10)
+RECHECK_RATE = 0.15     # share of extractions that raise an eligibility doubt and re-screen the record (3/19 in the v2 run)
+REPAIR_RATE = 0.6       # share of statements the self-check faults and the repair round rewrites (8/10 in the v2 run)
 
 
 def history(root: Path = Path("runs")) -> dict:
@@ -101,18 +104,29 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
         n_inc_future += int(cand * INCLUDE_RATE)
     if "extract" in order:
         budget = int(ctx.cfg["pipeline"].get("context_chars", 60000))
+        n_new = 0
         for r in inc:
             if st.get(f"ext:{r}"):
                 continue
             parts = -(-len(st.text_of(r)[0]) // budget) if st.get(f"ft:{r}") else 1
             calls["extract"] += parts + (1 if parts > 1 else 0)                     # one call per part, plus the merge
-        calls["extract"] += n_inc_future
+            n_new += 1
+        # studies not yet known: as many parts as the full texts already retrieved need on average
+        lens = [n["data"].get("chars") or 0 for n in st.by_type("fulltext") if n["data"].get("kind") == "fulltext"]
+        avg_parts = max(1, -(-int(statistics.mean(lens)) // budget)) if lens else 1
+        calls["extract"] += n_inc_future * (avg_parts + (1 if avg_parts > 1 else 0))
+        if "fulltext" in order or n_new:   # eligibility doubts raised at extraction re-screen the record on its full text
+            calls["screen_full_text"] += math.ceil((n_new + n_inc_future) * RECHECK_RATE)
     if "rob" in order:
         calls["rob"] = sum(1 for r in inc if not st.get(f"rob:{r}")) + n_inc_future
     if "synthesize" in order:
         if not st.by_type("synthesis", active_only=True):
             calls["synthesis"] = 1
             calls["synthesis_verify"] = N_STATEMENTS
+            if ctx.cfg["pipeline"].get("verify_synthesis", True) and ctx.cfg["pipeline"].get("repair_synthesis", True):
+                n_rep = math.ceil(N_STATEMENTS * REPAIR_RATE)         # the repair round: one rewrite and one re-check each
+                calls["synthesis_repair"] = n_rep
+                calls["synthesis_verify"] += n_rep
         elif set(st.meta.get("synthesis_considered") or []) != set(inc) or n_inc_future:
             n_new = len(set(inc) - set(st.meta.get("synthesis_considered") or [])) + n_inc_future
             calls["feedback"] = n_new                 # one integrate call per new study

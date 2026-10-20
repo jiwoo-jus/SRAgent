@@ -670,8 +670,10 @@ class App:
             import re as _re
             m = _re.search(r"\$([0-9.]+)", sync_t["question"])
             stale["est_usd"] = float(m.group(1)) if m else None
+        from ..stages.report import open_flags
+        of = open_flags(ctx) if ctx.store.get("protocol") else {"n": 0, "by_source": {}}
         return {"next": todos.next_action(ctx, tlist, self.job is not None, len(nf)),
-                "stale": stale,
+                "stale": stale, "open_flags": {"n": of["n"], "by_source": of["by_source"]},
                 "ruled": todos.rule_exclusions(ctx),
                 "run": {"name": self.run_dir.name, "run_dir": str(self.run_dir), "config": self.config_path,
                         "config_rel": getattr(self, "config_rel", self.config_path), "benchmark": is_benchmark(self.cfg),

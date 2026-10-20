@@ -162,7 +162,7 @@ Defaults are in parentheses.
 | `fulltext` (true) | look for open-access full texts |
 | `fulltext_dir` (null = `<run_dir>/fulltext`) | where supplied PDFs are read from |
 | `fulltext_unclear` (`await`) | still unclear after the full text: `await` (a person decides), `include` (included and flagged) or `exclude`. With `human_mode: agent_only` it must be `include` or `exclude` (loading refuses `await`). |
-| `fulltext_screen_chars` (15000) | prompt budget for full-text screening |
+| `fulltext_screen_chars` (15000) | prompt budget for full-text screening (section-prioritised: abstract, results, tables, methods first). The screener only sees this much of the paper, so a small value makes it answer "unclear, not reported" for data that sit later in the text; API models take 60000, the whole paper |
 | `context_chars` (60000) | prompt budget for extraction and RoB; longer papers are read in parts |
 | `max_stored_chars` (400000) | how much of a full text is stored |
 | `open_access_lookup` (true) | Unpaywall / OpenAlex legal open-access copies |

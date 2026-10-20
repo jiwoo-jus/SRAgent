@@ -97,9 +97,11 @@ def synthesize(ctx: Ctx) -> int:
     return len(statements)
 
 
-ABSENCE = re.compile(r"\b(not (reported|available|extract\w*|provided|stated|measured|assessed|estimated|given)|"
-                     r"no (data|stud(y|ies)|estimates?|values?|parameters?|information)|unavailable|none of the|"
-                     r"could not be|were not|was not)\b", re.I)
+# a claim that something is absent from the included studies' data (then every study's data is shown to the check);
+# hedges such as "evidence is limited" or "few studies" are not absence claims
+ABSENCE = re.compile(r"\b(not reported|not available|not provided|not stated|not measured|not estimated|"
+                     r"no (data|stud(y|ies)|estimates?|values?|parameters?) (were |was |are |is )?(reported|available|provided|identified|found)|"
+                     r"none of the (included )?studies|in (none|no) (of the )?(included )?stud(y|ies))\b", re.I)
 
 
 def checker(ctx: Ctx):
@@ -138,7 +140,8 @@ def needs_repair(res: dict | None) -> bool:
 
 def repair_one(ctx: Ctx, sid: str) -> str:
     """One repair of a statement the self-check faulted: the stage model narrows it to what the cited data show
-    (or retires it), then the checker looks again. Still faulted after that: retired. Returns what happened."""
+    (or retires it), then the checker looks again. Still faulted after that: it stays, flagged by the second check
+    (the checker is one model's opinion; a person decides). Returns what happened."""
     st = ctx.store
     n = st.get(sid)
     d = n["data"]
@@ -164,11 +167,8 @@ def repair_one(ctx: Ctx, sid: str) -> str:
     st.upsert(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason="repaired after the self-check")
     if retire_if_uncited(st, sid, True):
         return "retired"
-    again = verify_one(ctx, sid, tag="synthesis_verify_repair")
-    if needs_repair(again) and again.get("support") == "unsupported":
-        st.set_status(sid, RETIRED, reason="still unsupported by the cited data after one repair")
-        return "retired"
-    return "repaired" if not needs_repair(again) else "repaired_partial"
+    again = verify_one(ctx, sid, tag="synthesis_verify_repair")   # still faulted: it stays, with the check's flag open
+    return "repaired" if not needs_repair(again) else f"repaired_{again.get('support')}"
 
 
 def repair_all(ctx: Ctx) -> dict:

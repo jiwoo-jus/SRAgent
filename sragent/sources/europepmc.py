@@ -88,10 +88,29 @@ def supplements(root) -> list[dict]:
 LAST_SUPPLEMENTS: dict[str, list] = {}
 
 
+NCBI_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+
+def _efetch_xml(pmcid: str) -> str:
+    """The same JATS article from NCBI's PMC (efetch): the fallback when Europe PMC is down."""
+    from . import pubmed
+    try:
+        xml = http.get(NCBI_EFETCH, {"db": "pmc", "id": pmcid.replace("PMC", ""), "retmode": "xml", "tool": "sragent",
+                                     **getattr(pubmed, "_extra", {})}, as_json=False)
+    except RuntimeError:
+        return ""
+    return xml if xml and "<body" in xml else ""
+
+
 def fulltext(pmcid: str, max_chars: int = 400000) -> str:
     if not pmcid:
         return ""
-    xml = http.get(f"{BASE}/{pmcid}/fullTextXML", as_json=False)
+    try:
+        xml = http.get(f"{BASE}/{pmcid}/fullTextXML", as_json=False)
+    except RuntimeError as e:          # Europe PMC unavailable (server errors after retries): try NCBI's copy
+        xml = _efetch_xml(pmcid)
+        if not xml:
+            raise RuntimeError(f"{e}; NCBI efetch gave no article either") from e
     if not xml:
         return ""
     try:

@@ -1122,6 +1122,7 @@ def test_extraction_doubt_about_eligibility_rechecks_or_flags(tmp_path):
                                                             "human_mode": "agent_only", "fulltext_unclear": "include"}})
     pipeline.run(ctx)
     assert ctx.store.get("screen:1001")["data"]["decision"] == "include" and ctx.store.get("ext:1001")
+    ctx.store.flag("screen:1001", "Included by rule although criteria ['I2'] were still unclear ...", actor="agent", source="screening_unclear")
     ctx.hub.mock_fn = doubting
     ctx.hub.cache_read = False          # the same extraction prompt as before: not from the cache
     ctx.hub._clients.clear()
@@ -1130,6 +1131,7 @@ def test_extraction_doubt_about_eligibility_rechecks_or_flags(tmp_path):
     sc = ctx.store.get("screen:1001")["data"]
     assert sc["decision"] == "exclude" and sc["because"] == ["I2"] and "1001" not in ctx.store.included_ids()
     assert ctx.store.get("ext:1001")["status"] == "retired"
+    assert not [f for f in ctx.store.get("screen:1001")["flags"] if f["status"] == "open"]   # the old 'included by rule' flag is settled
     rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
     assert any(r["tag"] == "screen_full_text_recheck" for r in rows)
 
@@ -1190,3 +1192,30 @@ def test_claim1_materials_fit_one_total_cap(monkeypatch):
     assert claim1.fit_cap(None, [], 5000, 0) == 5000                       # no total cap: unchanged
     cap = claim1.fit_cap(None, [], 5000, 100000)
     assert cap < 5000 and cap * 40 + 100 <= 100000 and int(cap / 0.7) * 40 + 100 > 100000
+
+
+def test_fulltext_falls_back_to_ncbi_when_europe_pmc_is_down(monkeypatch):
+    """Europe PMC answering with server errors (after the HTTP retries) is not the end: the same JATS article is
+    fetched from NCBI's PMC copy; only when that fails too is the paper reported unavailable."""
+    from sragent.sources import europepmc, http
+    jats = ("<pmc-articleset><article><front><article-meta><title-group><article-title>Emicizumab PK</article-title>"
+            "</title-group><abstract><p>Trough levels were measured.</p></abstract></article-meta></front>"
+            "<body><sec><title>Results</title><p>The half-life was 27 days.</p></sec></body></article></pmc-articleset>")
+    calls = []
+
+    def fake_get(url, params=None, **kw):
+        calls.append(url)
+        if "europepmc" in url:
+            raise RuntimeError("GET failed 500")
+        return jats
+    monkeypatch.setattr(http, "get", fake_get)
+    text = europepmc.fulltext("PMC123")
+    assert "half-life was 27 days" in text and "Emicizumab PK" in text
+    assert any("eutils.ncbi" in u for u in calls)
+
+    def dead(url, params=None, **kw):
+        raise RuntimeError("GET failed 500")
+    monkeypatch.setattr(http, "get", dead)
+    import pytest
+    with pytest.raises(RuntimeError, match="NCBI efetch gave no article"):
+        europepmc.fulltext("PMC123")

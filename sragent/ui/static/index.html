@@ -700,7 +700,9 @@ function renderSteps(fromPoll){
   const stale = S.stale || {n:0};
   const staleBox = stale.n ? `<div class="callout warn">${ic("refresh")}<div class="grow">${stale.n} output${stale.n>1?"s are":" is"} out of date: a dependency changed after ${stale.n>1?"they were":"it was"} computed (${Object.entries(stale.by_type||{}).map(([t,n]) => `${n} ${t}`).join(", ")}${stale.pinned ? `; ${stale.pinned} decided or edited by you, kept` : ""}).${stale.est_usd != null ? ` Updating costs about ${usd(stale.est_usd)}.` : ""}
       <button class="link" onclick="goTodoGroup('sync')">See the plan and update</button></div></div>` : "";
-  $("#v-steps").innerHTML = nextBanner() + staleBox + kpis + `
+  const of = S.open_flags || {n:0};
+  const flagBox = of.n && (S.run||{}).human_mode === "agent_only" ? `<div class="callout info">${ic("flag")}<div class="grow">${of.n} open flag${of.n>1?"s":""} need${of.n>1?"":"s"} a person (${Object.entries(of.by_source||{}).map(([k,n]) => `${n} ${k}`).join(", ")}). In agent-only mode nobody answers them during the run; they are listed in the report under "Open flags".</div></div>` : "";
+  $("#v-steps").innerHTML = nextBanner() + staleBox + flagBox + kpis + `
     <div class="card"><div class="card-h"><div class="grow"><h2>Review pipeline</h2><div class="sub">${nDone} of ${S.steps.length} steps done</div></div>
       <div style="width:160px" class="bar" title="${nDone} of ${S.steps.length} done"><i style="width:${Math.round(100*nDone/S.steps.length)}%"></i></div></div>
       <ol class="stepper">${rows}</ol></div>
