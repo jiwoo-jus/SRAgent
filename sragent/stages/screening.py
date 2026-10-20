@@ -42,6 +42,31 @@ def finalize(decision: str, stage: str, policy: str = "await") -> str:
     return decision
 
 
+HUMAN_KEYS = ("human_decision", "human_decision_pending_fulltext")
+
+
+def human_decided(d: dict) -> bool:
+    """A person decided this record (or did, and the decision waits for its full text to come back)."""
+    return any(d.get(k) for k in HUMAN_KEYS)
+
+
+def complete_assessments(protocol: dict, out_criteria, stage: str) -> list[dict]:
+    """The model's per-criterion assessments, with every applicable criterion present: one the model
+    left out (or returned under a wrong id) counts as "unclear", never as passed. A dict keyed by
+    criterion id is accepted too."""
+    if isinstance(out_criteria, dict):
+        out_criteria = [{"id": k, **(v if isinstance(v, dict) else {"assessment": v})} for k, v in out_criteria.items()]
+    assessments = [a for a in (out_criteria or []) if isinstance(a, dict)]
+    seen = {a.get("id") for a in assessments}
+    for c in protocol.get("criteria", []):
+        if c.get("type") == "practical" or c["id"] in seen:
+            continue
+        if stage == "title_abstract" and c.get("stage") == "full_text":
+            continue
+        assessments.append({"id": c["id"], "assessment": "unclear", "evidence": [], "missing": True})
+    return assessments
+
+
 def decide(protocol: dict, assessments: list[dict], stage: str, policy: str = "await") -> tuple[str, list[str], str | None]:
     """(decision, because, unclear_by_rule). unclear_by_rule is the pipeline.fulltext_unclear policy
     ("include" / "exclude") when it decided a record still unclear after its full text, else None."""
@@ -103,7 +128,10 @@ def screen_source(st, rid: str, stage: str) -> tuple[str, str]:
     return st.text_of(rid)[0], f"ft:{rid}"
 
 
-def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract", tag_suffix: str = "") -> dict:
+def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract", tag_suffix: str = "",
+               keep_human: bool = True) -> dict:
+    """Screen one record at one stage. A decision a person made is kept (the assessments are refreshed,
+    the decision is not), unless keep_human=False: an explicit re-run a person asked for."""
     st = ctx.store
     text, src_node = screen_source(st, rid, stage)
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
@@ -111,7 +139,7 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
                                                         synonyms=synonyms_text(protocol),
                                                         record=packed(text, limit), stage=stage.replace("_", "/"))),
                          tag=f"screen_{stage}{tag_suffix}")
-    assessments = [a for a in out.get("criteria", []) if isinstance(a, dict)]
+    assessments = complete_assessments(protocol, out.get("criteria"), stage)
     evidence = []
     for a in assessments:
         cites = cites_of(a)
@@ -125,15 +153,28 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
             "confidence": out.get("confidence")}
     if by_rule:
         data["unclear_by_rule"] = by_rule
-    if stage == "full_text":
-        prev = st.get(f"screen:{rid}")
-        if prev:
-            data["title_abstract"] = {k: prev["data"].get(k) for k in ("decision", "because")}
+    prev = st.get(f"screen:{rid}")
+    reason = f"{stage} screening"
+    if stage == "full_text" and prev:
+        pd = prev["data"]
+        data["title_abstract"] = pd.get("title_abstract") if pd.get("stage") != "title_abstract" else \
+            {k: pd.get(k) for k in ("decision", "because")}
+    if prev and keep_human:
+        pd = prev["data"]
+        hd = pd.get("human_decision")
+        if not hd and pd.get("human_decision_pending_fulltext") and data["source_kind"] == "fulltext":
+            hd = pd["human_decision_pending_fulltext"]      # the full text is here: the person's decision applies again
+        if hd:
+            data.update({"decision": hd["decision"], "because": pd.get("because") or [], "human_decision": hd,
+                         "agent_decision": decision})
+            data.pop("unclear_by_rule", None)
+            reason = f"{stage} screening (assessments refreshed; the person's decision '{hd['decision']}' is kept)"
+        elif pd.get("human_decision_pending_fulltext"):
+            data["human_decision_pending_fulltext"] = pd["human_decision_pending_fulltext"]
     deps = [f"rec:{rid}", "protocol"] + [f"crit:{c['id']}" for c in protocol.get("criteria", [])]
     if stage == "full_text":
         deps.append(src_node)
-    st.upsert(f"screen:{rid}", "screen", data, depends_on=deps, evidence=evidence,
-              reason=f"{stage} screening")
+    st.upsert(f"screen:{rid}", "screen", data, depends_on=deps, evidence=evidence, reason=reason)
     return data
 
 
@@ -160,11 +201,8 @@ def needs_fulltext_review(st, rid: str) -> bool:
     if not n:
         return False
     d = n["data"]
-    if d.get("rule"):
-        return False
-    hd = d.get("human_decision") or {}
-    if hd.get("decision") == "exclude":
-        return False
+    if d.get("rule") or d.get("human_decision"):
+        return False     # a person decided; the agent does not screen it again
     dec, stage = d["decision"], d["stage"]
     if dec in RETRIEVAL_FAILURES or dec == "forward" or (stage == "title_abstract" and dec in OPEN_AT_TA):
         return True
@@ -259,7 +297,7 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
     changed = 0
     from .. import rules
     for n in st.by_type("screen"):
-        if n["data"].get("rule") or n["data"].get("human_decision"):
+        if n["data"].get("rule") or human_decided(n["data"]):
             continue
         d = dict(n["data"])
         dec, because, stage, by_rule = rederive(protocol, d, policy)

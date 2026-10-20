@@ -87,7 +87,8 @@ def apply(ctx, protocol: dict | None = None) -> list[dict]:
     for n in st.by_type("record"):
         rid = n["id"].split(":", 1)[1]
         sc = st.get(f"screen:{rid}")
-        if sc and (sc["data"].get("human_decision") or sc["data"].get("rule_restored")):
+        if sc and (sc["data"].get("human_decision") or sc["data"].get("human_decision_pending_fulltext")
+                   or sc["data"].get("rule_restored")):
             continue
         hit = classify(n["data"], keys, rules)
         if not hit:

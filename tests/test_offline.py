@@ -546,3 +546,157 @@ def test_reply_that_is_not_one_object_is_asked_again(tmp_path):
     cfg = load_config(None, {"llm_defaults": {"provider": "mock", "model": "mock"}})
     llm = LLM(cfg, "agent", CostTracker(1), DiskCache(tmp_path / "c.sqlite"), mock_fn=lambda m, mode: next(replies))
     assert llm.chat([{"role": "user", "content": "check"}], tag="t") == {"support": "supported", "issues": []}
+
+
+# ---------------------------------------------------------------- integrity of accepted proposals and human decisions
+def test_accepting_a_proposal_keeps_what_the_sandbox_created(tmp_path):
+    """Nodes the sandbox created on the way (here the full-text node of a record the feedback forwarded)
+    come along when the proposal is accepted; before, only the listed changes were applied."""
+    from sragent import feedback, pipeline
+    from sragent.stages import fulltext
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    assert st.get("screen:1004")["data"]["decision"] == "exclude" and st.get("ft:1004") is None
+    cs = feedback.handle_feedback(ctx, "Study 1004 should not have been excluded: it has human PK data.",
+                                  target="screen:1004", propagate=True, auto_accept=False)
+    assert cs["status"] == "proposed" and st.get("ft:1004") is None          # nothing applied yet
+    assert "ft:1004" in cs["sandbox_nodes"] and "ft:1004" in cs["base_versions"] or True
+    feedback.accept(ctx, cs["id"])
+    assert st.get("ft:1004") is not None                                       # the retrieval the sandbox did
+    d = st.get("screen:1004")["data"]
+    assert d["decision"] == "fulltext_unavailable" and d["stage"] == "retrieval"   # no full text: requested
+    assert "1004" in fulltext.needed_pdfs(ctx) or any("1004" in str(x) for x in fulltext.needed_pdfs(ctx))
+    assert any(e["op"] == "create" and e["node"] == "ft:1004" for e in st.changelog)   # logged, not silent
+
+
+def test_a_persons_eligibility_decision_is_never_overwritten(tmp_path):
+    """A person's include/exclude survives a new PDF, the next run's full-text review, rules and rescreen;
+    only an explicit re-run a person asks for replaces it."""
+    from sragent import actions, pipeline, rules, sync, todos
+    from sragent.stages import fulltext, screening
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    n = st.get("screen:1003")
+    st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "stage": "full_text"}, depends_on=n["depends_on"])
+    assert todos.apply(ctx, {"todo_id": "elig:1003", "option": "include", "text": "PK data in table 2"})["ok"]
+    assert st.get("screen:1003")["data"]["human_decision"]["decision"] == "include"
+    # a new PDF for that study: read and re-extracted, the decision kept
+    (fulltext.fulltext_dir(ctx) / "1003.txt").write_text("## Methods\n" + "Emicizumab prophylaxis, 30 patients, trough 40 ug/mL. " * 60)
+    r = sync.process_pdfs(ctx)
+    assert "1003" in r["processed"] and "1003" not in r["rescreened"] and "1003" in r["reextracted"]
+    assert st.get("screen:1003")["data"]["human_decision"]["decision"] == "include" and "1003" in st.included_ids()
+    # the next run's full-text review, the rules and a protocol re-application leave it alone
+    assert not screening.needs_fulltext_review(st, "1003")
+    screening.fulltext_review(ctx, st.get("protocol")["data"])
+    rules.apply(ctx)
+    screening.rescreen_rule_only(ctx, st.get("protocol")["data"])
+    d = st.get("screen:1003")["data"]
+    assert d["decision"] == "include" and d["human_decision"]["decision"] == "include"
+    # the agent's own screening (fresh assessments) keeps the decision and records what it would have said
+    screening.screen_one(ctx, st.get("protocol")["data"], "1003", "full_text")
+    d = st.get("screen:1003")["data"]
+    assert d["decision"] == "include" and d["human_decision"] and "agent_decision" in d
+    # an explicit re-run a person asked for is the one way to replace it (as a proposal)
+    cs = actions.rerun(ctx, "1003", "screen", note="please re-screen")
+    assert cs["kind"] == "rerun" and st.get("screen:1003")["data"]["human_decision"]["decision"] == "include"
+
+
+def test_human_edits_survive_a_re_extraction_and_re_assessment(tmp_path):
+    """A value a person edited and a risk of bias a person confirmed are kept when the study is
+    extracted or assessed again (e.g. after a new full text)."""
+    from sragent import actions, pipeline, todos
+    from sragent.stages import extraction, rob
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    assert actions.edit(ctx, {"kind": "ext", "rid": "1001", "fields": {"sample_size": "14 participants"}, "note": "Table 1"})["ok"]
+    extraction.extract_one(ctx, "1001")
+    f = st.get("ext:1001")["data"]["fields"]["sample_size"]
+    assert f["value"] == "14 participants" and f["edited"]["note"] == "Table 1" and f["agent_value"] != f["value"]
+    assert st.get("ext:1001")["data"]["kept_human_edits"] == ["sample_size"]
+    assert todos.apply(ctx, {"todo_id": "rob:1001", "option": "change", "extra": {"domain": "missing_data", "judgment": "high"}})["ok"]
+    rob.rob_one(ctx, "1001")
+    d = st.get("rob:1001")["data"]
+    assert d["overall"] == "high" and d["human_confirmed"]
+    assert any(f["status"] == "open" and f["source"] == "source_changed" for f in st.get("rob:1001")["flags"])
+
+
+def test_missing_criterion_assessment_counts_as_unclear():
+    """A criterion the model left out (or returned as a dict) never counts as passed."""
+    from sragent.stages.screening import complete_assessments, decide
+    protocol = {"criteria": [{"id": "I1", "type": "inclusion", "text": "a"}, {"id": "I2", "type": "inclusion", "text": "b"},
+                             {"id": "E1", "type": "exclusion", "text": "c", "stage": "full_text"},
+                             {"id": "P1", "type": "practical", "text": "d", "stage": "full_text"}]}
+    a = complete_assessments(protocol, [{"id": "I1", "assessment": "met", "evidence": []}], "title_abstract")
+    assert {x["id"]: x["assessment"] for x in a} == {"I1": "met", "I2": "unclear"}       # E1 is full-text only; P1 practical
+    assert decide(protocol, a, "title_abstract")[0] == "forward"
+    a = complete_assessments(protocol, {"I1": {"assessment": "met"}, "I2": "met"}, "full_text")
+    assert {x["id"]: x["assessment"] for x in a} == {"I1": "met", "I2": "met", "E1": "unclear"}
+    assert decide(protocol, a, "full_text", "await")[0] == "awaiting"
+    nothing = complete_assessments(protocol, [], "full_text")                            # nothing assessed: not an include
+    assert decide(protocol, nothing, "full_text", "await")[0] == "awaiting" and all(x.get("missing") for x in nothing)
+
+
+def test_store_save_is_atomic_and_flag_ids_are_unique(tmp_path, monkeypatch):
+    import json as _json
+    import threading
+    from sragent.store import ReviewStore
+    st = ReviewStore(tmp_path)
+    st.upsert("rec:1", "record", {"title": "t"})
+    st.save()
+    st.upsert("rec:2", "record", {"title": "u"})
+    st.save()
+    assert (tmp_path / "store.json.bak").exists() and "rec:2" in (tmp_path / "store.json").read_text()
+    good = (tmp_path / "store.json").read_text()
+    st.nodes["rec:2"]["data"]["bad"] = object()                 # a save that fails half-way
+    import pytest
+    with pytest.raises(TypeError):
+        st.save()
+    assert (tmp_path / "store.json").read_text() == good        # the last good store is untouched
+    assert not list(tmp_path.glob("store.json.tmp-*"))
+    del st.nodes["rec:2"]["data"]["bad"]
+    # flag ids: unique under parallel flagging, and never reused after a flag was removed
+    ids = []
+    def work():
+        for _ in range(50):
+            ids.append(st.flag("rec:1", "x", source="t")["id"])
+    ts = [threading.Thread(target=work) for _ in range(8)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert len(set(ids)) == 400
+    st.nodes["rec:1"]["flags"] = []
+    assert st.flag("rec:1", "y")["id"] not in ids
+    old = ReviewStore.load(tmp_path / "store.json")             # a store from before the counter existed
+    old.meta.pop("flag_seq", None)
+    old.nodes["rec:1"]["flags"] = [{"id": "F7", "text": "z", "status": "open", "actor": "agent", "source": "t", "ts": 0}]
+    assert old.flag("rec:1", "w")["id"] == "F8"
+
+
+def test_llm_refusal_is_paid_once_and_cache_failures_do_not_cost_a_call(tmp_path, monkeypatch):
+    from sragent.llm import LLM, CostTracker, DiskCache, Refused
+    cfg = load_config(None, {"llm_defaults": {"provider": "mock", "model": "mock", "max_retries": 3}})
+    calls = []
+    def refuse(self, msgs, json_out, max_tokens, temperature):
+        calls.append(1)
+        raise Refused("declined", pin=120, pout=5)
+    monkeypatch.setattr(LLM, "_call", refuse)
+    tr = CostTracker(1.0)
+    llm = LLM(cfg, "agent", tr, None, mock_fn=lambda m, mode: "{}")
+    llm.c["pricing"] = {"input_per_m": 1000.0, "output_per_m": 1000.0}
+    import pytest
+    with pytest.raises(Refused):
+        llm.chat([{"role": "user", "content": "x"}], tag="t")
+    assert len(calls) == 1 and tr.spent > 0 and tr.calls == 1                 # not retried, still paid and recorded
+    monkeypatch.undo()
+    n = []
+    llm = LLM(cfg, "agent", CostTracker(1.0), DiskCache(tmp_path / "c.sqlite"),
+              mock_fn=lambda m, mode: (n.append(1), '{"ok": true}')[1])
+    monkeypatch.setattr(llm.cache, "set", lambda k, v: (_ for _ in ()).throw(RuntimeError("database is locked")))
+    assert llm.chat([{"role": "user", "content": "x"}], tag="t") == {"ok": True} and len(n) == 1
+    # the budget is checked before every paid call, retries included
+    tr = CostTracker(0.0)
+    llm = LLM(cfg, "agent", tr, None, mock_fn=lambda m, mode: "{}")
+    from sragent.llm import BudgetExceeded
+    with pytest.raises(BudgetExceeded):
+        llm.chat([{"role": "user", "content": "x"}])

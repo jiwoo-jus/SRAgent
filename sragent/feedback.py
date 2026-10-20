@@ -60,7 +60,18 @@ def verifier(ctx: Ctx):
 
 
 def record_bases(live_store, cs: dict) -> None:
-    cs["base_versions"] = {c["node"]: (live_store.get(c["node"]) or {}).get("version") for c in cs["changes"]}
+    ids = {c["node"] for c in cs["changes"]} | set(cs.get("sandbox_nodes") or {})
+    cs["base_versions"] = {nid: (live_store.get(nid) or {}).get("version") for nid in sorted(ids) if live_store.get(nid)}
+
+
+def sandbox_delta(live_store, sandbox_store, cs: dict) -> None:
+    """Everything the sandbox did goes into the change set: the listed changes, and also the nodes it
+    created or changed on the way (a retrieved full text, a retired statement, an excluded extraction)
+    and the meta keys it touched. Without this, accepting a proposal applied only the listed nodes."""
+    d = sandbox_store.diff(live_store)
+    ids = {c["node"] for c in cs["changes"]} | set(d["new"]) | set(d["changed"])
+    cs["sandbox_nodes"] = {nid: sandbox_store.get(nid) for nid in sorted(ids) if sandbox_store.get(nid)}
+    cs["sandbox_meta"] = {k: copy.deepcopy(sandbox_store.meta.get(k)) for k in d["meta"]}
 
 
 # ------------------------------------------------------------------ views
@@ -230,11 +241,14 @@ def handle_feedback(ctx: Ctx, text: str, target: str | None = None, pmid: str | 
     cs["cost_usd"] = round(ctx.hub.tracker.spent - usd0, 5)
     cs["cost_usd_uncached"] = round(ctx.hub.tracker.spent_equiv - eq0, 5)
     cs["seconds"] = round(time.time() - t0, 1)
+    if cs["changes"]:
+        sandbox_delta(ctx.store, sb.store, cs)
     if cs["changes"] and auto_accept:
-        commit(ctx, sb.store, cs)
+        commit(ctx, cs["sandbox_nodes"], cs)
+        cs.pop("sandbox_nodes", None)
+        cs.pop("sandbox_meta", None)
     elif cs["changes"]:
         record_bases(ctx.store, cs)
-        cs["sandbox_nodes"] = {c["node"]: sb.store.get(c["node"]) for c in cs["changes"]}
         if target and ctx.store.get(target):
             ctx.store.flag(target, f"Feedback {cs['id']} pending review: {text[:200]}", actor="user")
     elif cs.get("clarification_question"):
@@ -568,22 +582,33 @@ def _save_changeset(ctx: Ctx, cs: dict):
     (d / f"{cs['id']}.json").write_text(json.dumps(cs, indent=1, default=str))
 
 
-def commit(ctx: Ctx, sandbox_store, cs: dict, actor: str = "user"):
-    for c in cs["changes"]:
-        nid = c["node"]
-        sn = sandbox_store.get(nid) if hasattr(sandbox_store, "get") else sandbox_store[nid]
+def commit(ctx: Ctx, sandbox, cs: dict, actor: str = "user"):
+    """Apply a change set to the live store. `sandbox` is the sandbox store, or the nodes saved with the
+    proposal (cs["sandbox_nodes"]). Listed changes are applied as the person's acceptance; the other nodes
+    the sandbox created or changed come along as dependent changes, with their flags and meta keys."""
+    if hasattr(sandbox, "nodes"):
+        sandbox_delta(ctx.store, sandbox, cs)
+        nodes, meta = cs.pop("sandbox_nodes"), cs.pop("sandbox_meta")
+    else:
+        nodes, meta = sandbox, cs.get("sandbox_meta") or {}
+    listed = {c["node"] for c in cs["changes"]}
+    for nid in sorted(nodes, key=lambda x: (x not in listed, x)):   # listed changes first
+        sn = nodes[nid]
         live = ctx.store.get(nid)
+        why = f"accepted feedback {cs['id']}" + ("" if nid in listed else " (dependent change)")
         if live is None:
             ctx.store.nodes[nid] = copy.deepcopy(sn)
-            ctx.store._log("create", nid, actor, f"accepted feedback {cs['id']}", None, sn["data"])
-        else:
+            ctx.store._log("create", nid, actor, why, None, sn["data"])
+            continue
+        if any(live.get(k) != sn.get(k) for k in ("data", "status", "evidence", "depends_on")):
             ctx.store.upsert(nid, sn["type"], copy.deepcopy(sn["data"]), depends_on=sn["depends_on"],
-                             evidence=copy.deepcopy(sn["evidence"]), status=sn["status"], actor=actor,
-                             reason=f"accepted feedback {cs['id']}")
-    # synthesis statements newly created/removed in sandbox
-    for nid, sn in (sandbox_store.nodes.items() if hasattr(sandbox_store, "nodes") else []):
-        if nid not in ctx.store.nodes:
-            ctx.store.nodes[nid] = copy.deepcopy(sn)
+                             evidence=copy.deepcopy(sn["evidence"]), status=sn["status"], actor=actor, reason=why)
+        have = {(f.get("text"), f.get("source")) for f in live["flags"]}
+        for f in sn.get("flags", []):              # flags raised in the sandbox (evidence checks, retirements)
+            if (f.get("text"), f.get("source")) not in have:
+                ctx.store.flag(nid, f["text"], actor=f.get("actor", "agent"), source=f.get("source", "feedback"))
+    for k, v in meta.items():
+        ctx.store.meta[k] = copy.deepcopy(v)
     tgt = cs.get("target")
     if tgt and ctx.store.get(tgt):
         for f in ctx.store.get(tgt)["flags"]:

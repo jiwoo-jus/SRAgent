@@ -22,7 +22,7 @@ def process_pdfs(ctx: Ctx) -> dict:
     for rid in new:
         st.meta.get("pdf_wanted", {}).pop(rid, None)   # the file is here now; decide with it
         sc = st.get(f"screen:{rid}")
-        human = sc and (sc["data"].get("human_decision") or {}).get("decision") == "exclude"
+        human = sc and sc["data"].get("human_decision")   # a person decided: the file is read, the decision stays
         if sc and not human and not sc["data"].get("rule") and sc["data"]["decision"] != "exclude":
             out = screening.review_one(ctx, protocol, rid, refetch=True)   # full-text review with the supplied file
             rescreened.append(rid)

@@ -298,7 +298,7 @@ Screenshots of the main results (`benchmark/emicizumab_pk/gemini_agentonly`, age
 
 ![To-do: eligibility table (human in the loop)](docs/ui_todo_eligibility.png)
 
-Every answer goes to `human_decisions.jsonl` (time-stamped, with your note), which is both an audit trail and research data on human-agent interaction. Answers given while a job is running are queued and applied when it finishes, so a job never overwrites your decisions. Answers that need the LLM (fix this, update now, process PDFs) start a job with the model last chosen in the Run tab.
+Every answer goes to `human_decisions.jsonl` (time-stamped, with your note), which is both an audit trail and research data on human-agent interaction. A decision you made is never overwritten by the agent: a new PDF, the next run, the screening rules and a protocol edit all leave it in place (the agent's own assessments are refreshed and shown beside it), and only a re-run you ask for replaces it, as a proposal. Values you edited and risk-of-bias ratings you confirmed survive a re-extraction or re-assessment the same way. Answers given while a job is running are queued and applied when it finishes, so a job never overwrites your decisions. Answers that need the LLM (fix this, update now, process PDFs) start a job with the model last chosen in the Run tab.
 
 ### 7.1b The study page: everything about one study, and what you can do with it
 
@@ -399,7 +399,7 @@ A run is one file in `configs/<benchmark|review>/<topic>/` that includes the fol
 | File | Content |
 |---|---|
 | `protocol.yaml` | editable protocol (human checkpoint) |
-| `store.json` | every node with `data`, `evidence`, `depends_on`, `status`, `version`, `history`, `flags`; `meta.config_lock` (the fixed settings and each started stage's model) and `meta.config_changes` (accepted changes) |
+| `store.json` | every node with `data`, `evidence`, `depends_on`, `status`, `version`, `history`, `flags`; `meta.config_lock` (the fixed settings and each started stage's model) and `meta.config_changes` (accepted changes). Written atomically; the previous version is kept as `store.json.bak` |
 | `store_changelog.jsonl` | every create, update, status change and flag, with actor and reason |
 | `report.md` | report-only view (methods, PRISMA counts, excluded-with-reasons table, study table, RoB table, synthesis, references) |
 | `report_evidence.html` | evidence-linked view, laid out as a formal review document (PRISMA 2020 / Cochrane conventions; prints to A4): status notice, structured summary, methods (PICO, criteria, search, selection, data items, quality domains), PRISMA 2020 flow diagram, numbered tables of study characteristics, results and quality judgements (traffic-light table and summary figure), synthesis with numbered Vancouver citations, references, and appendices with the evidence (statements with links to cited studies and self-check results, each extracted value with its located sentences (click to open the numbered source with the sentence highlighted), DB ids, RoB rationales and evidence, populations of the studies each statement cites, criterion-level decisions for every record, open flags, revision history, feedback boxes) |

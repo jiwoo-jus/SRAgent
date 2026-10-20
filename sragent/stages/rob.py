@@ -15,6 +15,17 @@ def _budget(ctx: Ctx) -> int:
 
 def rob_one(ctx: Ctx, rid: str) -> dict:
     st = ctx.store
+    old = st.get(f"rob:{rid}")
+    if old and old["data"].get("human_confirmed"):
+        # a person confirmed (or changed) this assessment: it is not drafted again; the source change is noted
+        ftn = st.get(f"ft:{rid}")
+        d = dict(old["data"], source_version=ftn["version"] if ftn else None)
+        st.upsert(old["id"], "rob", d, depends_on=old["depends_on"], evidence=old["evidence"],
+                  reason="source changed; the assessment a person confirmed is kept")
+        if not any(f["status"] == "open" and f["source"] == "source_changed" for f in old["flags"]):
+            st.flag(old["id"], "The full text changed after you confirmed this assessment; it was kept. "
+                    "Ask for a re-assessment if the new text should change it.", actor="agent", source="source_changed")
+        return d
     text, kind = st.text_of(rid)
     src_node = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
     ext = st.get(f"ext:{rid}")

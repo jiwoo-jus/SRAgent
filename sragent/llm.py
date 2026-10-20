@@ -36,6 +36,14 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+class Refused(RuntimeError):
+    """The model declined the request. Not retried; the tokens are still paid for and recorded."""
+
+    def __init__(self, msg: str, pin: int = 0, pout: int = 0):
+        super().__init__(msg)
+        self.pin, self.pout = pin, pout
+
+
 class QuotaExhausted(RuntimeError):
     """The provider's daily quota for a model is used up: stop now (retrying cannot help today)."""
 
@@ -64,8 +72,9 @@ class CostTracker:
         self.spent_at_start = self.spent
 
     def check(self):
-        if self.spent >= self.budget:
-            raise BudgetExceeded(f"Budget ${self.budget:.2f} exhausted (spent ${self.spent:.4f}).")
+        with self.lock:   # read under the same lock add() writes under: parallel workers see the latest total
+            if self.spent >= self.budget:
+                raise BudgetExceeded(f"Budget ${self.budget:.2f} exhausted (spent ${self.spent:.4f}).")
 
     def add(self, role: str, model: str, tag: str, pin: int, pout: int, cost: float,
             seconds: float, cached: bool, *, endpoint: str | None = None, provider: str | None = None):
@@ -252,30 +261,17 @@ class LLM:
                                  self._cost(hit.get("pin", 0), hit.get("pout", 0)), 0.0, True)
                 return val
 
-        self.tracker.check()
         msgs = list(messages)
         last_err = None
         for attempt in range(self.c["max_retries"] + 1):
+            self.tracker.check()   # before every paid call, retries included
             t0 = time.time()
             try:
                 text, pin, pout = self._call(msgs, json_out, max_tokens, temperature)
-                dt = time.time() - t0
-                self.tracker.add(self.role, self.model, tag, pin, pout, self._cost(pin, pout), dt, False)
-                if json_out:
-                    try:
-                        val = json_object(text)
-                    except ValueError as e:
-                        last_err = e
-                        msgs = messages + [{"role": "assistant", "content": text[:4000]},
-                                           {"role": "user", "content": "Your reply was not one valid JSON object. "
-                                            "Return ONLY the JSON object the instructions describe, nothing else."}]
-                        continue
-                else:
-                    val = text
-                if use_cache and self.cache:
-                    self.cache.set(key, {"text": text, "pin": pin, "pout": pout})
-                return val
             except (BudgetExceeded, QuotaExhausted):
+                raise
+            except Refused as e:   # paid for, recorded, not retried
+                self.tracker.add(self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
                 raise
             except Exception as e:  # network / rate limit / server errors
                 last_err = e
@@ -286,6 +282,25 @@ class LLM:
                 if ("context" in str(e).lower() and "length" in str(e).lower()) or "prompt is too long" in str(e):
                     raise
                 time.sleep(min(60, 2 ** attempt * 2))
+                continue
+            self.tracker.add(self.role, self.model, tag, pin, pout, self._cost(pin, pout), time.time() - t0, False)
+            if json_out:
+                try:
+                    val = json_object(text)
+                except ValueError as e:
+                    last_err = e
+                    msgs = messages + [{"role": "assistant", "content": text[:4000]},
+                                       {"role": "user", "content": "Your reply was not one valid JSON object. "
+                                        "Return ONLY the JSON object the instructions describe, nothing else."}]
+                    continue
+            else:
+                val = text
+            if use_cache and self.cache:
+                try:
+                    self.cache.set(key, {"text": text, "pin": pin, "pout": pout})
+                except Exception as e:   # a locked or full cache must never cost a second API call
+                    print(f"[llm] cache write failed ({str(e)[:80]}); the answer is used without caching", flush=True)
+            return val
         raise RuntimeError(f"LLM call failed after retries ({self.name}, tag={tag}): {last_err}")
 
     def _local_chat(self, messages, json_out, tag, max_tokens, temperature, use_cache):
@@ -402,13 +417,13 @@ class LLM:
             r = self.client.beta.messages.create(betas=[beta], fallbacks=fallbacks, **kw)
         else:
             r = self.client.messages.create(**kw)
-        if r.stop_reason == "refusal":
-            d = r.stop_details
-            raise RuntimeError(f"{self.name} declined the request (refusal, category "
-                               f"{getattr(d, 'category', None)}): {getattr(d, 'explanation', '')}")
-        text = "".join(b.text for b in r.content if b.type == "text")
         u = r.usage
         pin = (u.input_tokens or 0) + (u.cache_creation_input_tokens or 0) + (u.cache_read_input_tokens or 0)
+        if r.stop_reason == "refusal":
+            d = r.stop_details
+            raise Refused(f"{self.name} declined the request (refusal, category "
+                          f"{getattr(d, 'category', None)}): {getattr(d, 'explanation', '')}", pin, u.output_tokens or 0)
+        text = "".join(b.text for b in r.content if b.type == "text")
         return text, pin, u.output_tokens or 0   # output_tokens includes thinking
 
     def map(self, fn: Callable, items: list, concurrency: int | None = None) -> list:

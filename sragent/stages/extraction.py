@@ -118,9 +118,12 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
         raw_fields, merged = _merge(ctx, rid, outs, text)
         mode = f"{len(parts)} parts"
     fields, evidence = postprocess(ctx, rid, raw_fields, text, src_node)
+    kept = keep_human_edits(st.get(f"ext:{rid}"), fields)
     ftn = st.get(f"ft:{rid}")
     data = {"rid": rid, "source_kind": kind, "fields": fields, "read_mode": mode, "merged_fields": merged,
             "source_version": ftn["version"] if ftn else None}
+    if kept:
+        data["kept_human_edits"] = kept
     st.upsert(f"ext:{rid}", "extraction", data, depends_on=[f"screen:{rid}", src_node, "protocol"],
               evidence=evidence, reason="extracted")
     n = st.get(f"ext:{rid}")
@@ -133,6 +136,18 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
                 st.flag(n["id"], f"Term '{t['term']}' in '{name}' not found in RxNorm/PubChem/ChEMBL/MONDO.",
                         actor="agent", source="term_validation")
     return data
+
+
+def keep_human_edits(old: dict | None, fields: dict) -> list[str]:
+    """A value a person edited survives a re-extraction: the person's value, note and evidence are kept
+    and the fresh one is stored beside it as `agent_value`. Returns the field names kept."""
+    kept = []
+    for name, item in ((old or {}).get("data", {}).get("fields") or {}).items():
+        if isinstance(item, dict) and item.get("edited") and name in fields:
+            fresh = fields[name]
+            fields[name] = {**item, "agent_value": fresh.get("value"), "agent_evidence": fresh.get("evidence", [])}
+            kept.append(name)
+    return kept
 
 
 def source_changed(st, node_id: str) -> bool:

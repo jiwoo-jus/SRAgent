@@ -242,8 +242,8 @@ def _finish(ctx: Ctx, sb: Ctx, cs: dict, target: str, usd0: float, t0: float) ->
     cs["cost_usd"] = round(ctx.hub.tracker.spent - usd0, 5)
     cs["seconds"] = round(time.time() - t0, 1)
     if cs["changes"]:
+        feedback.sandbox_delta(ctx.store, sb.store, cs)
         feedback.record_bases(ctx.store, cs)
-        cs["sandbox_nodes"] = {c["node"]: sb.store.get(c["node"]) for c in cs["changes"]}
         if ctx.store.get(target):
             ctx.store.flag(target, f"{cs['label']} {cs['id']} pending review", actor="user", source="rerun")
     else:
@@ -285,7 +285,7 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
         if step == "screen":
             if stage == "full_text" and not ft:
                 fulltext.fetch_one(sb, rid)
-            screening.screen_one(sb, st.get("protocol")["data"], rid, stage, tag_suffix="_rerun")
+            screening.screen_one(sb, st.get("protocol")["data"], rid, stage, tag_suffix="_rerun", keep_human=False)
         elif step == "extract":
             extraction.extract_one(sb, rid)
         else:
