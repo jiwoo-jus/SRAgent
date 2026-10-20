@@ -1,0 +1,48 @@
+# Benchmark run: emicizumab_pk · the recommended models · all records · AGENT ONLY · v2.
+# The same settings as recommended_agentonly.yaml, run again after the first fix round (decisive full-text
+# screening with the reasons shown, the upward eligibility check from extraction, the relaxed number rule,
+# whole-paper reads, narrower synthesis statements with one repair round). Compare with recommended_agentonly
+# (before the fixes), claude_stages_agentonly (pre-refactor) and gemini_agentonly (GUIDE 11.0).
+# The user-supplied PDFs are copied into runs/benchmark/emicizumab_pk/recommended_v2_agentonly/fulltext/.
+#   sragent run  --config configs/benchmark/emicizumab_pk/recommended_v2_agentonly.yaml
+#   sragent eval --config configs/benchmark/emicizumab_pk/recommended_v2_agentonly.yaml --suite grounding
+include:
+  - topic.yaml
+llm_defaults:                # models by name; provider and price come from configs/models.yaml
+  model: claude-haiku-5-5      # the agent: the high-volume, recoverable work (see stage_models for the rest)
+  api_env: ../../../api_env.yaml
+  reasoning_effort: medium
+  max_tokens: 16000
+  concurrency: 6
+roles:
+  verifier: {model: gpt-6.1-sol, reasoning_effort: medium}        # checks statements and feedback: independent of the writer (Claude) and the judge (Gemini)
+  judge:    {model: gemini-3.1-pro-preview, reasoning_effort: medium}   # sragent eval only
+  judge2:   {model: gpt-6.1-sol, reasoning_effort: medium}        # second judge of another family than the judge
+  reviewer: {model: gemini-3.8-flash, reasoning_effort: low}   # a simulated reviewer reading long materials: low keeps replies short and cheap   # Claim 1's simulated reviewer (the baseline used effort low)
+stage_models:                # a stage's model is fixed once that stage has started
+  plan:       {model: claude-sonnet-5-5, reasoning_effort: high}
+  search:     {model: claude-sonnet-5-5, reasoning_effort: high}
+  screen:     {reasoning_effort: medium}
+  fulltext:   {reasoning_effort: medium}
+  snowball:   {reasoning_effort: medium}
+  extract:    {model: claude-sonnet-5-5, reasoning_effort: high}
+  rob:        {reasoning_effort: medium}
+  synthesize: {model: claude-sonnet-5-5, reasoning_effort: high}
+  feedback:   {model: claude-sonnet-5-5, reasoning_effort: high}
+cache_dir: .cache
+budget_usd: 5.0              # hard cap for this run folder (the review itself)
+pipeline:
+  human_mode: agent_only
+  fulltext_unclear: include  # the agent decides: still unclear after the full text -> included and flagged
+  max_records: null          # all records
+  context_chars: 120000       # ~30k tokens: a whole paper in one read for Claude, GPT and Gemini (30000 forced chunking + merges)
+  fulltext_screen_chars: 12000
+eval:
+  budget_usd: 8.5            # per evaluation run (each run has its own usage.jsonl)
+  grounding_max_studies: null   # all supplied studies
+  claim1_sets: 3
+  claim1_repeats: 1            # development: single runs
+  claim1_genuine_checks: 4
+  claim2_cases_per_type: 2     # development: 10 cases, 18 feedback runs (about $8 at Sonnet high)
+  judge_agreement_items: 40
+  human_audit_items: 15

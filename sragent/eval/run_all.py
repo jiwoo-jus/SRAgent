@@ -198,11 +198,13 @@ def run(ctx: Ctx, suite: str = "all", n_cases: int | None = None, allow_cache: b
                 g["input"] = R["manifest"]["stagewise_input"]
                 R["results"]["stagewise_extraction_rob"] = g
             elif s == "synthesis":
+                if field_labels is None:   # this run's grounding labels, else those of the run whose stage-wise review is reused
+                    for p in [out / "field_labels.json"] + ([root / from_run / "field_labels.json"] if from_run else []):
+                        if p.exists():
+                            field_labels = json.loads(p.read_text())
+                            break
                 if field_labels is None:
-                    p = out / "field_labels.json"
-                    field_labels = json.loads(p.read_text()) if p.exists() else None
-                if field_labels is None:
-                    R["results"]["stagewise_synthesis"] = {"skipped": "needs the grounding suite in the same run (judge labels)"}
+                    R["results"]["stagewise_synthesis"] = {"skipped": "needs the grounding suite's judge labels (run it in the same run, or --from-run a run that has them)"}
                 else:
                     vctx, info = stagewise.verified_extraction_review(sctx, field_labels, out / "synthesis_input")
                     R["results"]["stagewise_synthesis"] = synthesis_eval.run(vctx, judge, info)
