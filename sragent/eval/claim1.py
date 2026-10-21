@@ -162,7 +162,7 @@ def _content_at(ctx: Ctx, loc: str) -> tuple[str, str]:
 
 
 def run(ctx: Ctx, judge: Judge, out_dir, n_sets: int = 2, repeats: int = 1, max_src_chars: int = 5000,
-        max_errors: int = 12, max_genuine_checks: int = 5, max_total_chars: int = 300000) -> dict:
+        max_errors: int = 12, max_genuine_checks: int = 5, max_total_chars: int = 450000) -> dict:
     rnd = random.Random(ctx.cfg.get("eval", {}).get("seed", 2026))
     inc = ctx.store.included_ids()
     sids = [n["id"] for n in ctx.store.by_type("synthesis", active_only=True)]

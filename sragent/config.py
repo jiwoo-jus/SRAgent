@@ -72,7 +72,7 @@ DEFAULTS: dict[str, Any] = {
         "claim1_sets": 2,
         "claim1_repeats": 1,
         "claim1_source_chars": 5000,
-        "claim1_total_chars": 300000,   # cap on the whole materials bundle; the per-study cap shrinks (for both conditions) to fit
+        "claim1_total_chars": 450000,   # cap on the whole materials bundle (~115k tokens); the per-study cap shrinks (for both conditions) to fit
         "claim1_genuine_checks": 5,
         "claim2_cases_per_type": 1,
         "claim2_repeats": 1,

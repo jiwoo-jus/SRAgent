@@ -90,17 +90,21 @@ def build_A(ctx: Ctx, rnd: random.Random, rid: str) -> dict | None:
     stmts = " ".join(st.get(s)["data"]["text"] for s in _cites(st, rid))
     # the number must be this study's own: in a statement that cites it and in no other included study's data,
     # otherwise the statement keeps it (rightly) when this study's value changes and the corruption never shows
-    others = " ".join(str(v.get("value", "")) for o in st.included_ids() if o != rid and st.get(f"ext:{o}")
-                      for v in st.get(f"ext:{o}")["data"]["fields"].values())
-    own = lambda num: not re.search(r"(?<![\w.])" + re.escape(num) + r"(?![\w])", others)
+    def own(num: str, field: str) -> bool:   # not reported by another included study in the same item
+        others = " ".join(str(st.get(f"ext:{o}")["data"]["fields"].get(field, {}).get("value", ""))
+                          for o in st.included_ids() if o != rid and st.get(f"ext:{o}"))
+        return not re.search(r"(?<![\w.])" + re.escape(num) + r"(?![\w])", others)
     best = None
-    for f in ("pk_results", "sample_size", "efficacy_safety", "exposure_response", "intervention"):
+    # regimen numbers (intervention: 3 mg/kg weekly) are the same across studies by design and never qualify;
+    # results, sample sizes and outcomes do. Specific numbers (decimals, >= 10) first.
+    for f in ("pk_results", "sample_size", "efficacy_safety", "exposure_response"):
         v = n["data"]["fields"].get(f, {}).get("value", "NR")
         if v.upper().startswith("NR"):
             continue
         shared = [m.group(1) for m in NUM.finditer(v)
                   if re.search(r"(?<![\w.])" + re.escape(m.group(1)) + r"(?![\w])", stmts)
-                  and m.group(1) not in ("1", "2", "3") and own(m.group(1))]
+                  and not (m.group(1).isdigit() and int(m.group(1)) < 4) and own(m.group(1), f)]
+        shared.sort(key=lambda x: ("." not in x and float(x) < 10, len(x) < 2))
         if shared:
             best = (f, v, shared)
             break

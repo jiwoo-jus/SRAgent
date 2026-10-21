@@ -86,6 +86,7 @@ def supplements(root) -> list[dict]:
 
 
 LAST_SUPPLEMENTS: dict[str, list] = {}
+LAST_SOURCE: dict[str, str] = {}      # pmcid -> "Europe PMC" | "NCBI PMC (Europe PMC down)": where the article came from
 
 
 NCBI_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
@@ -107,10 +108,12 @@ def fulltext(pmcid: str, max_chars: int = 400000) -> str:
         return ""
     try:
         xml = http.get(f"{BASE}/{pmcid}/fullTextXML", as_json=False)
+        LAST_SOURCE[pmcid] = "Europe PMC"
     except RuntimeError as e:          # Europe PMC unavailable (server errors after retries): try NCBI's copy
         xml = _efetch_xml(pmcid)
         if not xml:
-            raise RuntimeError(f"{e}; NCBI efetch gave no article either") from e
+            raise RuntimeError(f"NCBI efetch gave no article either; {e}") from e
+        LAST_SOURCE[pmcid] = "NCBI PMC (Europe PMC down)"
     if not xml:
         return ""
     try:

@@ -1211,7 +1211,7 @@ def test_fulltext_falls_back_to_ncbi_when_europe_pmc_is_down(monkeypatch):
     monkeypatch.setattr(http, "get", fake_get)
     text = europepmc.fulltext("PMC123")
     assert "half-life was 27 days" in text and "Emicizumab PK" in text
-    assert any("eutils.ncbi" in u for u in calls)
+    assert any("eutils.ncbi" in u for u in calls) and europepmc.LAST_SOURCE["PMC123"].startswith("NCBI PMC")
 
     def dead(url, params=None, **kw):
         raise RuntimeError("GET failed 500")
@@ -1336,3 +1336,16 @@ def test_manifest_records_the_git_commit():
     import re
     c = git_commit()
     assert c is None or re.fullmatch(r"[0-9a-f]{7}(-dirty)?", c)
+
+
+def test_evidence_bundle_shows_the_cited_values_per_statement(tmp_path):
+    """Claim 1's evidence-linked materials let the reviewer check a statement here: under each statement, the cited
+    studies' extracted values (design, population, results), not only their populations."""
+    from sragent import pipeline
+    from sragent.stages import report
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    ev = report.evidence_text(ctx, max_chars_per_study=5000)
+    syn = ev.split("### Synthesis statements", 1)[1]
+    assert "cited values (what the statement must not go beyond):" in syn
+    assert "pk_results: pk_results value 12 participants" in syn and "[1001]" in syn

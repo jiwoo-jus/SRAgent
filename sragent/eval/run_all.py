@@ -227,7 +227,7 @@ def run(ctx: Ctx, suite: str = "all", n_cases: int | None = None, allow_cache: b
                                                     repeats=ecfg.get("claim1_repeats", 1),
                                                     max_src_chars=ecfg.get("claim1_source_chars", 5000),
                                                     max_genuine_checks=ecfg.get("claim1_genuine_checks", 5),
-                                                    max_total_chars=ecfg.get("claim1_total_chars", 300000))
+                                                    max_total_chars=ecfg.get("claim1_total_chars", 450000))
                 R["results"]["claim1"]["input"] = "gold-input review (stage-wise)"
                 R["results"]["claim1"]["human_materials"] = {"dir": str(out / "claim1_human_materials"),
                                                              "status": "prepared_not_used"}

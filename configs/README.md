@@ -180,7 +180,7 @@ Defaults are in parentheses.
 
 **`feedback` (run file)**: `verify_feedback` (true, check feedback against the evidence first), `propagate` (true, revise dependent outputs), `auto_accept` (false, apply proposals without confirmation), `post_check` (true), `max_repair_rounds` (1), `global_audit` (true).
 
-**`eval` (run file; `sragent eval` only)**: `budget_usd` (8.0 per evaluation run), `seed` (2026), `grounding_max_studies` (15; null = all), `claim1_sets` (2), `claim1_repeats` (1), `claim1_source_chars` (5000), `claim1_total_chars` (300000; the per-study cap shrinks for both conditions until the evidence-linked bundle fits), `claim1_genuine_checks` (5), `claim2_cases_per_type` (1), `claim2_repeats` (1), `claim2_build_attempts` (3), `judge_agreement_items` (25), `human_audit_items` (15). See GUIDE section 10.
+**`eval` (run file; `sragent eval` only)**: `budget_usd` (8.0 per evaluation run), `seed` (2026), `grounding_max_studies` (15; null = all), `claim1_sets` (2), `claim1_repeats` (1), `claim1_source_chars` (5000), `claim1_total_chars` (450000, about 115k tokens; the per-study cap shrinks for both conditions until the evidence-linked bundle fits), `claim1_genuine_checks` (5), `claim2_cases_per_type` (1), `claim2_repeats` (1), `claim2_build_attempts` (3), `judge_agreement_items` (25), `human_audit_items` (15). See GUIDE section 10.
 
 **`topic` (topic file)**
 

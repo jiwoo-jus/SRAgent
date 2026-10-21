@@ -126,10 +126,11 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
                 pmcid = europepmc.pmcid_for(rec.get("pmid", ""), rec.get("doi", ""))
             t = europepmc.fulltext(pmcid, maxc) if pmcid else ""
             if len(t) > 2000:
-                text, kind, origin, parser = t, "fulltext", f"Europe PMC {pmcid}", "JATS XML"
+                text, kind, parser = t, "fulltext", "JATS XML"
+                origin = f"{europepmc.LAST_SOURCE.get(pmcid, 'Europe PMC')} {pmcid}"
                 listed_supp = europepmc.LAST_SUPPLEMENTS.get(pmcid, [])
         except RuntimeError as e:
-            ctx.log(f"[fulltext] {rid}: Europe PMC unavailable ({str(e)[:80]})")
+            ctx.log(f"[fulltext] {rid}: full text not obtained from Europe PMC or NCBI ({str(e)[:160]})")
     if kind != "fulltext" and ctx.cfg["pipeline"].get("fulltext", True) and ctx.cfg["pipeline"].get("open_access_lookup", True):
         from ..sources import openalex, unpaywall
         email = contact_email(ctx)

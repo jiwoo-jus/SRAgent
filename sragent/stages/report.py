@@ -184,9 +184,17 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
     L += ["", "### Synthesis statements: cited evidence and self-check"]
     for n in st.by_type("synthesis", active_only=True):
         v = n["data"].get("verification") or {}
-        L.append(f"[{n['data']['id']}] cites={n['data']['cites']} scope={n['data'].get('scope', '')} "
-                 f"self-check={v.get('support', 'n/a')}")
-        L.append("    populations of cited studies: " + cited_populations(ctx, n["data"]["cites"]))
+        block = [f"[{n['data']['id']}] cites={n['data']['cites']} scope={n['data'].get('scope', '')} "
+                 f"self-check={v.get('support', 'n/a')}",
+                 "    populations of cited studies: " + cited_populations(ctx, n["data"]["cites"]),
+                 "    cited values (what the statement must not go beyond):"]
+        for c in n["data"]["cites"]:          # the cited studies' extracted values, so the claim can be checked here
+            e = st.get(f"ext:{c}")
+            if e and e["status"] == "active":
+                vals = "; ".join(f"{k}: {str(x.get('value', 'NR'))[:160]}" for k, x in e["data"]["fields"].items()
+                                 if k in STATEMENT_FIELDS and str(x.get("value", "NR")).upper() != "NR")
+                block.append(f"      [{c}] {vals or '(no values)'}")
+        L.append(cap("\n".join(block)))
     flags = [(n["id"], f) for n in st.nodes.values() for f in n["flags"] if f["status"] == "open"]
     if flags:
         L += ["", "### Open flags"] + [f"[{nid}] {f['text']}" for nid, f in flags]
@@ -354,6 +362,10 @@ def _source_html(ctx: Ctx, rid: str) -> str:
         rows.append(f"<div class='sent' id='src-{_e(rid)}-{_e(s['sid'])}'><b class='mono'>{_e(s['sid'])}</b> {_e(s['text'])}</div>")
     return (f"<details class='src' id='src-{_e(rid)}'><summary>Source text assessed ({_e(kind)}; numbered sentences)</summary><div>"
             + "".join(rows) + "</div></details>")
+
+
+# the extracted items a synthesis statement can rest on (shown per cited study in the evidence bundle)
+STATEMENT_FIELDS = ("study_design", "population", "sample_size", "intervention", "pk_results", "exposure_response", "efficacy_safety")
 
 
 def cited_populations(ctx: Ctx, cites: list[str]) -> str:
