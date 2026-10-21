@@ -65,30 +65,67 @@ def postprocess(ctx: Ctx, rid: str, fields_out: dict, text: str, src_node: str) 
 _NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])")
 
 
+MAX_COVER = 8   # citations a value may end up with after coverage (the extractor is asked for up to MAX_IDS)
+_STOP = set("""the and for with from that this were was are not but than then into over under per each both all any
+some most more less also only after before during between within without study studies patients patient subjects
+subject data analysis analyses results result values value mean median range years year weeks week days day dose doses
+group groups cohort cohorts phase trial trials reported report using used based total number level levels
+""".split())
+
+
+def _norm_numbers(text: str) -> str:
+    """Decimal forms seen in papers made comparable to the value's: 31·8 and 31,8 become 31.8; .222 becomes 0.222."""
+    t = re.sub(r"(?<=\d)[·,](?=\d)", ".", text)
+    return re.sub(r"(?<![\w.])\.(?=\d)", "0.", t)
+
+
+def _terms(value: str) -> list[str]:
+    """Distinctive words of a value that a cited sentence should carry: capitalised names, acronyms, hyphenated or
+    long technical words. Common words and anything with digits (numbers are covered separately) are skipped."""
+    out = []
+    for w in re.findall(r"[A-Za-z][A-Za-z\-/]{3,}", value):
+        lw = w.lower().strip("-/")
+        if lw in _STOP or len(lw) < 4:
+            continue
+        if w[0].isupper() or w.isupper() or "-" in w or len(lw) >= 9:
+            out.append(w)
+    return list(dict.fromkeys(out))
+
+
 def cover_numbers(item: dict, cites: list, text: str) -> list:
-    """Every number in a value should be in a cited sentence. A number that is not, but occurs in exactly
-    one sentence of the source, gets that sentence cited (recorded in item["auto_evidence"]); a number that
-    occurs in several sentences is left as it is (it is in the paper; which sentence is not guessed); a number
-    found nowhere in the source is listed in item["uncovered"] for the reviewer."""
+    """Every number and every distinctive term in a value should be in a cited sentence. One that is not, but occurs
+    in exactly one sentence of the source, gets that sentence cited (recorded in item["auto_evidence"], up to
+    MAX_COVER citations); one that occurs in several sentences is left as it is (it is in the paper; which sentence
+    is not guessed). A number found nowhere in the source, in any decimal form (31·8, 31,8, .222), is listed in
+    item["uncovered"] for the reviewer: it may be a sum or a rounding the model made."""
     # single-digit integers (phase 1, 3 cohorts, week 5) carry little and match everywhere: not checked
     nums = [n for n in _NUM.findall(item["value"]) if len(n) <= 12 and not (n.isdigit() and int(n) < 10)]
-    if not nums:
+    terms = _terms(item["value"])
+    if not nums and not terms:
         return cites
     segs = segment(text)
     by_id = {s["sid"]: s for s in segs}
+    norm = {s["sid"]: _norm_numbers(s["text"]) for s in segs}
     ids = [c for c in cites if isinstance(c, str) and c in by_id]
-    cited_text = " ".join(by_id[i]["text"] for i in ids)
+    cited_text = " ".join(norm[i] for i in ids)
     added, uncovered = [], []
-    for n in dict.fromkeys(nums):
-        rx = re.compile(r"(?<![\w.])" + re.escape(n) + r"(?![\w.])")
+
+    def place(rx, texts):
+        nonlocal cited_text
         if rx.search(cited_text):
-            continue
-        where = [s for s in segs if rx.search(s["text"])]
-        if len(where) == 1 and where[0]["sid"] not in ids and len(ids) + len(added) < 6:
+            return True
+        where = [s for s in segs if rx.search(texts[s["sid"]])]
+        if len(where) == 1 and where[0]["sid"] not in ids and len(ids) + len(added) < MAX_COVER:
             added.append(where[0]["sid"])
-            cited_text += " " + where[0]["text"]
-        elif not where:
+            cited_text += " " + norm[where[0]["sid"]]
+            return True
+        return bool(where)
+
+    for n in dict.fromkeys(nums):
+        if not place(re.compile(r"(?<![\w.])" + re.escape(n) + r"(?![\w.])"), norm):
             uncovered.append(n)
+    for t in terms:   # terms are never flagged: wording may differ; only a missing citation is repaired
+        place(re.compile(r"(?<![\w-])" + re.escape(t) + r"(?![\w-])", re.I), {s["sid"]: s["text"] for s in segs})
     if added:
         item["auto_evidence"] = added
     if uncovered:
@@ -229,7 +266,7 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
         elif item.get("uncovered"):
             uncovered.append(f"{name}: {', '.join(item['uncovered'][:5])}")
     if uncovered:   # one flag per study, not one per field
-        st.flag(n["id"], "Numbers found nowhere in the paper's text (check them against the paper): "
+        st.flag(n["id"], "Numbers not found in the paper's text as written (a sum, a rounding or a misread? check them against the paper): "
                 + "; ".join(uncovered[:8]), actor="agent", source="evidence_check")
         for t in item.get("terms", []):
             if t["status"] == "not_found":

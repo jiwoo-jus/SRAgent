@@ -727,6 +727,12 @@ def test_numbers_in_a_value_are_cited_or_flagged():
     assert item["auto_evidence"] == [sid("Clearance")] and sid("Clearance") in cites   # 0.27: one sentence, cited
     assert "27" not in item["uncovered"]                            # 27 occurs in two sentences: in the paper, not guessed, not flagged
     assert "12" in item["uncovered"]                                # "Twelve" is not a digit: found nowhere, flagged for the reviewer
+    # decimal forms papers use (31·8, 31,8, .222) count as the same number; a distinctive term gets its sentence cited
+    t2 = "## Methods\nA prospective single-centre cohort was enrolled.\n## Results\nTrough was 31·8 ug/mL; the ratio was ,222 at baseline; r = .222 overall."
+    i2 = {"value": "Prospective single-centre cohort; trough 31.8 ug/mL; ratio 0.222"}
+    c2 = cover_numbers(i2, [sid2 := next(s["sid"] for s in segment(t2) if "Trough" in s["text"])], t2)
+    assert "uncovered" not in i2                                     # 31·8 and .222 found in their written forms
+    assert next(s["sid"] for s in segment(t2) if "prospective" in s["text"]) in c2   # the design sentence is cited for the term
     assert "52" not in item["uncovered"] and "5" not in item["uncovered"]   # cited / a single digit (not checked)
     plain = {"value": "Adults with haemophilia A"}
     assert cover_numbers(plain, ["s1"], text) == ["s1"] and "uncovered" not in plain

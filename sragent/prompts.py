@@ -140,7 +140,7 @@ Rules:
 - The value says only what the cited sentences say. A detail (setting, site, design label, subgroup,
   regimen, number) that no cited sentence states is left out, or the sentence that states it is
   cited too. Nothing is inferred from the paper as a whole.
-- evidence: ids of the sentences that together support the value (1 to 6; they may be in
+- evidence: ids of the sentences that together support the value (1 to 8; they may be in
   different sections, e.g. a number in Results and its population in Methods). Every number in
   the value should appear in one of the cited sentences; a number that appears nowhere in the
   source must not go in the value.

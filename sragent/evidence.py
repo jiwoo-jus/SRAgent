@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover
 
 _WS = re.compile(r"\s+")
 _SENT = re.compile(r"(?<=[.!?;])\s+(?=[\"'(\[]?[A-Z0-9])")
-MAX_IDS = 6   # sentences a value may cite (the extractor is asked for up to 6)
+MAX_IDS = 8   # sentences a value may cite (the extractor is asked for up to 8; coverage may add up to that)
 
 
 def norm(s: str) -> str:
