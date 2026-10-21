@@ -702,7 +702,7 @@ The first complete run of the post-refactor code with the recommended models (`c
 * Grounding: extraction values supported by their cited sentences 0.70 (0 unsupported, the rest partial), evidence located 0.99.
 * Synthesis: 9 of 9 statements supported, no overgeneralisation, citations valid, self-check and judge agree on 0.89.
 * Claim 1: detection 0.40 report-only vs 0.53 evidence-linked (repair 0.33 vs 0.53, precision 0.52 vs 0.86); 15 units, sign test p = 0.69. Risk-of-bias errors were found only with the evidence (3/3 vs 0/3); synthesis errors by neither.
-* Claim 2: downstream completion 0.19 local edit vs 0.82 dependency-aware (6 units, sign test p = 0.03, no new errors); A and C cases 1.0, B cases 0.45 because the planted eligibility error did not exclude the study under the any_of protocol (section 10.4, 4a0; fixed after this run). False feedback accepted: 0 of 2 in both conditions.
+* Claim 2: downstream completion 0.19 local edit vs 0.82 dependency-aware (6 units, sign test p = 0.03, no new errors); A and C cases 1.0, B cases 0.45 because the planted eligibility error did not exclude the study under the any_of protocol (section 10.4, 4a0). False feedback accepted: 0 of 2 in both conditions; the 2 ineligible papers were refused. Re-run of Claim 2 alone after that fix (run 20261021-035013_claim2_v3c, git 4c76e58, same review, seed and models, $5.17): 0.23 local edit vs 1.00 dependency-aware on all 5 A to C cases (sign test p = 0.06, no new errors), B cases 1.0.
 * Judge validation: known-answer controls 1.0 (9 items); agreement with the second judge, now a different family (GPT-6.1 Sol), kappa 0.79 overall, 0.28 on the subjective "genuine error" items.
 
 ### 11.6 v1 pilot, for reference (60 records, mixed gpt-6.1-sol and Gemini)
