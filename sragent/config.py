@@ -91,6 +91,7 @@ DEFAULTS: dict[str, Any] = {
         "context_chars": 60000,       # prompt budget for extraction / RoB; longer papers are read in parts
         "max_stored_chars": 400000,   # the whole text is stored; prompts select from it
         "open_access_lookup": True,   # Unpaywall (needs contact_email) / OpenAlex legal OA copies
+        "wait_for_pdfs": False,       # stop before the synthesis while requested full texts are missing (real reviews)
         "pdf_parser": "auto",         # auto | azure_cu | pdftotext
         "azure_cu_analyzer": "prebuilt-documentSearch",   # or prebuilt-layout (no figure descriptions, cheaper)
         "vision_pages": False,        # without Azure: transcribe table/figure pages with the (multimodal) agent model

@@ -43,6 +43,20 @@ SUITES = ["e2e", "screening", "stagewise", "grounding", "synthesis", "claim1", "
 NEEDS_STAGEWISE = {"stagewise", "grounding", "synthesis", "claim1", "claim2", "judge"}
 
 
+def git_commit() -> str | None:
+    """The repository's HEAD (short), with -dirty when tracked files have uncommitted changes; None outside git."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    try:
+        h = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"], cwd=root, capture_output=True, text=True, timeout=10)
+        if h.returncode != 0:
+            return None
+        d = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, capture_output=True, text=True, timeout=10)
+        return h.stdout.strip() + ("-dirty" if d.stdout.strip() else "")
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def code_version() -> str:
     h = hashlib.sha256()
     root = Path(__file__).resolve().parents[1]
@@ -92,7 +106,7 @@ def manifest(ctx: Ctx, ectx: Ctx, run_id: str, suite: str, allow_cache: bool, fr
         "models": models, "seed": ectx.cfg.get("eval", {}).get("seed"),
         "llm_sampling": "temperatures as configured per role (Claim 1 repeats: 0.0 then 0.7); provider-side sampling seeds are not set",
         "cache_policy": "reuse identical earlier calls" if allow_cache else "fresh: every model call in this run is new (answers are still cached for later)",
-        "code_version": code_version(),
+        "code_version": code_version(), "git_commit": git_commit(),
         "gold": {"source": gold.info(ctx).get("source"), "n_labelled": len(labels), "n_included": sum(labels.values()),
                  "used_by": "evaluator only (stripped from every store the agent sees)"},
         "from_run": from_run,
@@ -356,7 +370,7 @@ def summary_row(ctx: Ctx, run_id: str, note: str = "", run_file: str = "") -> di
     jv_txt = "–"
     if jv.get("inter_judge"):
         jv_txt = f"{_fmt(_dig(jv, 'inter_judge', 'kappa_overall'))} ({_fmt(_dig(jv, 'known_answer_controls', 'accuracy'))})"
-    row = {"date": (M.get("created") or "")[:10], "run": run_id, "code": (M.get("code_version") or "")[:7],
+    row = {"date": (M.get("created") or "")[:10], "run": run_id, "code": M.get("git_commit") or (M.get("code_version") or "")[:7],
            "run file": run_file or ctx.run_dir.name,
            "models": "; ".join(models), "suites": ", ".join(sorted(X)),
            "e2e recall/precision": f"{_fmt(e2e.get('end_to_end_recall'))} / {_fmt(e2e.get('end_to_end_precision'))}" if e2e else "–",

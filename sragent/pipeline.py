@@ -97,6 +97,28 @@ def enabled(ctx: Ctx) -> list[str]:
     return [s["key"] for s in REGISTRY if s["key"] not in skip]
 
 
+def _waiting_for_pdfs(ctx: Ctx) -> bool:
+    """pipeline.wait_for_pdfs: the first synthesis is written only once every requested full text has arrived or
+    been declared not obtainable, so it is written once, on the settled set, instead of revised study by study.
+    A synthesis that already exists is never held back (later PDFs propagate through the update engine)."""
+    st = ctx.store
+    if not ctx.cfg["pipeline"].get("wait_for_pdfs") or st.by_type("synthesis", active_only=True):
+        st.meta.pop("waiting_for_pdfs", None)
+        return False
+    from .stages import fulltext
+    pending = [x for x in fulltext.needed_pdfs(ctx) if not x["present"] and not x["declared_not_obtainable"]]
+    if not pending:
+        st.meta.pop("waiting_for_pdfs", None)
+        return False
+    fulltext.write_needed_pdfs(ctx)
+    st.meta["waiting_for_pdfs"] = len(pending)
+    ctx.save()
+    ctx.log(f"[pipeline] the synthesis waits for {len(pending)} full text(s) (pipeline.wait_for_pdfs): add them to "
+            f"{fulltext.fulltext_dir(ctx)} as <PMID>.pdf or mark them not obtainable, then run again (the list is "
+            f"{fulltext.fulltext_dir(ctx) / 'needed_pdfs.csv'}).")
+    return True
+
+
 def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
     order = STAGES[: STAGES.index(until) + 1]
     skip = set(ctx.cfg["pipeline"].get("skip_stages") or [])
@@ -108,6 +130,8 @@ def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
         if key in skip:
             ctx.log(f"[pipeline] stage {key} skipped (pipeline.skip_stages)")
             continue
+        if key == "synthesize" and _waiting_for_pdfs(ctx):
+            return
         stage["run"](ctx, state)
         if key == "plan" and (stop_after_plan or until == "plan"):
             ctx.log(f"[pipeline] protocol written to {ctx.run_dir / 'protocol.yaml'} — review/edit it, then run again.")

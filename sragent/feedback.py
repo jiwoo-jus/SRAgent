@@ -156,6 +156,7 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
             a.pop("quote", None)
             if cites:
                 attach(a, cites, text, "", "")
+        crits = screening.settle(p, crits, n["data"].get("stage"))   # the full-text rule applies to revised assessments too
         decision, because, stage, by_rule = screening.rederive(p, {**n["data"], "criteria": crits},
                                                                ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
         if decision == "include" and st.text_of(sid)[1] != "fulltext":

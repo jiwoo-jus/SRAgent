@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 import re
 
 from .. import prompts
@@ -79,6 +80,27 @@ def write_statements(ctx: Ctx, statements: list[dict], reason: str, actor: str =
     return keep
 
 
+def not_retrieved(st) -> int:
+    """Forwarded reports with no usable full text (not retrieved, or an unreadable file)."""
+    return sum(1 for n in st.by_type("screen") if n["data"]["decision"] in ("fulltext_unavailable", "parse_failed"))
+
+
+def coverage_note(st) -> str:
+    """One sentence for the report: what the synthesis rests on and what was missing."""
+    w = st.meta.get("synthesis_written_with") or {}
+    now = not_retrieved(st)
+    inc = len(st.included_ids())
+    parts = []
+    if w:
+        parts.append(f"The synthesis was first written on {w.get('included')} included studies while {w.get('not_retrieved')} "
+                     f"forwarded reports had no full text ({w.get('when')})")
+        if inc != w.get("included") or now != w.get("not_retrieved"):
+            parts.append(f"it now rests on {inc} included studies with {now} reports still not retrieved")
+    elif now:
+        parts.append(f"{now} forwarded reports had no full text when this report was made")
+    return ("; ".join(parts) + ".") if parts else ""
+
+
 def synthesize(ctx: Ctx) -> int:
     out = ctx.agent.chat(ctx.msgs(prompts.SYNTH.format(question=ctx.topic["question"], table=table_text(ctx),
                                                        rob=rob_text(ctx))), tag="synthesis")
@@ -88,6 +110,8 @@ def synthesize(ctx: Ctx) -> int:
         if n["id"] not in keep:
             ctx.store.set_status(n["id"], "superseded", reason="synthesis re-written")
     ctx.store.meta["synthesis_considered"] = sorted(ctx.store.included_ids())
+    ctx.store.meta["synthesis_written_with"] = {"included": len(ctx.store.included_ids()), "not_retrieved": not_retrieved(ctx.store),
+                                               "when": time.strftime("%Y-%m-%d %H:%M")}
     ctx.log(f"[synthesis] {len(statements)} statements")
     if ctx.cfg["pipeline"].get("verify_synthesis", True):
         verify_all(ctx)

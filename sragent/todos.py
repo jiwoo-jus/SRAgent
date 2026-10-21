@@ -576,6 +576,9 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
     if provenance.mode(ctx) == "agent_only" and st.get("protocol"):
         if new_files:
             return {"text": f"Process {new_files} added full-text file{'s' if new_files > 1 else ''}.", "go": "pdfs"}
+        if st.meta.get("waiting_for_pdfs"):
+            return {"text": f"The synthesis waits for {st.meta['waiting_for_pdfs']} requested full text(s) (pipeline.wait_for_pdfs): "
+                            "add them or mark them not obtainable, then run again.", "go": "pdfs"}
         if "fulltexts" in by:
             return {"text": "Agent-only mode: the agent decides everything. You can only supply the full texts it requested.",
                     "go": "pdfs"}
@@ -599,6 +602,9 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
         return {"text": f"Process {new_files} added full-text file{'s' if new_files > 1 else ''}.", "go": "pdfs"}
     if "sync" in by:
         return {"text": "Update the outputs affected by your decisions.", "go": "todo", "group": "sync"}
+    if st.meta.get("waiting_for_pdfs") and not st.by_type("synthesis"):
+        return {"text": f"The synthesis waits for {st.meta['waiting_for_pdfs']} requested full text(s) (pipeline.wait_for_pdfs): "
+                        "add them or mark them not obtainable, then continue the review.", "go": "pdfs"}
     if not st.by_type("synthesis"):
         return {"text": "Continue the review: extraction, risk of bias and synthesis.", "go": "run", "until": "report"}
     if "manual_edit" in by:

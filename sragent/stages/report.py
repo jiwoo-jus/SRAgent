@@ -109,6 +109,9 @@ def report_markdown(ctx: Ctx) -> str:
         jd = {d.get("domain"): d.get("judgment") for d in n["data"]["domains"]}
         L.append(f"| {rid} | " + " | ".join(str(jd.get(d, "?")) for d in doms) + f" | {n['data']['overall']} |")
     L += ["", "## Synthesis", ""]
+    from .synthesis import coverage_note
+    if coverage_note(st):
+        L += [coverage_note(st), ""]
     for n in st.by_type("synthesis", active_only=True):
         d = n["data"]
         L.append(f"- **[{d['id']}]** {d['text']} [{', '.join(d['cites'])}]")
@@ -793,6 +796,9 @@ def report_html(ctx: Ctx) -> str:
 
     # synthesis
     H.append("<h3 id='res-syn'>2.5 Synthesis</h3>")
+    from .synthesis import coverage_note
+    if coverage_note(st):
+        H.append(f"<p class='note'>{_e(coverage_note(st))}</p>")
     if not syn:
         H.append("<p class='note'>No synthesis statements yet.</p>")
     for n in syn:

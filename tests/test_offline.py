@@ -1280,3 +1280,59 @@ def test_planted_eligibility_error_really_excludes_under_any_of(tmp_path):
     e2 = inject_eligibility(ctx, "2", structural=False)
     assert e2["field"] == "I3, I4" and st.get("screen:2")["data"]["decision"] == "exclude"  # the whole group
     assert e2["corrupted"]["decision"] == "exclude" and e2["gold"]["I4"] == "met"
+
+
+def test_wait_for_pdfs_holds_the_first_synthesis_until_the_list_is_settled(tmp_path):
+    """pipeline.wait_for_pdfs: with a requested full text still missing the run stops before the synthesis (and says so);
+    once the file arrives or the record is declared not obtainable, the next run writes the synthesis once, and the
+    report says what it rested on."""
+    from sragent import pipeline
+    from sragent.stages import report
+    ctx = make_ctx(tmp_path, fulltexts=("1001", "1002"),
+                   extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False, "wait_for_pdfs": True}})
+    pipeline.run(ctx)
+    st = ctx.store
+    assert st.get("screen:1003")["data"]["decision"] == "fulltext_unavailable"
+    assert not st.by_type("synthesis") and st.meta.get("waiting_for_pdfs") == 1
+    from sragent.stages.fulltext import fulltext_dir
+    assert (fulltext_dir(ctx) / "needed_pdfs.csv").exists()
+    from sragent import todos
+    todos.apply(ctx, {"todo_id": "protocol", "option": "approve"})     # the protocol check comes first in human mode
+    assert "waits for 1 requested full text" in todos.next_action(ctx, todos.build(ctx), False, 0)["text"]
+    st.meta.setdefault("pdf_unavailable", []).append("1003")       # the person says it cannot be obtained
+    pipeline.run(ctx)
+    assert st.by_type("synthesis", active_only=True) and "waiting_for_pdfs" not in st.meta
+    assert st.meta["synthesis_written_with"]["not_retrieved"] == 1
+    md = report.report_markdown(ctx)
+    assert "forwarded reports had no full text" in md
+    # the option never holds back an existing synthesis
+    st.meta["pdf_unavailable"] = []
+    pipeline.run(ctx)
+    assert "waiting_for_pdfs" not in st.meta
+
+
+def test_feedback_revised_screening_follows_the_full_text_rule(tmp_path):
+    """A screening assessment revised through feedback goes through the same full-text rule as the pipeline's:
+    'unclear' on an inclusion criterion the paper reports is settled as not met, so the decision is exclude."""
+    from sragent import pipeline
+    from sragent.feedback import apply_revised
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    n = ctx.store.get("screen:1001")
+    assert n["data"]["stage"] == "full_text" and n["data"]["decision"] == "include"
+    crits = [dict(a) for a in n["data"]["criteria"]]
+    for a in crits:
+        if a["id"] == "I2":
+            a.update({"assessment": "unclear", "reported": True, "reason": "data in monkeys only"})
+    before, after = apply_revised(ctx, "screen:1001", {"criteria": crits}, reason="test")
+    d = ctx.store.get("screen:1001")["data"]
+    assert d["decision"] == "exclude" and d["because"] == ["I2"]
+    i2 = next(a for a in d["criteria"] if a["id"] == "I2")
+    assert i2["assessment"] == "not_met" and i2["model_assessment"] == "unclear"
+
+
+def test_manifest_records_the_git_commit():
+    from sragent.eval.run_all import git_commit
+    import re
+    c = git_commit()
+    assert c is None or re.fullmatch(r"[0-9a-f]{7}(-dirty)?", c)
