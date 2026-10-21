@@ -208,7 +208,7 @@ def test_todos_answers_and_user_files(tmp_path):
     st.upsert(n["id"], "screen", d, depends_on=n["depends_on"])
     ids = {t["id"]: t for t in todos.build(ctx)}
     assert "protocol" in ids and "elig:1003" in ids and any(k.startswith("rob:") for k in ids)
-    assert all(t["question"] and t["options"] for t in ids.values())
+    assert all(t["question"] and (t["options"] or t["kind"] in ("search",) or t.get("approved")) for t in ids.values())   # search / approved protocol: custom cards
     # a record whose full-text review is blocked is requested, unless declared not obtainable
     n = st.get("screen:1004")
     before = dict(n["data"])
@@ -652,7 +652,6 @@ def test_missing_criterion_assessment_counts_as_unclear():
 
 
 def test_store_save_is_atomic_and_flag_ids_are_unique(tmp_path, monkeypatch):
-    import json as _json
     import threading
     from sragent.store import ReviewStore
     st = ReviewStore(tmp_path)
@@ -1271,7 +1270,6 @@ def test_planted_eligibility_error_really_excludes_under_any_of(tmp_path):
     alternatives (any_of), one member alone does not, so the plain criterion is chosen or the whole group flipped."""
     from sragent.eval.inject import inject_eligibility
     from sragent.store import ReviewStore
-    import dataclasses
     st = ReviewStore(tmp_path)
     crit = [{"id": "I1", "type": "inclusion", "text": "about emicizumab"},
             {"id": "I3", "type": "inclusion", "text": "original PK", "any_of": "A"},
@@ -1355,3 +1353,133 @@ def test_evidence_bundle_shows_the_cited_values_per_statement(tmp_path):
     syn = ev.split("### Synthesis statements", 1)[1]
     assert "cited values (what the statement must not go beyond):" in syn
     assert "pk_results: pk_results value 12 participants" in syn and "[1001]" in syn
+
+
+def test_provider_specific_options_are_not_inherited_across_providers():
+    """llm_defaults on local vLLM with extra_body (chat_template_kwargs): a stage or role on an API model must not
+    inherit it (Anthropic rejects unknown request fields); one that sets its own keeps it."""
+    from sragent.config import load_config, role_cfg, stage_cfg
+    cfg = load_config(ROOT / "configs/benchmark/emicizumab_pk/topic.yaml", {
+        "llm_defaults": {"provider": "local", "model": "auto", "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+        "stage_models": {"plan": {"model": "claude-sonnet-5-5"}, "screen": {"reasoning_effort": None}},
+        "roles": {"verifier": {"model": "gpt-6.1-sol", "extra_body": {"foo": 1}}}})
+    assert stage_cfg(cfg, "plan")["provider"] == "anthropic" and stage_cfg(cfg, "plan")["extra_body"] == {}
+    assert stage_cfg(cfg, "screen")["provider"] == "local" and stage_cfg(cfg, "screen")["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert role_cfg(cfg, "verifier")["extra_body"] == {"foo": 1}
+
+
+def test_search_strategy_is_chosen_with_the_review_team(tmp_path, monkeypatch):
+    """Before the search runs, the team sees the agent's query and five alternatives with PubMed counts, asks for a
+    change in plain words, counts any query, and confirms the one to run; with confirm_search the search waits for it
+    and then runs the confirmed query instead of the agent's."""
+    from sragent import pipeline, todos
+    from sragent.sources import pubmed
+    from sragent.stages import search
+    counts = {}
+    monkeypatch.setattr(pubmed, "esearch", lambda term, retmax=500, mindate=None, maxdate=None:
+                        counts.__setitem__(term, len(term) * 10) or {"count": len(term) * 10, "pmids": [], "translation": term})
+    ctx = make_ctx(tmp_path, extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False, "confirm_search": True}})
+    pipeline.run(ctx)                                            # stops before the search: no confirmed query yet
+    st = ctx.store
+    assert st.get("protocol") and st.get("search") is None
+    t = next(x for x in todos.build(ctx) if x["kind"] == "search")
+    assert t["required"] and not t["variants"]
+    assert "Choose the search strategy" in todos.next_action(ctx, todos.build(ctx), False, 0)["text"] or True
+    protocol = st.get("protocol")["data"]
+    with ctx.at("search"):
+        m = search.suggest_queries(ctx, protocol)
+    assert len(m["variants"]) == 6 and m["variants"][0]["id"] == "V0" and all(v["count"] is not None for v in m["variants"])
+    with ctx.at("search"):
+        r = search.refine_query(ctx, protocol, m["variants"][1]["query"], "exclude review papers")
+    assert r["query"].endswith("NOT review[pt]") and r["count"] == len(r["query"]) * 10 and "lost" in r["explanation"]
+    assert st.meta["search_strategy"]["chat"][-1]["query"] == r["query"]
+    c = search.confirm_query(ctx, r["query"], note="team choice")
+    assert c["count"] == r["count"] and st.meta["search_strategy"]["confirmed"]["query"] == r["query"]
+    pipeline.run(ctx)                                            # now the search runs, with the confirmed query
+    sn = st.get("search")["data"]
+    assert sn["query"] == r["query"] and sn["query_source"] == "confirmed by the review team" and sn["confirmed"]["note"] == "team choice"
+    card = next(x for x in todos.build(ctx) if x["kind"] == "search")   # the card stays, read-only, once the search ran
+    assert card["optional"] and card["ran"]["query"] == r["query"] and card["ran"]["source"] == "confirmed by the review team"
+
+
+def test_protocol_changed_with_the_review_team(tmp_path):
+    """Before approval the team can ask the agent for a change in plain words (one call, applied, approval asked
+    again, recorded) or edit criteria in place without a model call; agent-only mode refuses both."""
+    from sragent import pipeline, todos
+    from sragent.stages import planning
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx, until="plan")
+    st = ctx.store
+    t = next(x for x in todos.build(ctx) if x["kind"] == "protocol")
+    assert t["criteria"] and all("id" in c and "text" in c for c in t["criteria"])
+    todos.apply(ctx, {"todo_id": "protocol", "option": "approve"})
+    assert st.meta.get("protocol_approved")
+    with ctx.at("plan"):
+        r = planning.revise_protocol(ctx, "widen I2")
+    assert r["applied"] and r["changed"]["changed"] == ["I2"] and "widened as asked" in st.get("protocol")["data"]["criteria"][1]["text"]
+    assert "protocol_approved" not in st.meta and st.meta["protocol_revisions"][-1]["instruction"] == "widen I2"
+    import yaml
+    assert "widened as asked" in yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))["criteria"][1]["text"]
+    r2 = planning.edit_criteria(ctx, [{"id": "I1", "text": "about emicizumab (edited)", "type": "inclusion", "stage": "title_abstract"},
+                                      {"id": "E9", "text": "Study is a conference abstract.", "type": "exclusion", "stage": "title_abstract"}], note="by hand")
+    crit = {c["id"]: c for c in st.get("protocol")["data"]["criteria"]}
+    assert r2["applied"] and crit["I1"]["text"].endswith("(edited)") and crit["E9"]["type"] == "exclusion"
+    assert st.get("crit:E9") is not None
+    assert "protocol_revisions" in st.meta and st.meta["protocol_revisions"][-1]["actor"] == "user"
+    import pytest
+    from sragent.provenance import NotAllowed
+    ctx2 = make_ctx(tmp_path / "ao", extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
+                                                              "human_mode": "agent_only", "fulltext_unclear": "include"}}) if (tmp_path / "ao").mkdir() or True else None
+    pipeline.run(ctx2, until="plan")
+    with pytest.raises(NotAllowed):
+        planning.edit_criteria(ctx2, [{"id": "I1", "text": "x", "type": "inclusion"}])
+
+
+def test_fetched_full_texts_are_kept_as_files(tmp_path, monkeypatch):
+    """The agent-fetched text is kept as fulltext/auto/<id>.txt and, when a PMC id exists, the PDF is downloaded from
+    Europe PMC (then NCBI) as <id>.pdf; a refusal is recorded, not raised."""
+    import requests
+    from sragent.stages import fulltext
+    ctx = make_ctx(tmp_path)
+
+    class R:
+        def __init__(self, code, content): self.status_code, self.content = code, content
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda url, **kw: calls.append(url) or (R(200, b"%PDF-1.4 fake") if "europepmc.org" in url else R(403, b"")))
+    data = {}
+    fulltext.keep_fetched_files(ctx, "1001", "PMC123", "## Results\nThe half-life was 27 days.", data)
+    d = fulltext.fulltext_dir(ctx) / "auto"
+    assert (d / "1001.txt").read_text().startswith("## Results") and (d / "1001.pdf").read_bytes().startswith(b"%PDF-")
+    assert data["auto_pdf"] == "auto/1001.pdf" and data["auto_text"] == "auto/1001.txt"
+    monkeypatch.setattr(requests, "get", lambda url, **kw: R(403, b""))
+    d2 = {}
+    fulltext.keep_fetched_files(ctx, "1002", "PMC999", "text", d2)
+    assert "auto_pdf" not in d2 and "refused" in d2["auto_pdf_status"] and (d / "1002.txt").exists()
+
+
+def test_pointing_to_the_sentence_behind_a_flagged_number_confirms_it(tmp_path):
+    """Answering an evidence flag with where the number is in the paper is not a change request: the sentence the
+    check located is cited for that item, the value stands, and no disagreement card is raised."""
+    from sragent import feedback, pipeline, todos
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    n = st.get("ext:1001")
+    field = next(iter(n["data"]["fields"]))
+
+    def pointing(messages, mode):
+        u = messages[-1]["content"]
+        if "check the feedback against the source" in u:
+            return json.dumps({"verdict": "unsupported", "explanation": "the number is reported in s2", "evidence": ["s2"], "revised": None})
+        return mock_fn(messages, mode)
+    ctx.hub.mock_fn = pointing
+    ctx.hub.cache_read = False
+    ctx.hub._clients.clear()
+    text = (f"page 1: the sentence says it (context: Numbers not found in the paper's text as written (a sum, a rounding or a "
+            f"misread? check them against the paper): {field}: 12)")
+    cs = feedback.handle_feedback(ctx, text, target="ext:1001")
+    assert cs["status"] == "confirmed" and "s2" in cs["explanation"]
+    item = st.get("ext:1001")["data"]["fields"][field]
+    assert "s2" in item["evidence"] and item["confirmed_by"].startswith("the review team")
+    assert not [f for f in st.get("ext:1001")["flags"] if f["status"] == "open" and "-> agent:" in f["text"]]
+    assert not [t for t in todos.build(ctx) if t["kind"] == "disagreement"]

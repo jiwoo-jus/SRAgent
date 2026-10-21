@@ -434,6 +434,9 @@ class Library:
                  "pipeline:", f"  human_mode: {mode}"]
         if unclear != "await":
             lines.append(f"  fulltext_unclear: {unclear}")
+        if mode != "agent_only":
+            lines.append("  confirm_search: true     # the search runs with the query you confirm in the To-do list")
+            lines.append("  wait_for_pdfs: true      # the synthesis waits until the requested PDFs are supplied or declared not obtainable")
         if mr:
             lines.append(f"  max_records: {mr}")
         if kind == "benchmark":

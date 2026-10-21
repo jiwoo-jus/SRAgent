@@ -45,23 +45,51 @@ def _short(text: str, n: int = 6) -> str:
 
 
 def build(ctx: Ctx) -> list[dict]:
+    from . import provenance
     st = ctx.store
     todos: list[dict] = []
     if not st.get("protocol"):
         return todos
     crit = criteria_by_id(st)
 
-    # -- protocol approval
-    if not st.meta.get("protocol_approved"):
+    # -- protocol approval (after approval the card stays, collapsed, so the criteria can still be changed with
+    #    the agent or by hand; a change makes the dependent decisions stale and asks for approval again)
+    approved = bool(st.meta.get("protocol_approved")) or provenance.mode(ctx) == "agent_only"
+    if st.get("protocol"):
         todos.append({
             "id": "protocol", "step": "plan", "kind": "protocol", "priority": 0,
-            "title": "Approve the review protocol",
-            "question": "Do these eligibility criteria match what you want to review?",
-            "context": [f"{c['id']} ({c['type']}, {c.get('stage', '')}): {c['text']}" for c in crit.values()],
-            "options": [{"value": "approve", "label": "Yes, approve"},
+            "approved": approved, "optional": approved,
+            "title": "Approve the review protocol" if not approved else "Protocol (approved)",
+            "question": "Do these eligibility criteria match what you want to review?" if not approved else
+                        "The criteria the review follows. Change them here if needed: dependent decisions are then updated.",
+            "context": [f"{c['id']} ({c['type']}, {c.get('stage', '')}): {c['text']}"
+                        + (f" [any one of group {c['any_of']} suffices]" if c.get("any_of") else "") for c in crit.values()],
+            "criteria": [{k: c.get(k) for k in ("id", "type", "text", "stage", "any_of") if c.get(k) is not None} for c in crit.values()],
+            "revisions": (st.meta.get("protocol_revisions") or [])[-5:],
+            "options": [] if approved else [
+                        {"value": "approve", "label": "Yes, approve"},
                         {"value": "edited", "label": "I edited protocol.yaml, re-apply it",
                          "hint": f"File: {ctx.run_dir / 'protocol.yaml'}. Decisions are re-derived without LLM calls."}],
             "free_text": "Anything to note about the protocol? (optional)"})
+
+    # -- search strategy: before the search exists, the team can see alternatives, ask for changes and confirm the query
+    from . import provenance as _prov
+    if _prov.mode(ctx) != "agent_only":
+        m = st.meta.get("search_strategy") or {}
+        sn = (st.get("search") or {}).get("data") or {}
+        todos.append({
+            "id": "search", "step": "search", "kind": "search", "priority": 0,
+            "title": "Search strategy" if not sn else "Search strategy (ran)",
+            "question": "Which PubMed query should the search run?",
+            "variants": m.get("variants") or [], "chat": m.get("chat") or [], "confirmed": m.get("confirmed"),
+            "draft": m.get("draft"), "required": bool(ctx.cfg["pipeline"].get("confirm_search")),
+            "optional": bool(sn) or bool((m.get("confirmed") or {}).get("query")),   # shown, not waiting for anyone
+            "ran": {"query": sn.get("query"), "hits": sn.get("hits"), "retrieved": len(sn.get("retrieved_pmids") or []),
+                    "records": sn.get("n_identified"), "duplicates": sn.get("n_duplicates"), "source": sn.get("query_source"),
+                    "database": sn.get("database")} if sn else None,
+            "maxdate": (ctx.topic.get("records") or {}).get("maxdate"),
+            "retmax": (ctx.topic.get("records") or {}).get("pubmed_retmax"),
+            "options": [], "context": []})
 
     # -- eligibility: awaiting classification (shown as one table in the UI)
     wanted_pdf = st.meta.get("pdf_wanted", {})
@@ -566,7 +594,7 @@ def rule_exclusions(ctx: Ctx) -> list[dict]:
 def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) -> dict:
     """The single most useful thing to do now, in plain words."""
     st = ctx.store
-    open_t = [t for t in todos if not t.get("snoozed")]
+    open_t = [t for t in todos if not t.get("snoozed") and not t.get("optional")]   # optional: shown, not waiting
     by = {}
     for t in open_t:
         by.setdefault(t["kind"], []).append(t)
@@ -589,6 +617,14 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
         return {"text": "Start the review: draft the protocol (one cheap LLM call).", "go": "run", "until": "plan"}
     if "protocol" in by:
         return {"text": "Check and approve the eligibility criteria.", "go": "todo", "group": "protocol"}
+    if not st.get("search") and ctx.cfg["pipeline"].get("confirm_search") and \
+            not ((st.meta.get("search_strategy") or {}).get("confirmed") or {}).get("query"):
+        return {"text": "Choose the search strategy: the agent's query, an alternative, or one you ask for; the search runs "
+                        "with the query you confirm.", "go": "todo", "group": "search"}
+    if not st.get("search") and ((st.meta.get("search_strategy") or {}).get("confirmed") or {}).get("query"):
+        c = st.meta["search_strategy"]["confirmed"]
+        return {"text": f"Run the search with your confirmed query ({c.get('count')} PubMed hits), then screening.",
+                "go": "run", "until": "fulltext"}
     if not st.get("search") or not st.by_type("screen"):
         return {"text": "Run search and screening.", "go": "run", "until": "fulltext"}
     if "changeset" in by or "disagreement" in by or "clarify" in by:

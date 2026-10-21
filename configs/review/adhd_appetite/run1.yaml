@@ -1,0 +1,23 @@
+# Review run: adhd_appetite · claude-haiku-5-5 · all records · human in the loop.
+include:
+  - topic.yaml
+llm_defaults:                # models by name; provider and price come from configs/models.yaml
+  model: claude-haiku-5-5      # the agent, and every role and stage that does not say otherwise
+  api_env: ../../../api_env.yaml
+  reasoning_effort: medium
+  max_tokens: 16000
+  concurrency: 6
+cache_dir: .cache
+budget_usd: 15           # hard cost cap for this run folder
+contact_email: parkjiwoo9980@gmail.com          # Unpaywall open-access full texts need it
+pipeline:
+  human_mode: human_in_the_loop
+  confirm_search: true     # the search runs with the query you confirm in the To-do list
+  wait_for_pdfs: true      # the synthesis waits until the requested PDFs are supplied or declared not obtainable
+stage_models:                 # agent model and effort per stage; a stage's model is fixed once it has started
+  plan: {model: claude-sonnet-5-5}
+  search: {model: claude-sonnet-5-5}
+  synthesize: {model: claude-sonnet-5-5}
+  feedback: {model: claude-sonnet-5-5}
+roles:                 # verifier checks statements and feedback (default: the agent); judge, judge2, reviewer: sragent eval only
+  verifier: {model: gpt-6.1-sol, provider: openai}

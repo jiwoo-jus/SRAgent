@@ -19,7 +19,7 @@ import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import unquote, parse_qs, urlparse
 
 import yaml
 
@@ -136,7 +136,7 @@ class App:
         for j in out:   # a UI restart while a job ran: the subprocess is gone
             if j.get("status") in ("running", "queued"):
                 j["status"] = "interrupted"
-        return sorted(out, key=lambda j: j.get("created", 0))
+        return sorted(out, key=lambda j: j.get("created") or 0)   # a job record without a timestamp sorts first
 
     def _record(self, spec: dict):
         self.jobs_file.parent.mkdir(exist_ok=True)
@@ -275,7 +275,7 @@ class App:
             cfg = self.cfg
             if opts.get("stage_models") is not None:      # the Run page's table before it is saved
                 from ..config import _resolve_stage_models
-                cfg = {**self.cfg, "stage_models": {k: dict(v) for k, v in opts["stage_models"].items() if v}}
+                cfg = {**self.cfg, "stage_models": {k: dict(v) for k, v in opts["stage_models"].items() if v and k in LLM_STAGES}}
                 try:
                     _resolve_stage_models(cfg)
                 except ValueError as e:
@@ -536,6 +536,86 @@ class App:
             self.saved()
             return r
 
+    def protocol_change(self, b: dict) -> dict:
+        """The protocol changed with the review team: revise (the agent applies a change asked in plain words, one call
+        to the plan stage's model) or edit (a person's edits to the criteria, no model call). Approval is asked again."""
+        from ..stages import planning
+        op = b.get("op")
+        with self.lock:
+            if self.job is not None:
+                return {"ok": False, "message": "A job is running; change the protocol when it has finished."}
+            ctx = self.ctx()
+            if not ctx.store.get("protocol"):
+                return {"ok": False, "message": "Draft the protocol first (Run: up to stage 1)."}
+            try:
+                if op == "revise":
+                    ins = (b.get("instruction") or "").strip()
+                    if not ins:
+                        return {"ok": False, "message": "say what to change"}
+                    with ctx.at("plan"):
+                        r = planning.revise_protocol(ctx, ins)
+                    r = {"ok": True, **r, "message": ("protocol revised; approve it again" if r.get("applied")
+                                                       else "nothing changed: " + (r.get("explanation") or ""))}
+                elif op == "edit":
+                    r = planning.edit_criteria(ctx, b.get("criteria") or [], note=b.get("note") or "")
+                    r = {"ok": True, **r, "message": "criteria saved; approve the protocol" if r.get("applied") else "nothing changed"}
+                else:
+                    return {"ok": False, "message": f"unknown op {op}"}
+            except Exception as e:
+                return {"ok": False, "message": str(e)[:300]}
+            ctx.save()
+            self.saved()
+            return r
+
+    def search_strategy(self, b: dict) -> dict:
+        """The search strategy chosen with the review team: suggest (the agent's query + alternatives with PubMed counts),
+        refine (a change asked in plain words), count (any query), confirm (the query the search will run), clear."""
+        from ..stages import search
+        op = b.get("op")
+        with self.lock:
+            if self.job is not None:
+                return {"ok": False, "message": "A job is running; choose the search strategy when it has finished."}
+            ctx = self.ctx()
+            st = ctx.store
+            if st.get("search") is not None:
+                return {"ok": False, "message": "The search has already run; a new query needs a fresh run folder."}
+            protocol = (st.get("protocol") or {}).get("data")
+            if not protocol:
+                return {"ok": False, "message": "Draft the protocol first (Run: up to stage 1)."}
+            try:
+                if op == "suggest":
+                    with ctx.at("search"):
+                        m = search.suggest_queries(ctx, protocol)
+                    r = {"ok": True, "variants": m["variants"], "message": f"{len(m['variants']) - 1} alternatives proposed"}
+                elif op == "refine":
+                    q, ins = (b.get("query") or "").strip(), (b.get("instruction") or "").strip()
+                    if not q or not ins:
+                        return {"ok": False, "message": "a query and a request are needed"}
+                    with ctx.at("search"):
+                        r = {"ok": True, **search.refine_query(ctx, protocol, q, ins)}
+                elif op == "count":
+                    q = (b.get("query") or "").strip()
+                    if not q:
+                        return {"ok": False, "message": "write a query first"}
+                    r = {"ok": True, "query": q, **search.count(ctx, q)}
+                    search.strategy_meta(st)["draft"] = {"query": q, "count": r.get("count")}
+                elif op == "confirm":
+                    q = (b.get("query") or "").strip()
+                    if not q:
+                        return {"ok": False, "message": "choose or write a query first"}
+                    c = search.confirm_query(ctx, q, note=b.get("note") or "")
+                    r = {"ok": True, "confirmed": c, "message": f"query confirmed ({c.get('count')} hits); run the search when ready"}
+                elif op == "clear":
+                    search.strategy_meta(st)["confirmed"] = None
+                    r = {"ok": True, "message": "confirmation removed"}
+                else:
+                    return {"ok": False, "message": f"unknown op {op}"}
+            except Exception as e:
+                return {"ok": False, "message": str(e)[:300]}
+            ctx.save()
+            self.saved()
+            return r
+
     def comment(self, b: dict) -> dict:
         """Save a comment; with send=True also ask the agent (a feedback job, model from b['agent'])."""
         from .. import actions
@@ -573,9 +653,22 @@ class App:
         for st in LLM_STAGES:
             c = stage_cfg(self.cfg, st)
             ov = raw.get(st) or {}
-            rows.append({"stage": st, "label": STAGE_LABELS[st], "set": {k: ov.get(k) for k in ("provider", "model", "reasoning_effort") if k in ov},
+            setv = {k: ov.get(k) for k in ("provider", "model", "reasoning_effort") if k in ov}
+            if setv.get("model") and not setv.get("provider"):
+                setv["provider"] = c.get("provider")   # resolved from the catalog: the table matches options by model and provider
+            rows.append({"stage": st, "label": STAGE_LABELS[st], "set": setv,
                          "effective": {"provider": c.get("provider"), "model": c.get("model"), "reasoning_effort": c.get("reasoning_effort")},
                          "pricing": c.get("pricing") or {}, "started": st in started})
+        # the verifier is a role, not a stage, but it makes model calls during the review (statement checks, feedback
+        # checks, post-checks); it is set and saved here like a stage, into roles.verifier (never locked)
+        rv = (self.cfg.get("roles") or {}).get("verifier") or {}
+        c = role_cfg(self.cfg, "verifier") if rv.get("model") else role_cfg(self.cfg, "agent")
+        rows.append({"stage": "verifier", "label": "Checks (verifier)", "role": True,
+                     "set": ({k: rv.get(k) for k in ("model", "reasoning_effort") if rv.get(k) is not None}
+                             | ({"provider": rv.get("provider") or c.get("provider")} if rv.get("model") else {})),
+                     "effective": {"provider": c.get("provider"), "model": c.get("model"), "reasoning_effort": c.get("reasoning_effort")},
+                     "pricing": c.get("pricing") or {}, "started": False,
+                     "note": "checks synthesis statements, your feedback and every revision; best from another family than the writer"})
         return rows
 
     def stage_summary(self) -> str:
@@ -588,7 +681,6 @@ class App:
 
     def set_stage_models(self, stages: dict, lib: Library) -> dict:
         """Write the per-stage models into the run file (stage_models). Stages that have started keep theirs."""
-        from .. import config_lock
         with self.lock:
             if not self.idle():
                 return {"ok": False, "message": "A job is running or queued; change the models when it has finished."}
@@ -596,8 +688,10 @@ class App:
             p = lib.resolve(self.config_path)
         except ValueError:
             return {"ok": False, "message": "This run file is outside configs/; edit its stage_models in the file."}
+        stages = dict(stages or {})
+        ver = stages.pop("verifier", "__absent__")
         new = {}
-        for st, sel in (stages or {}).items():
+        for st, sel in stages.items():
             if st not in LLM_STAGES:
                 return {"ok": False, "message": f"unknown stage {st}"}
             if not sel:
@@ -614,6 +708,21 @@ class App:
         text = p.read_text()
         out = lib.set_block(text, "stage_models", new,
                             "agent model and effort per stage; a stage's model is fixed once it has started")
+        if ver != "__absent__":   # roles.verifier: the other roles in the file are kept as written
+            import yaml
+            raw = (yaml.safe_load(text) or {}).get("roles") or {}
+            roles = {k: v for k, v in raw.items() if isinstance(v, dict) and v}
+            if ver and ver.get("model"):
+                e = {"model": ver["model"]}
+                if ver.get("provider") and ver["provider"] != role_cfg(self.cfg, "agent").get("provider"):
+                    e["provider"] = ver["provider"]
+                if ver.get("reasoning_effort"):
+                    e["reasoning_effort"] = ver["reasoning_effort"]
+                roles["verifier"] = e
+            else:
+                roles.pop("verifier", None)   # back to the default: the agent checks its own work
+            out = lib.set_block(out, "roles", roles,
+                                "verifier checks statements and feedback (default: the agent); judge, judge2, reviewer: sragent eval only")
         chk = lib.check(self.config_path, out)
         if chk["errors"]:
             return {"ok": False, "message": "; ".join(chk["errors"])}
@@ -842,6 +951,8 @@ def make_handler(ws: Workspace):
 
         def _app(self, q: dict) -> App:
             app = ws.get(q.get("config", [None])[0])
+            if app is None and len(ws.apps) == 1:       # a link without ?config= while one run is open: that run
+                app = next(iter(ws.apps.values()))
             if app is None:
                 raise LookupError("no run file is open: choose one on the Configs page")
             return app
@@ -856,6 +967,18 @@ def make_handler(ws: Workspace):
                     return self._send(200, ws.configs(q.get("config", [None])[0]))
                 if path == "/api/config_file":
                     return self._send(200, ws.lib.read(q.get("path", [""])[0]))
+                if path.startswith("/files/fulltext/"):
+                    from ..stages.fulltext import fulltext_dir
+                    app = self._app(parse_qs(u.query))
+                    base = fulltext_dir(app.ctx()).resolve()
+                    target = (base / unquote(path[len("/files/fulltext/"):])).resolve()
+                    if base not in target.parents or not target.is_file():
+                        return self._send(404, {"error": "no such file"})
+                    ctype = "application/pdf" if target.suffix.lower() == ".pdf" else "text/plain; charset=utf-8"
+                    body = target.read_bytes()
+                    self.send_response(200); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Content-Disposition", f"inline; filename=\"{target.name}\""); self.end_headers()
+                    return self.wfile.write(body)
                 if path == "/api/state":
                     cfg_q = q.get("config", [None])[0]
                     try:
@@ -946,6 +1069,10 @@ def make_handler(ws: Workspace):
                     return self._send(200, {"ok": True})
                 if path == "/api/answer":
                     return self._send(200, app.answer(b))
+                if path == "/api/search_strategy":
+                    return self._send(200, app.search_strategy(b))
+                if path == "/api/protocol":
+                    return self._send(200, app.protocol_change(b))
                 if path == "/api/bulk":
                     return self._send(200, app.mutate({"_op": "bulk", **b}))
                 if path == "/api/edit":

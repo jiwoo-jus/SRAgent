@@ -30,6 +30,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+import re
 import time
 
 from . import prompts
@@ -254,6 +255,8 @@ def handle_feedback(ctx: Ctx, text: str, target: str | None = None, pmid: str | 
             ctx.store.flag(target, f"Feedback {cs['id']} pending review: {text[:200]}", actor="user")
     elif cs.get("clarification_question"):
         cs["status"] = "needs_clarification"
+    elif _confirm_evidence(ctx, cs, target, text):
+        pass   # a pointer to the sentences behind a flagged value: cited and closed, nothing to argue about
     else:
         cs["status"] = "rejected_by_agent" if cs["verdict"] in ("unsupported", "insufficient_evidence") else "no_change"
         if target and ctx.store.get(target):
@@ -263,6 +266,50 @@ def handle_feedback(ctx: Ctx, text: str, target: str | None = None, pmid: str | 
     _save_changeset(ctx, cs)
     ctx.save()
     return cs
+
+
+EVIDENCE_FLAG_MARKS = ("Numbers not found", "found nowhere", "Numbers that are not in the cited sentences", "No source location cited")
+
+
+def _confirm_evidence(ctx: Ctx, cs: dict, target: str | None, text: str) -> bool:
+    """A reply to an evidence flag ("numbers not found as written", "no source location") that points to where the
+    value is in the paper is not a change request: the sentences the check located are cited for the flagged items,
+    the value stands, and the flag counts as answered. Returns True when that applied."""
+    if not target or not target.startswith("ext:") or "(context:" not in text:
+        return False
+    ctxpart = text.split("(context:", 1)[1]
+    if not any(m in ctxpart for m in EVIDENCE_FLAG_MARKS):
+        return False
+    ids = [sp.get("sid") for sp in (cs.get("evidence") or []) if sp.get("sid")]
+    if not ids:
+        return False
+    st = ctx.store
+    n = st.get(target)
+    if not n:
+        return False
+    fields = n["data"].get("fields") or {}
+    names = [x for x in re.findall(r"([a-z_]+): \d", ctxpart) + re.findall(r"cited for '([a-z_]+)'", ctxpart) if x in fields]
+    names = list(dict.fromkeys(names))
+    if not names:
+        return False
+    from .evidence import MAX_IDS, attach
+    rid = study_of(target)
+    full_text = st.text_of(rid)[0]
+    src = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
+    data = copy.deepcopy(n["data"])
+    evidence = [e for e in (n.get("evidence") or []) if not any(str(e.get("claim", "")).startswith(nm + "=") for nm in names)]
+    for nm in names:
+        item = data["fields"][nm]
+        new_ids = list(dict.fromkeys(list(item.get("evidence") or []) + ids))[:MAX_IDS]
+        item.pop("uncovered", None)
+        item["confirmed_by"] = f"the review team (feedback {cs['id']})"
+        evidence.append(attach(item, new_ids, full_text, f"{nm}={str(item.get('value', ''))[:80]}", src))
+    st.upsert(target, "extraction", data, depends_on=n["depends_on"], evidence=evidence, actor="user",
+              reason=f"feedback {cs['id']}: the review team pointed to the sentences ({', '.join(ids)}); cited for {', '.join(names)}")
+    cs["status"] = "confirmed"
+    cs["explanation"] = (f"The value stands. Sentences {', '.join(ids)} are now cited for {', '.join(names)}, as you pointed out. "
+                         + (cs.get("explanation") or ""))
+    return True
 
 
 def _index(ctx: Ctx) -> str:

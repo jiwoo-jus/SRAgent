@@ -240,6 +240,11 @@ def cmd_eval_audit(args):
     print(json.dumps(run_all.import_audit(ctx, args.run, args.file), indent=1))
 
 
+def cmd_fetch_files(args):
+    from .stages.fulltext import backfill_fetched_files
+    print(json.dumps(backfill_fetched_files(_ctx(args)), indent=1))
+
+
 def cmd_eval_summary(args):
     from .eval import run_all
     ctx = _ctx(args)
@@ -340,6 +345,9 @@ def main(argv=None):
     p.add_argument("--run", required=True)
     p.add_argument("--file", required=True)
     p.set_defaults(fn=cmd_eval_audit)
+
+    p = sub.add_parser("fetch-files", help="keep the agent-fetched full texts of an existing review as files (fulltext/auto/: text, and the PMC PDF when available)"); common(p)
+    p.set_defaults(fn=cmd_fetch_files)
 
     p = sub.add_parser("eval-summary", help="one comparable Markdown row for an evaluation run (results.json + manifest)"); common(p)
     p.add_argument("--run", default=None, help="evaluation run id (default: the run's latest)")

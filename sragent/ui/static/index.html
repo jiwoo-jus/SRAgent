@@ -271,6 +271,7 @@ button.kpi{cursor:pointer}button.kpi:hover{border-color:var(--line-2);background
   background:var(--surface);color:var(--mut);border:1.5px solid var(--line-2)}
 .stp.done .si{background:var(--ok);border-color:var(--ok);color:var(--surface)}
 .stp.you .si{background:var(--surface);border-color:var(--warn);color:var(--warn);box-shadow:0 0 0 4px var(--warn-bg)}
+.stp.ready .si{background:var(--surface);border-color:var(--acc);color:var(--acc);box-shadow:0 0 0 4px var(--acc-bg)}
 .stp .sh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:30px}
 .stp .sh b{font-size:14px}
 .stp .ss{color:var(--mut);font-size:12.5px;margin-top:1px;line-height:1.6}
@@ -481,6 +482,7 @@ const ic = (n, cls) => `<svg class="i${cls ? " " + cls : ""}" viewBox="0 0 24 24
 /* the open run file: ?config=<path> in the page URL (none = the one `sragent ui --config` was started with) */
 const CFG = new URLSearchParams(location.search).get("config") || "";
 const U = path => CFG ? path + (path.includes("?") ? "&" : "?") + "config=" + encodeURIComponent(CFG) : path;
+document.addEventListener("DOMContentLoaded", () => { const r = document.getElementById("reportlink"); if (r && CFG) r.href = U("/report"); });
 async function api(path, body){
   const r = await fetch(U(path), body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
   try { return await r.json(); } catch(e) { return {ok:false, error:`HTTP ${r.status}`}; }
@@ -489,7 +491,7 @@ const badge = (text, tone, cls) => `<span class="badge ${tone||""} ${cls||""}">$
 function tone(s){
   s = String(s || "").toLowerCase();
   if (/^(done|accepted|included|include|met|validated|low|located|resolved|added|confirmed)/.test(s)) return "ok";
-  if (/^(running|queued)/.test(s)) return "info";
+  if (/^(running|queued|ready to run)/.test(s)) return "info";
   if (/^(failed|high|not_met|not_found|bad|interrupted|stopped)/.test(s)) return "bad";
   if (/^(needs you|proposed|open|some_concerns|awaiting|unclear|forward|draft)/.test(s)) return "warn";
   return "";
@@ -611,7 +613,7 @@ function renderChrome(){
   const ao = S.run.human_mode === "agent_only";
   $("#mode").innerHTML = `<span class="badge ${ao ? "info" : ""} dot" title="${ao ? "Agent-only: the agent makes every judgment; people may only supply the full texts it asks for." : "Human in the loop: you approve, correct and confirm the agent's work."}">${ao ? "Agent-only" : "Human in the loop"}</span>`;
   $("#spent").textContent = usd(S.run.spent_usd);
-  $("#todo-n").textContent = S.todos.filter(t => !t.snoozed).length || "";
+  $("#todo-n").textContent = S.todos.filter(t => !t.snoozed && !t.optional).length || "";
   const ft = S.todos.find(t => t.kind === "fulltexts");
   $("#pdf-n").textContent = ft ? (ft.files.filter(x => !x.present).length || "") : "";
   const j = S.job.current;
@@ -687,12 +689,12 @@ function renderSteps(fromPoll){
     ${kpi("Spent", usd(S.run.spent_usd), "API cost, this run folder", null)}</div>`;
   const nDone = S.steps.filter(s => s.status === "done").length;
   const rows = S.steps.map((s, i) => {
-    const st = s.status === "done" ? "done" : s.status === "needs you" ? "you" : "todo";
+    const st = s.status === "done" ? "done" : s.status === "needs you" ? "you" : s.status === "ready to run" ? "ready" : "todo";
     const label = s.label.replace(/^\d+\.\s*/, "");
     const facts = String(s.summary || "").split(" · ").map(x => `<span>${esc(x)}</span>`).join(`<span class="sep">·</span>`);
     return `<li class="stp ${st}">
-      <div class="si">${st === "done" ? ic("check","sm") : st === "you" ? "!" : i + 1}</div>
-      <div style="min-width:0"><div class="sh"><b>${esc(label)}</b>${st === "you" ? badge("needs you","warn") : st === "todo" ? badge("to do") : ""}</div>
+      <div class="si">${st === "done" ? ic("check","sm") : st === "you" ? "!" : st === "ready" ? ic("play","sm") : i + 1}</div>
+      <div style="min-width:0"><div class="sh"><b>${esc(label)}</b>${st === "you" ? badge("needs you","warn") : st === "ready" ? badge("ready to run","info") : st === "todo" ? badge("to do") : ""}</div>
         <div class="ss">${facts}</div></div>
       <div class="sa">${s.todos ? `<button class="btn sm" onclick="goTodoStep('${s.key}')">Review ${s.todos} ${ic("arrowR","sm")}</button>` : ""}
         ${s.run_until ? `<button class="btn sm ghost reveal" onclick="presetRun('${s.run_until}')" title="Open Run with this stage selected">${ic("play","sm")} Run to here</button>` : ""}</div></li>`;
@@ -726,13 +728,17 @@ function renderTodo(fromPoll){
   const T = S.todos.filter(t => showSnoozed || !t.snoozed);
   const k = kind => T.filter(t => t.kind === kind);
   const fb = [...k("clarify"), ...k("changeset"), ...k("disagreement")];
-  const groups = [["protocol","Protocol",k("protocol").length],["feedback","Agent answers",fb.length],["eligibility","Eligibility",k("eligibility").length],
+  const groups = [["protocol","Protocol",k("protocol").filter(t => !t.approved).length],["search","Search strategy",k("search").filter(t => !t.optional).length],["feedback","Agent answers",fb.length],["eligibility","Eligibility",k("eligibility").length],
     ["sync","Out-of-date outputs",k("sync").length],["fulltexts","Full texts",(k("fulltexts")[0]||{files:[]}).files.length],["edits","Your edits",k("manual_edit").length],
     ["flags","Flagged points",k("flag").length],["rob","Risk of bias",k("rob").length],["ruled","Excluded automatically",(S.ruled||[]).length]].filter(x => x[2]);
   const parts = [nextBanner()];
   if (groups.length > 1) parts.push(`<div class="jump">${groups.map(([id,l,n]) => `<button onclick="scrollToId('g-${id}')">${l}<span class="cnt">${n}</span></button>`).join("")}</div>`);
   const gen = (id, title, items, sub) => items.length ? `<div class="grp" id="g-${id}">${grpHead(title, items.length, sub)}${items.map(card).join("")}</div>` : "";
-  parts.push(gen("protocol", "Protocol", k("protocol")));
+  const pt = k("protocol")[0];
+  parts.push(pt ? (pt.approved && provenanceMode() === "agent_only" ? "" :
+    `<div class="grp" id="g-protocol">${pt.approved ? `<details data-k="protocol-approved"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Protocol (approved) · ${pt.criteria.length} criteria · open to change them</summary>${protocolCard(pt)}</details>` : grpHead("Protocol", 1) + protocolCard(pt)}</div>`) : "");
+  const sq = k("search")[0];
+  parts.push(sq ? (sq.ran ? `<div class="grp" id="g-search"><details data-k="search-ran"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Search strategy (ran) · ${Number(sq.ran.hits || 0).toLocaleString()} PubMed hits, ${Number(sq.ran.retrieved || 0).toLocaleString()} fetched · open to see the query and the alternatives</summary>${searchRanCard(sq)}</details></div>` : searchCard(sq)) : "");
   parts.push(gen("feedback", "The agent's answers to your feedback", fb, "Accept or reject proposed revisions; where the agent disagreed with you, decide who is right."));
   parts.push(eligTable(k("eligibility")));
   const sy = k("sync")[0];
@@ -753,6 +759,157 @@ function renderTodo(fromPoll){
     `<label class="small mut" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" ${showSnoozed?"checked":""} onchange="showSnoozed=this.checked;renderTodo()"> Show items set to "later"</label>`;
   openDetails.forEach(key => { const d = document.querySelector(`#v-todo details[data-k="${CSS.escape(key)}"]`); if (d) d.open = true; });
 }
+/* protocol: ask the agent for a change in plain words, or edit criteria in place; then approve */
+const PC = {edit:null, ask:"", busy:""};
+const PC_CHIPS = ["Widen the design criterion to any non-randomised intervention study, including case series and case reports",
+  "Add an English-language criterion", "Move the outcome criterion to the title/abstract stage", "Merge overlapping exclusion criteria"];
+function protocolCard(t){
+  const a = answers[t.id] || (answers[t.id] = {option:null, text:"", extra:{}});
+  const TT = {inclusion:"ok", exclusion:"bad"};
+  const stg = s => (s || "title_abstract").replace(/_/g, " / ").replace("title / abstract", "title/abstract");
+  const rows = (t.criteria || []).map((c, i) => {
+    if (PC.edit) {
+      const e = PC.edit[i];
+      return `<tr style="${e.remove ? "opacity:.45" : ""}"><td class="mono" style="font-weight:600">${esc(c.id)}</td>
+        <td><select onchange="PC.edit[${i}].type=this.value">${["inclusion","exclusion","practical"].map(x => `<option ${e.type===x?"selected":""}>${x}</option>`).join("")}</select></td>
+        <td class="hide-xs"><select onchange="PC.edit[${i}].stage=this.value">${["title_abstract","full_text"].map(x => `<option value="${x}" ${e.stage===x?"selected":""}>${stg(x)}</option>`).join("")}</select></td>
+        <td><textarea rows="2" style="width:100%" oninput="PC.edit[${i}].text=this.value">${esc(e.text)}</textarea>
+          <div class="row" style="gap:8px;margin-top:4px"><label class="xs mut">any of group <input style="width:48px" value="${esc(e.any_of||"")}" oninput="PC.edit[${i}].any_of=this.value"></label>
+          <button class="link small" onclick="PC.edit[${i}].remove=!PC.edit[${i}].remove;renderTodo()">${e.remove ? "keep" : "remove"}</button></div></td></tr>`;
+    }
+    return `<tr><td class="mono" style="font-weight:600">${esc(c.id)}</td><td>${badge(human(c.type), TT[c.type]||"", "sq")}</td><td class="small mut nowrap hide-xs">${esc(stg(c.stage))}</td>
+      <td>${esc(c.text)}${c.any_of ? ` <span class="xs mut">[any one of group ${esc(c.any_of)} suffices]</span>` : ""}</td></tr>`;
+  }).join("");
+  const revs = (t.revisions || []).map(r => `<div class="small" style="margin-top:6px;padding:8px 10px;border:1px solid var(--line);border-radius:8px">
+      ${r.instruction ? `<span class="mut">You:</span> ${esc(r.instruction)}<br>` : ""}<span class="mut">${r.actor === "agent" ? "Agent:" : "Edited:"}</span> ${esc(r.explanation || r.reason || "")}
+      ${r.changed && (r.changed.changed||[]).concat(r.changed.added||[], r.changed.removed||[]).length ? `<span class="xs mut">(changed ${esc((r.changed.changed||[]).join(", "))}${(r.changed.added||[]).length ? "; added " + esc(r.changed.added.join(", ")) : ""}${(r.changed.removed||[]).length ? "; removed " + esc(r.changed.removed.join(", ")) : ""})</span>` : ""}</div>`).join("");
+  const opts = t.options.map(o => `<button class="choice ${a.option===o.value?"on":""}" onclick="pick('${t.id}','${o.value}')"><span class="rd"></span>${esc(o.label)}</button>`).join("");
+  const hint = (t.options.find(o => o.value === a.option) || {}).hint;
+  return `<div class="card tcard" id="c-protocol" data-step="plan">
+    <div class="card-h"><h3>${esc(t.title)}</h3>${t.pending ? badge("queued until the job finishes","info") : ""}
+      ${PC.edit ? "" : `<button class="btn sm ghost" onclick="pcEditStart()">${ic("edit","sm")} Edit criteria</button>`}</div>
+    <div class="card-b"><div class="q">${esc(t.question)}</div>
+      <div class="tw" style="border:1px solid var(--line);border-radius:10px;margin-bottom:14px"><table class="crit"><thead><tr><th>ID</th><th>Type</th><th class="hide-xs">Applied at</th><th>Criterion</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${PC.edit ? `<div class="row" style="gap:8px;margin-bottom:14px"><button class="btn primary" onclick="pcEditSave()">Save criteria (no LLM)</button><button class="btn" onclick="pcEditAdd()">Add a criterion</button><button class="btn" onclick="PC.edit=null;renderTodo()">Cancel</button></div>` : ""}
+      <div style="margin-top:4px"><div class="small" style="font-weight:600">Ask the agent to change it</div>
+        <div class="row" style="flex-wrap:wrap;gap:6px;margin:6px 0">${PC_CHIPS.map(c => `<button class="btn sm ghost" onclick="pcAsk(${JSON.stringify(c).replace(/"/g, "&quot;")})">${esc(c)}</button>`).join("")}</div>
+        <div class="field"><input placeholder="e.g. split I2 by strategy type; drop E6; require a comparator" value="${esc(PC.ask)}" oninput="PC.ask=this.value" onkeydown="if(event.key==='Enter')pcAsk(this.value)">
+          <button class="btn" onclick="pcAsk(PC.ask)" ${PC.busy ? "disabled" : ""}>Ask</button></div>
+        <div class="xs mut">One call to the protocol stage's model; the revised criteria appear here for your approval.${PC.busy ? " " + esc(PC.busy) : ""}</div>${revs}</div>
+      ${t.approved ? "" : `<div class="choices" style="margin-top:14px">${opts}</div>${hint ? `<div class="hint" style="margin-top:8px">${esc(hint)}</div>` : ""}
+      <textarea style="margin-top:12px" placeholder="${esc(t.free_text)}" oninput="answers['${t.id}'].text=this.value">${esc(a.text)}</textarea>`}</div>
+    <div class="card-f">${t.approved ? `<span class="hint grow">Approved. A change here updates the decisions that depend on it (Out-of-date outputs) and asks for approval again.</span>`
+      : `<button class="btn primary" ${a.option?"":"disabled"} onclick="submitTodo('${t.id}')">Submit</button>${a.option ? "" : `<span class="hint">Choose an answer first</span>`}`}<span id="m-protocol" class="msg"></span></div></div>`;
+}
+function provenanceMode(){ return (S && S.run && S.run.human_mode) || ""; }
+function pcEditStart(){ const t = S.todos.find(x => x.kind === "protocol"); PC.edit = (t.criteria || []).map(c => ({...c})); renderTodo(); }
+function pcEditAdd(){
+  const t = S.todos.find(x => x.kind === "protocol"); const n = PC.edit.filter(c => c.type === "inclusion").length + 1;
+  let id = "I" + n; while (PC.edit.some(c => c.id === id)) id = id + "b";
+  PC.edit.push({id, type:"inclusion", stage:"title_abstract", text:""}); renderTodo();
+}
+async function pcCall(body, busy){
+  PC.busy = busy; renderTodo();
+  const r = await api("/api/protocol", body);
+  PC.busy = "";
+  const m = document.getElementById("m-protocol"); if (m) msg(m, r);
+  if (!r.ok) toast(r.message || r.error || "Failed", true); else toast(r.message || "Done");
+  await refresh(true); renderTodo();
+  return r;
+}
+async function pcEditSave(){
+  const crit = PC.edit.map(c => ({id:c.id, type:c.type, stage:c.stage, text:c.text, any_of:(c.any_of||"").trim(), remove:!!c.remove}));
+  const r = await pcCall({op:"edit", criteria:crit}, "Saving…");
+  if (r.ok) { PC.edit = null; delete answers["protocol"]; renderTodo(); }
+}
+async function pcAsk(text){
+  if (!text || !text.trim()) return;
+  PC.ask = "";
+  const r = await pcCall({op:"revise", instruction:text.trim()}, "Asking the agent…");
+  if (r.ok) { delete answers["protocol"]; renderTodo(); }
+}
+
+/* search strategy: the agent's query and alternatives with PubMed counts; ask for changes; confirm the query to run */
+const SS = {pick:null, custom:"", ask:"", busy:""};
+const SS_CHIPS = ["Exclude reviews and editorials", "Add a block for the management strategies the protocol names",
+  "Humans only", "English only", "Published since 2010", "More precise: main concept in the title only"];
+function searchCard(t){
+  if (!t) return "";
+  const vars = t.variants || [], conf = t.confirmed, fmt = n => n == null ? "–" : Number(n).toLocaleString();
+  const selected = SS.custom.trim() || SS.pick || (conf && conf.query) || (vars[0] && vars[0].query) || "";
+  const EX = {sensitive:"info", balanced:"", precise:"warn"};
+  const rows = vars.map((v, i) => `<tr><td style="width:28px"><input type="radio" name="ssv" ${(!SS.custom.trim() && selected === v.query) ? "checked" : ""} onclick="ssPick(${i})"></td>
+      <td><b style="font-weight:600">${esc(v.name)}</b>${v.expect ? ` ${badge(v.expect, EX[v.expect] || "", "sq")}` : ""}<div class="xs mut" style="margin-top:3px">${esc((v.rationale || "").length > 320 ? v.rationale.slice(0, 320) + "…" : (v.rationale || ""))}</div>
+        <details data-k="ssq-${v.id}" style="margin-top:4px"><summary class="xs">query${(v.rationale || "").length > 320 ? " and full rationale" : ""}</summary><div class="xs mono" style="white-space:pre-wrap;word-break:break-word">${esc(v.query)}</div>${(v.rationale || "").length > 320 ? `<div class="xs mut" style="margin-top:6px">${esc(v.rationale)}</div>` : ""}</details></td>
+      <td class="r nowrap"><b>${fmt(v.count)}</b><div class="xs mut">hits</div>${v.error ? `<div class="xs" style="color:var(--warn)">${esc(v.error)}</div>` : ""}</td></tr>`).join("");
+  const chat = (t.chat || []).map(c => c.role === "user" ? `<div class="small" style="margin-top:8px"><span class="mut">You:</span> ${esc(c.text)}</div>`
+      : `<div class="small" style="margin-top:4px;padding:8px 10px;border:1px solid var(--line);border-radius:8px"><span class="mut">Agent:</span> ${esc(c.text)} <b>${fmt(c.count)} hits</b>
+         <button class="link small" onclick="ssUse(${JSON.stringify(c.query).replace(/"/g, "&quot;")})">use this query</button></div>`).join("");
+  const confBox = conf ? `<div class="callout info" style="margin:0 0 12px">${ic("check")}<div class="grow"><b>Confirmed:</b> ${esc(conf.variant || "your query")} · ${fmt(conf.count)} hits · ${esc(conf.ts || "")}
+      <div class="xs mono" style="white-space:pre-wrap;word-break:break-word;margin-top:4px">${esc(conf.query)}</div>
+      <div class="xs mut" style="margin-top:4px">The search runs with this query (Run: up to stage 2 or later). <button class="link small" onclick="ssClear()">Change it</button></div></div></div>` : "";
+  const need = t.required && !conf ? `<div class="callout warn" style="margin:0 0 12px">${ic("warn")}<div class="grow">The search waits for a confirmed query (<code>pipeline.confirm_search</code>).</div></div>` : "";
+  return `<div class="grp" id="g-search" data-step="search">${grpHead("Search strategy", null, `The agent's PubMed query and alternatives, each with its hit count${t.maxdate ? ` (up to ${esc(t.maxdate)})` : ""}${t.retmax ? `; the run fetches at most ${fmt(t.retmax)} records` : ""}. Pick one, ask for a change in plain words, or write your own, then confirm.`)}
+    <div class="card"><div class="card-b">${need}${confBox}
+      ${vars.length ? `<div class="tw"><table><thead><tr><th></th><th>Query</th><th class="r">PubMed</th></tr></thead><tbody>${rows}</tbody></table></div>`
+                    : `<div class="small mut">No alternatives yet. "Suggest alternatives" asks the agent for its query and five variants (one call to the search stage's model) and counts each on PubMed.</div>`}
+      <div class="row" style="margin-top:10px;gap:8px"><button class="btn" onclick="ssSuggest()" ${SS.busy ? "disabled" : ""}>${ic("bot","sm")} ${vars.length ? "Suggest again" : "Suggest alternatives"}</button><span class="hint">${esc(SS.busy)}</span></div>
+      <div style="margin-top:16px"><div class="small" style="font-weight:600">Ask for a change</div>
+        <div class="row" style="flex-wrap:wrap;gap:6px;margin:6px 0">${SS_CHIPS.map(c => `<button class="btn sm ghost" onclick="ssAsk(${JSON.stringify(c).replace(/"/g, "&quot;")})">${esc(c)}</button>`).join("")}</div>
+        <div class="field"><input placeholder="e.g. limit to children; add Spanish synonyms; drop the brand names" value="${esc(SS.ask)}" oninput="SS.ask=this.value" onkeydown="if(event.key==='Enter')ssAsk(this.value)">
+          <button class="btn" onclick="ssAsk(SS.ask)" ${SS.busy ? "disabled" : ""}>Ask</button></div>
+        <div class="xs mut">Applied to the selected query (${esc(selected ? selected.slice(0, 60) + (selected.length > 60 ? "…" : "") : "none")}). Each request is one call to the search stage's model plus a free PubMed count.</div>
+        ${chat}</div>
+      <div style="margin-top:16px"><div class="small" style="font-weight:600">Or write the query yourself</div>
+        <textarea rows="4" class="mono" style="margin-top:6px" placeholder="A complete PubMed query" oninput="SS.custom=this.value">${esc(SS.custom)}</textarea>
+        <div class="row" style="gap:8px;margin-top:6px"><button class="btn" onclick="ssCount()">Count on PubMed</button>${t.draft && t.draft.query === SS.custom.trim() ? `<span class="small"><b>${fmt(t.draft.count)}</b> hits</span>` : ""}</div></div>
+    </div>
+    <div class="card-f"><button class="btn primary" onclick="ssConfirm()" ${selected && !SS.busy ? "" : "disabled"}>${ic("check","sm")} Confirm this query</button>
+      <span class="hint grow">${conf ? "Confirming again replaces the confirmed query." : "The search runs with the confirmed query; without one it runs the agent's."}</span><span id="m-search" class="msg"></span></div></div></div>`;
+}
+function searchRanCard(t){
+  const fmt = n => n == null ? "–" : Number(n).toLocaleString();
+  const r = t.ran, vars = t.variants || [];
+  const rows = vars.map(v => `<tr><td><b style="font-weight:600">${esc(v.name)}</b>${r.query === v.query ? ` ${badge("ran", "ok", "sq")}` : ""}<div class="xs mut" style="margin-top:3px">${esc((v.rationale || "").slice(0, 320))}</div>
+      <details data-k="ssq-${v.id}" style="margin-top:4px"><summary class="xs">query</summary><div class="xs mono" style="white-space:pre-wrap;word-break:break-word">${esc(v.query)}</div></details></td>
+      <td class="r nowrap"><b>${fmt(v.count)}</b><div class="xs mut">hits</div></td></tr>`).join("");
+  return `<div class="card"><div class="card-b">
+    <div class="small"><b>${esc(r.database || "PubMed")}</b> · ${fmt(r.hits)} hits · ${fmt(r.retrieved)} fetched${t.retmax ? ` (cap ${fmt(t.retmax)})` : ""} · ${fmt(r.records)} records after removing ${fmt(r.duplicates)} duplicates · query by ${esc(r.source || "the agent")}${t.confirmed ? ` (${esc(t.confirmed.ts || "")})` : ""}</div>
+    ${r.hits > r.retrieved ? `<div class="callout warn" style="margin:10px 0">${ic("warn")}<div class="grow">${fmt(r.hits - r.retrieved)} hits were never fetched (the run's record cap). To see them, raise <code>pubmed_retmax</code> in the topic file or narrow the query, in a new run folder.</div></div>` : ""}
+    <div class="xs mono" style="white-space:pre-wrap;word-break:break-word;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px">${esc(r.query || "")}</div>
+    ${vars.length ? `<div class="small" style="font-weight:600;margin-top:14px">The alternatives that were considered</div><div class="tw"><table><tbody>${rows}</tbody></table></div>` : ""}
+    <div class="xs mut" style="margin-top:10px">The search is the root of the review: a different query means a new search, so it is run in a new run folder (Configs → New run file), not changed in place.</div>
+  </div></div>`;
+}
+function ssPick(i){ const t = S.todos.find(x => x.kind === "search"); SS.pick = t.variants[i].query; SS.custom = ""; renderTodo(); }
+function ssUse(q){ SS.custom = q; SS.pick = q; renderTodo(); }
+async function ssCall(body, busy){
+  SS.busy = busy; renderTodo();
+  const r = await api("/api/search_strategy", body);
+  SS.busy = "";
+  const m = document.getElementById("m-search"); if (m) msg(m, r);
+  if (!r.ok) toast(r.message || r.error || "Failed", true);
+  await refresh(true); renderTodo();
+  return r;
+}
+async function ssSuggest(){ await ssCall({op:"suggest"}, "Asking the agent for alternatives and counting them on PubMed…"); }
+async function ssAsk(text){
+  const t = S.todos.find(x => x.kind === "search"); if (!t || !text || !text.trim()) return;
+  const q = SS.custom.trim() || SS.pick || (t.confirmed && t.confirmed.query) || (t.variants[0] && t.variants[0].query);
+  if (!q) { toast("Choose or write a query first", true); return; }
+  SS.ask = "";
+  const r = await ssCall({op:"refine", query:q, instruction:text.trim()}, "Revising the query…");
+  if (r.ok && r.query) { SS.custom = r.query; SS.pick = r.query; renderTodo(); }
+}
+async function ssCount(){ if (SS.custom.trim()) await ssCall({op:"count", query:SS.custom.trim()}, "Counting…"); }
+async function ssConfirm(){
+  const t = S.todos.find(x => x.kind === "search");
+  const q = SS.custom.trim() || SS.pick || (t.confirmed && t.confirmed.query) || (t.variants[0] && t.variants[0].query);
+  if (!q) return;
+  const r = await ssCall({op:"confirm", query:q}, "Confirming…");
+  if (r.ok) { toast(r.message || "Confirmed"); SS.custom = ""; SS.pick = null; renderTodo(); }
+}
+async function ssClear(){ await ssCall({op:"clear"}, ""); }
 function grpHead(title, n, sub){ return `<div class="gh"><h2>${title}</h2>${n != null ? `<span class="cnt">${n}</span>` : ""}</div>${sub ? `<p class="gsub">${sub}</p>` : `<div style="height:8px"></div>`}`; }
 
 /* criteria lines "I1 (inclusion, title_abstract): text" -> a small table */
@@ -862,7 +1019,7 @@ function robTable(items){
           <button class="btn ghost" onclick="delete robEdit['${t.rid}'];renderTodo()">Cancel</button><span id="robm-${t.rid}" class="msg"></span></div></div>` : "";
     return `<tr><td style="width:36px"><input type="checkbox" aria-label="Select" ${robSel[t.rid]?"checked":""} onchange="robSel['${t.rid}']=this.checked"></td>
       <td style="min-width:170px;width:220px"><b>${esc(t.title.split(":")[0].replace(/\s*\[\d+\]$/, ""))}</b><div class="xs mut mono">${esc(t.rid)}</div>
-        <div class="small" style="margin-top:4px;display:flex;gap:10px"><a target="_blank" href="${t.link}">Report</a><button class="link small" onclick="openStudy('${t.rid}')">Study page</button></div></td>
+        <div class="small" style="margin-top:4px;display:flex;gap:10px"><a target="_blank" href="${U(t.link)}">Report</a><button class="link small" onclick="openStudy('${t.rid}')">Study page</button></div></td>
       <td>${doms}${edit}</td>
       <td class="nowrap r">${ed ? "" : `<button class="btn sm" onclick="robOpen('${t.rid}')">${ic("edit","sm")} Change</button>`}</td></tr>`;
   }).join("");
@@ -919,7 +1076,7 @@ function card(t){
   const free = t.free_text ? `<textarea style="margin-top:12px" placeholder="${esc(t.free_text)}" oninput="answers['${t.id}'].text=this.value">${esc(a.text)}</textarea>` : "";
   return `<div class="card tcard" id="c-${esc(t.id)}" data-step="${esc(t.step||"")}">
     <div class="card-h"><h3>${esc(t.title)}</h3>${t.pending ? badge("queued until the job finishes","info") : ""}
-      ${t.link ? `<a class="btn sm ghost" href="${t.link}" target="_blank">Open in report ${ic("ext","sm")}</a>` : ""}</div>
+      ${t.link ? `<a class="btn sm ghost" href="${U(t.link)}" target="_blank">Open in report ${ic("ext","sm")}</a>` : ""}</div>
     <div class="card-b"><div class="q">${esc(t.question)}</div>${ctxBlock(t.context)}
       <div class="choices">${opts}</div>${hint ? `<div class="hint" style="margin-top:8px">${esc(hint)}</div>` : ""}${free}</div>
     <div class="card-f"><button class="btn primary" ${a.option?"":"disabled"} onclick="submitTodo('${t.id}')">Submit</button>
@@ -1037,12 +1194,12 @@ function stageCard(){
     const e = SM.edit[r.stage] || {}, eff = smEff(r), lock = r.started;
     const effs = (M.efforts[eff.provider] || ["low","medium","high"]);
     const effSel = "reasoning_effort" in e ? (e.reasoning_effort === null ? "default" : e.reasoning_effort) : "";
-    return `<tr${lock ? ' style="opacity:.75"' : ""}><td><b style="font-weight:600">${esc(r.label)}</b>${lock ? `<div class="xs" style="color:var(--warn)" title="This stage has started, so its model is fixed (accept a change on the Configs page)">fixed: stage started</div>` : ""}</td>
-      <td><select style="width:100%;min-width:200px" ${lock ? "disabled" : ""} onchange="smSet('${r.stage}','model',this.value)"><option value="" title="the agent in llm_defaults">${esc(ag.model)} (default)</option>${apiOpts(e.model ? e : null)}</select></td>
+    return `<tr${lock ? ' style="opacity:.75"' : ""}${r.role ? ' style="border-top:2px solid var(--line)"' : ""}><td><b style="font-weight:600">${esc(r.label)}</b>${lock ? `<div class="xs" style="color:var(--warn)" title="This stage has started, so its model is fixed (accept a change on the Configs page)">fixed: stage started</div>` : ""}${r.note ? `<div class="xs mut">${esc(r.note)}</div>` : ""}</td>
+      <td><select style="width:100%;min-width:200px" ${lock ? "disabled" : ""} onchange="smSet('${r.stage}','model',this.value)"><option value="" title="the agent in llm_defaults">${esc(ag.provider === "local" ? "local: " + (ag.model === "auto" ? "served model" : ag.model) + " · free" : ag.model)} (default)</option>${apiOpts(e.model ? e : null)}</select></td>
       <td><select ${lock ? "disabled" : ""} onchange="smSet('${r.stage}','effort',this.value)"><option value="" title="the agent in llm_defaults">${esc(ag.reasoning_effort || "model default")} (default)</option>
         ${effs.map(x => `<option ${effSel===x ? "selected" : ""}>${x}</option>`).join("")}<option value="default" ${effSel==="default" ? "selected" : ""}>model default</option></select></td></tr>`;
   }).join("");
-  return `<div class="card"><div class="card-h"><div class="grow"><h2>Models per stage</h2><div class="sub">Saved in the run file (<code>stage_models</code>). A stage's model is fixed once that stage has started; the others can change.</div></div></div>
+  return `<div class="card"><div class="card-h"><div class="grow"><h2>Models per stage</h2><div class="sub">Saved in the run file (<code>stage_models</code>; the checks row in <code>roles.verifier</code>). A stage's model is fixed once that stage has started; the others can change.</div></div></div>
     <div class="card-b flush tw"><table id="smtable"><thead><tr><th>Stage</th><th>Model</th><th>Effort</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="card-f"><button class="btn primary" id="smsave" onclick="saveStageModels()" ${SM.dirty ? "" : "disabled"}>${ic("check","sm")} Save to run file</button>
       <button class="btn" onclick="testStageModels()">${ic("bot","sm")} Test models</button><span id="smmsg" class="msg grow"></span></div></div>`;
@@ -1251,7 +1408,11 @@ function renderStudy(){
      <h2>${esc(r.title)}</h2><div class="au">${esc(r.authors)}</div><div class="small mut"><i>${esc(r.journal)}</i> ${esc(r.year)}</div>
      <div class="row" style="margin-top:12px">${badge(d.status, chipFor(d.status), "dot")}${d.reason ? `<span class="small mut">${esc(d.reason)}</span>` : ""}
        ${d.pdf_wanted ? badge("waiting for your PDF","warn") : ""}${d.pdf_unavailable ? badge("marked not obtainable") : ""}</div>
-     ${d.source ? `<div class="src">Source used by the agent: <b style="color:var(--fg-2)">${esc(d.source.kind)}</b> · ${esc(d.source.origin)} · ${Number(d.source.chars).toLocaleString()} characters</div>` : ""}
+     ${d.source ? `<div class="src">Source used by the agent: <b style="color:var(--fg-2)">${esc(d.source.kind)}</b> · ${esc(d.source.origin)} · ${Number(d.source.chars).toLocaleString()} characters
+       ${d.source.local_file ? ` · <a target="_blank" href="/files/fulltext/${encodeURIComponent(d.source.local_file)}?config=${encodeURIComponent(CFG)}">your file ${ic("ext","sm")}</a>` : ""}
+       ${d.source.auto_pdf ? ` · <a target="_blank" href="/files/fulltext/${encodeURIComponent(d.source.auto_pdf)}?config=${encodeURIComponent(CFG)}">PDF the agent fetched ${ic("ext","sm")}</a>` : ""}
+       ${d.source.auto_text ? ` · <a target="_blank" href="/files/fulltext/${encodeURIComponent(d.source.auto_text)}?config=${encodeURIComponent(CFG)}">text ${ic("ext","sm")}</a>` : ""}
+       ${!d.source.auto_pdf && d.source.pmcid ? ` · <a target="_blank" href="https://europepmc.org/articles/${esc(d.source.pmcid)}?pdf=render">PDF at Europe PMC ${ic("ext","sm")}</a> <span class="xs mut">(your browser can; the server was refused)</span>` : ""}</div>` : ""}
      <div class="lk">${links}</div>
      ${r.abstract ? `<details style="margin-top:12px"><summary>Abstract</summary><div class="abstract">${esc(r.abstract)}</div></details>` : ""}</div>`);
 

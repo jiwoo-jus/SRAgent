@@ -66,10 +66,104 @@ def build_query(ctx: Ctx, protocol: dict) -> dict:
     return q
 
 
+# ---------------------------------------------------------------- the search strategy chosen with the review team
+# The agent's query is one proposal. In a real review the team can see alternatives with their PubMed hit counts, ask
+# for changes in plain words, count any query, and confirm the one to run (store.meta["search_strategy"]).
+
+def count(ctx: Ctx, query: str) -> dict:
+    """PubMed hit count of a query (free; one esearch with retmax 0), with the date limit of the review."""
+    src = ctx.topic.get("records", {})
+    try:
+        res = pubmed.esearch(query, retmax=0, maxdate=src.get("maxdate"))
+        return {"count": res["count"], "translation": res.get("translation", "")}
+    except Exception as e:  # network, bad query: shown, not raised
+        return {"count": None, "error": str(e)[:200]}
+
+
+def strategy_meta(st) -> dict:
+    return st.meta.setdefault("search_strategy", {"variants": [], "chat": [], "confirmed": None})
+
+
+def _syn_lines(protocol: dict) -> str:
+    out = []
+    for kc in protocol.get("key_concepts", []):
+        v = kc.get("validation") or {}
+        out.append(f"- {kc['term']} ({kc.get('kind')}): status={v.get('status', 'n/a')}; "
+                   f"synonyms={', '.join((v.get('synonyms') or [])[:12]) or 'none'}")
+    return "\n".join(out)
+
+
+def suggest_queries(ctx: Ctx, protocol: dict) -> dict:
+    """The agent's own query plus five alternatives, each with its hit count and the reason it differs."""
+    import time
+    st = ctx.store
+    m = strategy_meta(st)
+    base = next((v for v in m["variants"] if v.get("id") == "V0"), None)
+    if base is None:
+        q = build_query(ctx, protocol)
+        base = {"id": "V0", "name": "The agent's query", "query": q.get("query", ""),
+                "rationale": q.get("rationale", ""), "expect": "sensitive", "concept_blocks": q.get("concept_blocks", [])}
+        base.update(count(ctx, base["query"]))
+    out = ctx.agent.chat(ctx.msgs(prompts.SEARCH_VARIANTS.format(
+        protocol=protocol_brief(protocol), synonyms=_syn_lines(protocol), current=base["query"],
+        current_count=base.get("count", "?"))), tag="search_variants")
+    variants = [base]
+    for i, v in enumerate((out.get("variants") or [])[:5], 1):
+        if not isinstance(v, dict) or not v.get("query"):
+            continue
+        var = {"id": f"V{i}", "name": str(v.get("name") or f"Variant {i}")[:80], "query": str(v["query"]),
+               "rationale": str(v.get("rationale") or ""), "expect": v.get("expect") or ""}
+        var.update(count(ctx, var["query"]))
+        variants.append(var)
+    m["variants"] = variants
+    m["suggested_at"] = time.strftime("%Y-%m-%d %H:%M")
+    ctx.log(f"[search] {len(variants) - 1} alternative queries proposed: " +
+            ", ".join(f"{v['name']} ({v.get('count')})" for v in variants[1:]))
+    return m
+
+
+def refine_query(ctx: Ctx, protocol: dict, query: str, instruction: str) -> dict:
+    """One change asked in plain words ("exclude reviews", "add a block for ..."): a revised query, its count and why."""
+    st = ctx.store
+    m = strategy_meta(st)
+    cur = count(ctx, query)
+    out = ctx.agent.chat(ctx.msgs(prompts.SEARCH_REFINE.format(
+        protocol=protocol_brief(protocol), current=query, current_count=cur.get("count", "?"), instruction=instruction)),
+        tag="search_refine")
+    new_q = str(out.get("query") or query)
+    res = {"query": new_q, "explanation": str(out.get("explanation") or ""), **count(ctx, new_q)}
+    m["chat"].append({"role": "user", "text": instruction})
+    m["chat"].append({"role": "agent", "text": res["explanation"], "query": new_q, "count": res.get("count")})
+    m["draft"] = {"query": new_q, "count": res.get("count")}
+    return res
+
+
+def confirm_query(ctx: Ctx, query: str, note: str = "") -> dict:
+    """The query the search stage will run (instead of the agent's), recorded with its count and who chose it."""
+    import time
+    st = ctx.store
+    m = strategy_meta(st)
+    c = count(ctx, query)
+    var = next((v for v in m["variants"] if v.get("query") == query), None)
+    m["confirmed"] = {"query": query, "count": c.get("count"), "translation": c.get("translation", ""),
+                      "variant": (var or {}).get("name"), "rationale": (var or {}).get("rationale", ""),
+                      "concept_blocks": (var or {}).get("concept_blocks", []), "note": note,
+                      "by": "user", "ts": time.strftime("%Y-%m-%d %H:%M")}
+    ctx.log(f"[search] query confirmed by the review team ({c.get('count')} hits)")
+    return m["confirmed"]
+
+
 def search(ctx: Ctx, protocol: dict) -> list[dict]:
     src = ctx.topic.get("records", {})
     kind = src.get("source", "pubmed")
-    strategy = build_query(ctx, protocol)
+    confirmed = (ctx.store.meta.get("search_strategy") or {}).get("confirmed")
+    if confirmed and confirmed.get("query"):
+        strategy = {"query": confirmed["query"], "concept_blocks": confirmed.get("concept_blocks") or [],
+                    "rationale": confirmed.get("rationale") or "", "query_source": "confirmed by the review team",
+                    "confirmed": {k: confirmed.get(k) for k in ("variant", "note", "by", "ts")}}
+    else:
+        strategy = build_query(ctx, protocol)
+        strategy["query_source"] = "the agent"
     if kind == "file":
         strategy.update({"database": "Imported records", "retrieved_pmids": []})
     else:

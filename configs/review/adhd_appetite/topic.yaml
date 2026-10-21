@@ -1,0 +1,43 @@
+# Review topic: adhd_appetite. Edit freely; `sragent ui` checks this file when you save it.
+topic:
+  key: adhd_appetite
+  question: >-
+    Which interventions effectively and safely prevent or reduce appetite suppression and unintended
+    weight loss caused by ADHD medications, while maintaining ADHD symptom control? What mechanisms
+    explain the adverse effect and the interventions?
+  # Plain-words eligibility; the agent turns it into atomic criteria you approve before screening.
+  seed_eligibility: >-
+    Include original human studies of people taking ADHD medications (including methylphenidate,
+    amphetamine-based stimulants, atomoxetine, viloxazine, guanfacine, and clonidine) that directly
+    evaluate a strategy to prevent or manage medication-associated appetite suppression or weight
+    loss. Strategies may include meal timing, nutritional support, dose or administration timing,
+    formulation changes, medication breaks, switching drugs, or other interventions. Include
+    randomized trials and observational intervention studies with measured appetite, food intake, or
+    weight outcomes; capture effects on ADHD symptom control and adverse effects when available.
+    Include any age group without stratifying eligibility by age. Include directly relevant human
+    mechanistic studies only if they evaluate a management strategy. Exclude studies reporting
+    adverse-event incidence without testing a management approach, animal-only studies, reviews,
+    editorials, and studies solely about eating disorders rather than medication-associated appetite
+    loss. Distinguish demonstrated effectiveness from hypotheses or clinical recommendations without
+    intervention data.
+  # Deterministic exclusions before any LLM call (sragent/rules.py).
+  screening_rules: [empty_record, conference_abstract, erratum, editorial, review, off_topic_no_abstract]
+  records:
+    source: pubmed           # the agent writes the PubMed query
+    pubmed_retmax: 5000      # most records to retrieve
+    maxdate: "2026/10/21"  # search end date
+  extraction_fields:         # kind: drug | disease turns on database term checks
+    - {name: study_design, description: "Study design, sample size, comparator and follow-up."}
+    - {name: medication, kind: drug, description: "ADHD medication, dose, formulation and schedule."}
+    - {name: management_strategy, description: "Management intervention, implementation and comparison condition."}
+    - {name: appetite_weight_results, description: "Change in appetite, food intake or weight with numerical effects, timepoints and uncertainty."}
+    - {name: adhd_symptom_results, description: "Effect on ADHD symptom control, adherence and treatment discontinuation."}
+    - {name: harms_and_feasibility, description: "Other adverse effects, safety and practical limitations of the intervention."}
+    - {name: mechanism, description: "Measured or proposed biological or behavioral explanation; distinguish evidence from speculation."}
+  rob_tool_name: 'Design-adapted assessment: RoB 2 for randomized trials; ROBINS-I for nonrandomized interventions'
+  rob_domains:
+    - {name: confounding_and_allocation, description: "Allocation quality, baseline differences and confounder control."}
+    - {name: intervention_fidelity, description: "Clearly defined management strategy, adherence and co-interventions."}
+    - {name: outcome_measurement, description: "Valid appetite, food-intake, weight and symptom measurements."}
+    - {name: missing_data, description: "Attrition, missing outcomes and treatment discontinuation."}
+    - {name: selective_reporting, description: "Outcome selection and completeness of reporting."}

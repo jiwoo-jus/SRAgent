@@ -11,7 +11,7 @@ The full documentation (data, workflow, inputs and outputs, evaluation design an
 | Step         | What it does                                                                                                                  | Output                              |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | `plan`       | Turns the question and seed eligibility text into an editable protocol (PICO and atomic criteria)                             | `protocol.yaml`                     |
-| `search`     | Loads records from SYNERGY, PubMed, or a JSONL file and removes duplicates                                                    | `rec:<rid>` nodes                   |
+| `search`     | Loads records from SYNERGY, PubMed (the agent's query, or the one the team confirmed in the interface), or a JSONL file; removes duplicates | `rec:<rid>` nodes                   |
 | `screen`     | Judges each criterion with cited sentences, derives a decision by rule; final inclusion only after a full-text review         | `screen:<rid>`                      |
 | `fulltext`   | Gets full text from your files, Europe PMC, or a legal open-access copy, and screens it                                       | `ft:<rid>`                          |
 | `snowball`   | Follows references and citations of the included studies                                                                      | new `rec:<rid>` nodes               |
@@ -25,7 +25,7 @@ Code for each step is in `sragent/stages/`. `sragent/pipeline.py` runs them in o
 ## Configs: benchmark or real review
 
 ```
-configs/models.yaml   the model catalog: provider and price of each model (Gemini, Claude), written once
+configs/models.yaml   the model catalog: provider and price of each model (Gemini, Claude, OpenAI), written once
 configs/benchmark/    topics WITH a known answer: measure the agent (sragent eval works)
 configs/review/       topics WITHOUT a known answer: real reviews (copy review/_template/)
 ```
@@ -54,7 +54,7 @@ Fill in `api_env.yaml` (or set `OPENAI_API_KEY`, `GEMINI_API_KEY` or `ANTHROPIC_
 
 ## Run
 
-The web interface shows the steps, a to-do list of decisions, a Run panel with the model and effort per stage and a live cost estimate, and a drop folder for full-text PDFs. Its **Configs** page lists every run file (click one to open it), edits any config with a check on every change, and sets up a new review from a short form:
+The web interface shows the steps, a to-do list of decisions, a Run panel with the model and effort per stage (and the verifier) and a live cost estimate, and a drop folder for full-text PDFs. In a human-in-the-loop review the to-do list is where the review is decided with the agent: the protocol (ask the agent for a change in plain words, or edit criteria in place), the search strategy (the agent's query and five alternatives with their PubMed hit counts, changes asked in plain words, one confirmed), eligibility decisions, risk-of-bias drafts, the agent's answers to your feedback, and the full texts to supply (the synthesis can wait for them). Its **Configs** page lists every run file (click one to open it), edits any config with a check on every change, and sets up a new review from a short form:
 
 ```
 sragent ui                                                     # Configs page: open a run file or create one
@@ -73,9 +73,9 @@ sragent status --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml
 sragent eval --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --suite all     # benchmark topics only
 ```
 
-Use `--until STAGE` to stop early. Other commands: `runs` (every run file and its state), `accept-config` (continue a review whose fixed settings were edited; recorded), `rescreen` (re-derive decisions after editing the protocol, no LLM calls), `pdfs` (process added full-text PDFs), `sync`, `feedback`, `rerun`, `propagate`, `accept`, `reject`, `revalidate-terms`, `eval-audit`, and `data --synergy KEY`. See GUIDE.md section 7.
+Use `--until STAGE` to stop early. Other commands: `runs` (every run file and its state), `accept-config` (continue a review whose fixed settings were edited; recorded), `rescreen` (re-derive decisions after editing the protocol, no LLM calls), `pdfs` (process added full-text PDFs), `sync`, `feedback`, `rerun`, `propagate`, `accept`, `reject`, `revalidate-terms`, `fetch-files` (keep the agent-fetched full texts as files), `eval-audit`, `eval-summary` (one comparable results row per evaluation run, `docs/RESULTS.md`), `local-endpoints`, and `data --synergy KEY`. See GUIDE.md section 7.
 
-Outputs go to the run's folder under `runs/`: `protocol.yaml`, `store.json` and `store_changelog.jsonl` (decisions, evidence, history), `report.md` and `report_evidence.html`, `usage.jsonl` and `cost.json` (API usage and cost), and `fulltext/needed_pdfs.csv` (papers whose full-text review is blocked; put `<rid>.pdf` in `fulltext/`). Caches are in `.cache/`. Outputs, caches, and credentials are ignored by Git.
+Outputs go to the run's folder under `runs/`: `protocol.yaml`, `store.json` and `store_changelog.jsonl` (decisions, evidence, history), `report.md` and `report_evidence.html`, `usage.jsonl` and `cost.json` (API usage and cost), `fulltext/needed_pdfs.csv` (papers whose full-text review is blocked; put `<rid>.pdf` in `fulltext/`), and `fulltext/auto/` (the texts, and PDFs where the source allows, that the agent fetched itself). Caches are in `.cache/`. Outputs, caches, and credentials are ignored by Git.
 
 ## Local models
 
@@ -85,7 +85,7 @@ The same pipeline runs on your own vLLM servers.
 sragent local-endpoints --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --probe
 ```
 
-`local-endpoints` takes any run file. To run on local servers, copy a run file and write `llm_defaults: {provider: local, model: auto, reasoning_effort: null, concurrency: 32}` in it.
+`local-endpoints` takes any run file. To run on local servers, copy a run file and write `llm_defaults: {provider: local, model: auto, concurrency: <servers x slots>}` in it; for Qwen3 add `extra_body: {chat_template_kwargs: {enable_thinking: false}}` for the high-volume stages. Stages or roles on an API model (`stage_models`, `roles.verifier`) do not inherit these local-only options.
 
 `local-endpoints` only registers servers that are already running and does not start vLLM. Use `--urls` instead of `--nodes` for a server you reach through your own tunnel. Rerun it with the full new list at any time and active runs pick it up. `local_endpoints.yaml` in the project root is the server list; it also shows how to give nodes to roles (`--roles`, `--add`). See GUIDE.md section 4 for the settings.
 

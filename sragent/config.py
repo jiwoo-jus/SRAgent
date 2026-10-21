@@ -91,7 +91,9 @@ DEFAULTS: dict[str, Any] = {
         "context_chars": 60000,       # prompt budget for extraction / RoB; longer papers are read in parts
         "max_stored_chars": 400000,   # the whole text is stored; prompts select from it
         "open_access_lookup": True,   # Unpaywall (needs contact_email) / OpenAlex legal OA copies
+        "keep_fetched_files": True,   # keep what the agent fetched in fulltext/auto/: the text (.txt) and the PMC PDF when available
         "wait_for_pdfs": False,       # stop before the synthesis while requested full texts are missing (real reviews)
+        "confirm_search": False,      # stop before the search until the review team has confirmed the query (To-do list)
         "pdf_parser": "auto",         # auto | azure_cu | pdftotext
         "azure_cu_analyzer": "prebuilt-documentSearch",   # or prebuilt-layout (no figure descriptions, cheaper)
         "vision_pages": False,        # without Azure: transcribe table/figure pages with the (multimodal) agent model
@@ -246,6 +248,11 @@ def _with_model(cfg: dict, base: dict, ov: dict) -> dict:
     for k, v in facts.items():
         if k not in ov:
             sc[k] = copy.deepcopy(v)
+    if sc.get("provider") != base.get("provider"):
+        # another provider than the defaults: provider-specific request options (vLLM chat_template_kwargs, json_mode)
+        # are not inherited; an API provider would reject them
+        for k in ("extra_body", "json_mode"):
+            sc[k] = copy.deepcopy(ov[k]) if k in ov else copy.deepcopy(DEFAULTS["llm_defaults"].get(k, {}))
     return sc
 
 

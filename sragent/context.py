@@ -83,11 +83,19 @@ class Ctx:
         self.store.save(self.run_dir / "store.json")
         (self.run_dir / "cost.json").write_text(json.dumps(self.hub.tracker.summary(), indent=1))
 
+    SAVE_EVERY = 24   # items per save during a long stage: progress shows in the interface and survives a stop
+
     def map(self, fn, items):
-        """Parallel map over items; the store is saved even if a call fails midway (e.g. quota),
-        so finished work is never lost and the stage resumes where it stopped."""
+        """Parallel map over items, in chunks with a save after each, so the interface shows progress during a long
+        stage and finished work is never lost if a call fails midway (e.g. quota); the stage resumes where it stopped."""
+        items = list(items)
+        out = []
         try:
-            return self.agent.map(fn, items)
+            for i in range(0, len(items), self.SAVE_EVERY):
+                out += self.agent.map(fn, items[i:i + self.SAVE_EVERY])
+                if i + self.SAVE_EVERY < len(items):
+                    self.save()
+            return out
         finally:
             self.save()
 

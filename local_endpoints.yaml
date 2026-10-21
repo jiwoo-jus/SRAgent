@@ -19,39 +19,59 @@
 # `sragent local-endpoints --nodes ... [--roles ...] [--add]` rewrites the list (this comment block is kept);
 # `--add` appends to the current list, `--roles` restricts the new entries to those roles.
 endpoints:
-- ssh_host: a0218
+- ssh_host: a0126
   remote_host: 127.0.0.4
   remote_port: 8000
   model: auto
   max_concurrency: 1
-  roles: [agent]
-- ssh_host: a0219
+  roles:
+  - agent
+- ssh_host: a0131
   remote_host: 127.0.0.4
   remote_port: 8000
   model: auto
   max_concurrency: 1
-  roles: [agent]
-- ssh_host: a0214
+  roles:
+  - agent
+- ssh_host: a0144
   remote_host: 127.0.0.4
   remote_port: 8000
   model: auto
   max_concurrency: 1
-  roles: [agent]
-- ssh_host: a0345
+  roles:
+  - agent
+- ssh_host: a0148
   remote_host: 127.0.0.4
   remote_port: 8000
   model: auto
   max_concurrency: 1
-  roles: [reviewer]
-- ssh_host: a0107
+  roles:
+  - agent
+- ssh_host: a0168
   remote_host: 127.0.0.4
   remote_port: 8000
   model: auto
   max_concurrency: 1
-  roles: [judge]
-- ssh_host: a0183
+  roles:
+  - agent
+- ssh_host: a0202
   remote_host: 127.0.0.4
   remote_port: 8000
   model: auto
   max_concurrency: 1
-  roles: [judge2]
+  roles:
+  - agent
+- ssh_host: a0210
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles:
+  - agent
+- ssh_host: a0221
+  remote_host: 127.0.0.4
+  remote_port: 8000
+  model: auto
+  max_concurrency: 1
+  roles:
+  - agent

@@ -97,6 +97,20 @@ def enabled(ctx: Ctx) -> list[str]:
     return [s["key"] for s in REGISTRY if s["key"] not in skip]
 
 
+def _waiting_for_search(ctx: Ctx) -> bool:
+    """pipeline.confirm_search: the search runs only with a query the review team confirmed (To-do list: the agent's
+    query, alternatives with their PubMed counts, changes asked in plain words). Once the search exists, nothing waits."""
+    st = ctx.store
+    if not ctx.cfg["pipeline"].get("confirm_search") or st.get("search"):
+        return False
+    if ((st.meta.get("search_strategy") or {}).get("confirmed") or {}).get("query"):
+        return False
+    ctx.save()
+    ctx.log("[pipeline] the search waits for a confirmed query (pipeline.confirm_search): choose or write one in the "
+            "To-do list (Search strategy), then run again.")
+    return True
+
+
 def _waiting_for_pdfs(ctx: Ctx) -> bool:
     """pipeline.wait_for_pdfs: the first synthesis is written only once every requested full text has arrived or
     been declared not obtainable, so it is written once, on the settled set, instead of revised study by study.
@@ -105,7 +119,6 @@ def _waiting_for_pdfs(ctx: Ctx) -> bool:
     if not ctx.cfg["pipeline"].get("wait_for_pdfs") or st.by_type("synthesis", active_only=True):
         st.meta.pop("waiting_for_pdfs", None)
         return False
-    from .stages import fulltext
     pending = [x for x in fulltext.needed_pdfs(ctx) if not x["present"] and not x["declared_not_obtainable"]]
     if not pending:
         st.meta.pop("waiting_for_pdfs", None)
@@ -131,6 +144,8 @@ def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
             ctx.log(f"[pipeline] stage {key} skipped (pipeline.skip_stages)")
             continue
         if key == "synthesize" and _waiting_for_pdfs(ctx):
+            return
+        if key == "search" and _waiting_for_search(ctx):
             return
         stage["run"](ctx, state)
         if key == "plan" and (stop_after_plan or until == "plan"):

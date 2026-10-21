@@ -234,7 +234,7 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
            "pdf_unavailable": rid in st.meta.get("pdf_unavailable", [])}
     if ftn:
         f = ftn["data"]
-        out["source"] = {k: f.get(k) for k in ("kind", "origin", "pmcid", "chars", "local_file")}
+        out["source"] = {k: f.get(k) for k in ("kind", "origin", "pmcid", "chars", "local_file", "auto_pdf", "auto_text", "auto_pdf_status")}
         if with_text:
             out["source"]["text"] = f.get("text", "")
     if sc:

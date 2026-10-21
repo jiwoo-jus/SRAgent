@@ -10,7 +10,7 @@ from ..todos import STEPS
 
 def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     st = ctx.store
-    tcount = Counter(t["step"] for t in todos if not t.get("snoozed"))
+    tcount = Counter(t["step"] for t in todos if not t.get("snoozed") and not t.get("optional"))
     screens = st.by_type("screen")
     dec = Counter(n["data"]["decision"] for n in screens)
     ta = [n for n in screens if n["data"]["stage"] == "title_abstract"]
@@ -25,6 +25,7 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     syn = st.by_type("synthesis", active_only=True)
     syn_flag = sum(1 for n in syn for f in n["flags"] if f["status"] == "open")
     s = (st.get("search") or {}).get("data", {})
+    conf_q = (st.meta.get("search_strategy") or {}).get("confirmed") or {}
     proto = st.get("protocol")
     human_dec = sum(1 for n in screens if n["data"].get("human_decision"))
 
@@ -33,7 +34,9 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
                  ("drafted by the agent (agent-only: used as drafted)" if provenance.mode(ctx) == "agent_only"
                   else "drafted, waiting for your approval") if proto else "not started", "plan"),
         "search": (bool(s), f"{s.get('hits', 0)} PubMed hits; {s.get('n_identified', 0)} records, "
-                   f"{s.get('n_duplicates', 0)} duplicates removed" if s else "not started", "search"),
+                   f"{s.get('n_duplicates', 0)} duplicates removed" if s else
+                   (f"query confirmed by you ({conf_q.get('count')} PubMed hits); run up to stage 2 or later"
+                    if conf_q.get("query") else "not started"), "search"),
         "screen": (bool(screens) and not any(n["data"]["stage"] == "title_abstract" and n["data"]["decision"] != "exclude" for n in screens),
                    f"{len(screens)} screened · {dec.get('include', 0)} included after full-text review · {dec.get('exclude', 0)} excluded · "
                    f"{dec.get('awaiting', 0)} undecided · {dec.get('forward', 0)} waiting for full-text review · "
@@ -47,11 +50,14 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
         "synthesis": (bool(syn), f"{len(syn)} statements · {syn_flag} flagged by the self-check" if syn else "not written yet", "synthesize"),
         "feedback": (True, "flag anything in the report or the to-do list; proposals appear here", None),
     }
+    ready = {"search": not s and bool(conf_q.get("query")),                               # query confirmed, not run yet
+             "synthesis": not syn and bool(inc) and len(ext) == len(inc) and len(robs) == len(inc)
+                          and not st.meta.get("waiting_for_pdfs")}                      # inputs complete, not written yet
     out = []
     for key, label in STEPS:
         done, summary, run_until = info[key]
         n = tcount.get(key, 0)
-        status = "needs you" if n else ("done" if done else "to do")
+        status = "needs you" if n else ("done" if done else ("ready to run" if ready.get(key) else "to do"))
         out.append({"key": key, "label": label, "status": status, "summary": summary, "todos": n,
                     "run_until": run_until})
     return out

@@ -68,6 +68,58 @@ Rules: one block per core concept, OR within a block, AND between blocks. Use [t
 appropriate, MeSH [mh]. Prefer sensitivity (recall) over precision: a systematic review must not
 miss eligible studies. Do not add design or language filters unless the protocol requires them."""
 
+PLAN_REVISE = """Revise this review protocol as the review team asks.
+
+CURRENT PROTOCOL (JSON):
+{protocol}
+
+REQUEST FROM THE REVIEW TEAM: {instruction}
+
+Return JSON: {{"protocol": <the full protocol in exactly the same JSON schema>, "explanation": str, "changed_ids": [str]}}
+Rules: apply exactly what was asked and keep everything else as it is, including the ids and wording of criteria the
+request does not touch (a new criterion takes the next free id of its type: I5, E7, ...). Criteria stay atomic and
+checkable from a paper; alternatives share an "any_of" label rather than becoming separate criteria that must all
+hold. "explanation": one or two sentences on what changed and what it means for screening (recall or precision).
+If the request is unclear, return the protocol unchanged and ask one question in the explanation."""
+
+SEARCH_VARIANTS = """Propose alternative PubMed search strategies for this protocol, so the review team can choose.
+
+PROTOCOL:
+{protocol}
+
+VALIDATED SYNONYMS FROM DATABASES (RxNorm / ChEMBL / PubChem / MONDO):
+{synonyms}
+
+CURRENT QUERY (the one the agent would run; {current_count} PubMed hits):
+{current}
+
+Return JSON: {{"variants": [{{"name": str, "query": str, "rationale": str, "expect": "sensitive"|"balanced"|"precise"}}]}}
+Rules: 5 variants that differ in a stated way, each a complete PubMed query ([tiab] and [mh] terms, OR within a
+concept block, AND between blocks): for example the current query with a third concept block added (the
+intervention or outcome the protocol requires), a MeSH-heavy version, a version restricted to study designs the
+protocol names, a precise version with proximity or title-only terms, and a maximally sensitive version.
+"rationale": one or two sentences on what the variant gains and what it may lose. Never add a NOT clause for
+publication types unless the review team asked for one: NOT drops records invisibly, and letters or reports with
+original data get lost; the screening rules remove reviews and editorials visibly after retrieval.
+Name each variant in a few words."""
+
+SEARCH_REFINE = """Revise this PubMed query as the review team asks.
+
+PROTOCOL:
+{protocol}
+
+CURRENT QUERY ({current_count} PubMed hits):
+{current}
+
+REQUEST FROM THE REVIEW TEAM: {instruction}
+
+Return JSON: {{"query": str, "explanation": str}}
+Rules: apply exactly what was asked and keep everything else as it is; the query must stay a complete, valid PubMed
+query. "explanation": one or two sentences on what changed and the likely effect on hits and on recall. If the request
+would lose eligible studies (for example NOT review[pt] also drops reports with original data indexed as reviews), do
+it and say so in the explanation. If the request is unclear, return the current query unchanged and ask one question
+in the explanation."""
+
 # ----------------------------------------------------------------------------- screening
 SCREEN = """Assess this record against each eligibility criterion.
 

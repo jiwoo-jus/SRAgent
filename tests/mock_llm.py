@@ -130,6 +130,19 @@ def mock_fn(messages, mode):
         return json.dumps({"fields": {n: {"value": f"{n} merged value", "evidence": ["s1"]} for n in names}})
     if "Check one extracted value against the original paper" in u:
         return json.dumps({"label": "supported", "rationale": "mock"})
+    if "Revise this review protocol as the review team asks" in u:
+        cur = _json_after(u, "CURRENT PROTOCOL (JSON):")
+        for c in cur.get("criteria", []):
+            if c["id"] == "I2":
+                c["text"] = c["text"] + " (widened as asked)"
+        return json.dumps({"protocol": cur, "explanation": "I2 widened", "changed_ids": ["I2"]})
+    if "Propose alternative PubMed search strategies" in u:
+        return json.dumps({"variants": [{"name": f"Variant {i}", "query": f"emicizumab[tiab] AND block{i}[tiab]",
+                                         "rationale": f"differs in block {i}", "expect": ["sensitive", "balanced", "precise"][i % 3]}
+                                        for i in range(1, 6)]})
+    if "Revise this PubMed query as the review team asks" in u:
+        cur = u.split("CURRENT QUERY", 1)[1].split("\n", 2)[1].strip()
+        return json.dumps({"query": cur + " NOT review[pt]", "explanation": "added NOT review[pt]; reports indexed as reviews are lost"})
     if "Identify which output it targets" in u:
         return json.dumps({"target": "NEW_PAPER", "field": "", "pmid": ""})
     return json.dumps({"ok": True})

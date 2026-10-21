@@ -173,6 +173,8 @@ Defaults are in parentheses.
 | `validate_terms` (true) | check drug and disease terms in RxNorm, PubChem, ChEMBL, MONDO |
 | `verify_synthesis` (true) | check every synthesis statement against the cited data |
 | `repair_synthesis` (true) | one repair round: a statement the check faulted is narrowed to what the data show, checked again, and retired if still unsupported |
+| `confirm_search` (false) | human-in-the-loop: the search runs only with a query the review team confirmed in the To-do list (Search strategy: the agent's query and five alternatives with their PubMed counts, changes asked in plain words, any query counted); without it the agent's query runs. The New-review form sets it for human-in-the-loop reviews |
+| `keep_fetched_files` (true) | what the agent fetched is kept in `fulltext/auto/` beside your PDFs: the parsed text (`<id>.txt`) and, for articles with a PMC id, the PDF from Europe PMC or NCBI (`<id>.pdf`, best effort). `sragent fetch-files` does it for an existing review |
 | `wait_for_pdfs` (false) | real reviews: the first synthesis is written only once every requested full text has been supplied or declared not obtainable, so it is written once on the settled set; the run stops before the synthesis and says what is missing (`needed_pdfs.csv`), and `sragent run` continues when the list is settled. A synthesis that exists is never held back; later PDFs still propagate through the update engine |
 | `skip_stages` ([]) | stages to leave out, e.g. `[rob]` or `[snowball]`; `plan`, `screen` and `report` cannot be skipped |
 

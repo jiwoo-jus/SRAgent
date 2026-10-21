@@ -6,6 +6,7 @@ A human checkpoint: the protocol is written to <run_dir>/protocol.yaml. Edit it 
 from __future__ import annotations
 
 import json
+import time
 
 import yaml
 
@@ -82,6 +83,90 @@ def sync_criteria(st, protocol: dict, actor: str = "agent", reason: str = "proto
 def _differs(a: dict, b: dict) -> bool:
     keep = lambda p: {k: v for k, v in p.items() if k != "key_concepts"}   # concept validation is added by the run
     return json.dumps(keep(a), sort_keys=True, default=str) != json.dumps(keep(b), sort_keys=True, default=str)
+
+
+CRITERION_KEYS = ("id", "type", "text", "stage", "any_of")
+
+
+def apply_protocol(ctx: Ctx, protocol: dict, actor: str, reason: str, record: dict | None = None) -> dict:
+    """Store a changed protocol (file + node), sync the criterion nodes and re-derive rule-only decisions; the change
+    is a person's judgment (refused in agent-only mode) and is recorded in provenance. Returns what changed."""
+    from .. import provenance
+    from . import screening
+    st = ctx.store
+    provenance.require_judgment_allowed(ctx, "changing the protocol")
+    old = (st.get("protocol") or {}).get("data") or {}
+    changed = _changed_criteria(old, protocol)
+    with open(ctx.run_dir / "protocol.yaml", "w") as f:
+        yaml.safe_dump(protocol, f, sort_keys=False, allow_unicode=True)
+    st.upsert("protocol", "protocol", protocol, actor=actor, reason=reason)
+    sync_criteria(st, protocol, actor=actor, reason=reason)
+    r = screening.rescreen_rule_only(ctx, protocol) if st.by_type("screen") else {"changed": 0}
+    provenance.record(ctx, "human_judgment", "protocol_edited" if actor == "user" else "protocol_revision_requested",
+                      changed=changed, **(record or {}))
+    st.meta.setdefault("protocol_revisions", []).append({"ts": time.strftime("%Y-%m-%d %H:%M"), "actor": actor,
+                                                         "reason": reason, "changed": changed, **(record or {})})
+    st.meta.pop("protocol_approved", None)      # a changed protocol is approved again
+    return {"changed": changed, "decisions_changed": r["changed"]}
+
+
+def revise_protocol(ctx: Ctx, instruction: str) -> dict:
+    """The agent revises the protocol as the review team asks (one call to the plan stage's model), then applies it."""
+    st = ctx.store
+    cur = (st.get("protocol") or {}).get("data") or {}
+    out = ctx.agent.chat(ctx.msgs(prompts.PLAN_REVISE.format(
+        protocol=json.dumps(cur, ensure_ascii=False, indent=1), instruction=instruction)), tag="plan_revise")
+    new = out.get("protocol")
+    explanation = str(out.get("explanation") or "")
+    if not isinstance(new, dict) or not new.get("criteria"):
+        return {"applied": False, "explanation": explanation or "the agent returned no protocol", "changed": {}}
+    for kc in new.get("key_concepts", []):        # keep the validated synonyms of unchanged concepts
+        for old_kc in cur.get("key_concepts", []):
+            if old_kc.get("term") == kc.get("term") and old_kc.get("validation") and not kc.get("validation"):
+                kc["validation"] = old_kc["validation"]
+    if not _differs(cur, new):
+        st.meta.setdefault("protocol_revisions", []).append({"ts": time.strftime("%Y-%m-%d %H:%M"), "actor": "agent",
+                                                             "instruction": instruction, "explanation": explanation, "changed": {}})
+        return {"applied": False, "explanation": explanation, "changed": {}}
+    r = apply_protocol(ctx, new, actor="agent", reason=f"revised at the review team's request: {instruction[:120]}",
+                       record={"instruction": instruction, "explanation": explanation})
+    ctx.log(f"[plan] protocol revised as asked ({instruction[:80]}): {r['changed']}")
+    return {"applied": True, "explanation": explanation, **r}
+
+
+def edit_criteria(ctx: Ctx, criteria: list[dict], note: str = "") -> dict:
+    """A person's edits to the criteria from the interface (text, type, stage, any_of; removal; new ones), applied like
+    an edit of protocol.yaml (no model call)."""
+    st = ctx.store
+    cur = (st.get("protocol") or {}).get("data") or {}
+    new = json.loads(json.dumps(cur))
+    by_id = {c["id"]: c for c in new.get("criteria", [])}
+    out = []
+    for c in criteria:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        if c.get("remove"):
+            by_id.pop(c["id"], None)
+            continue
+        base = by_id.get(c["id"]) or {"id": c["id"]}
+        for k in ("type", "text", "stage", "any_of"):
+            if k in c and c[k] not in (None, ""):
+                base[k] = c[k]
+            elif k == "any_of" and k in c:
+                base.pop("any_of", None)
+        if base.get("type") not in ("inclusion", "exclusion", "practical") or not str(base.get("text", "")).strip():
+            raise ValueError(f"criterion {c['id']}: needs a type (inclusion/exclusion/practical) and a text")
+        base.setdefault("stage", "title_abstract")
+        by_id[c["id"]] = base
+        out.append(base)
+    new["criteria"] = [by_id[c["id"]] for c in new.get("criteria", []) if c["id"] in by_id] + \
+                      [c for c in out if c["id"] not in {x["id"] for x in new.get("criteria", [])}]
+    if not _differs(cur, new):
+        return {"applied": False, "changed": {}}
+    r = apply_protocol(ctx, new, actor="user", reason="criteria edited in the interface" + (f": {note[:100]}" if note else ""),
+                       record={"note": note})
+    ctx.log(f"[plan] criteria edited by the review team: {r['changed']}")
+    return {"applied": True, **r}
 
 
 def _changed_criteria(a: dict, b: dict) -> dict:

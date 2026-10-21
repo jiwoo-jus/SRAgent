@@ -84,6 +84,57 @@ def _download_oa(ctx: Ctx, rid: str, locs: list[dict]) -> Path | None:
     return None
 
 
+PMC_PDF_URLS = ("https://europepmc.org/articles/{pmcid}?pdf=render", "https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/pdf/")
+
+
+def keep_fetched_files(ctx: Ctx, rid: str, pmcid: str | None, text: str, data: dict) -> None:
+    """What the agent fetched is kept as files beside the user's PDFs, in fulltext/auto/: the parsed text always
+    (<rid>.txt) and, for an article with a PMC id, the publisher's PDF from Europe PMC or NCBI (<rid>.pdf; best
+    effort, publishers sometimes refuse scripts). pipeline.keep_fetched_files turns this off."""
+    if not ctx.cfg["pipeline"].get("keep_fetched_files", True):
+        return
+    import requests
+    d = fulltext_dir(ctx) / "auto"
+    d.mkdir(parents=True, exist_ok=True)
+    if text and text.strip():
+        (d / f"{rid}.txt").write_text(text)
+        data["auto_text"] = f"auto/{rid}.txt"
+    pdf = d / f"{rid}.pdf"
+    if pdf.exists():
+        data["auto_pdf"] = f"auto/{rid}.pdf"
+        return
+    if not pmcid:
+        return
+    for url in PMC_PDF_URLS:
+        try:
+            r = requests.get(url.format(pmcid=pmcid), timeout=60, allow_redirects=True,
+                             headers={"User-Agent": f"sragent/0.2 (systematic review research; mailto:{contact_email(ctx)})"})
+        except requests.RequestException:
+            continue
+        if r.status_code == 200 and r.content[:5] == b"%PDF-":
+            pdf.write_bytes(r.content)
+            data["auto_pdf"] = f"auto/{rid}.pdf"
+            return
+    data["auto_pdf_status"] = "PMC refused the PDF download from this machine; the text was kept and the study page links to the PDF for your browser"
+
+
+def backfill_fetched_files(ctx: Ctx) -> dict:
+    """For an existing review: keep the agent-fetched texts and PDFs of every full text that has none yet."""
+    st = ctx.store
+    done, pdfs = 0, 0
+    for n in st.by_type("fulltext"):
+        f = n["data"]
+        if f.get("kind") != "fulltext" or f.get("local_file") or f.get("auto_pdf"):
+            continue
+        rid = n["id"].split(":", 1)[1]
+        keep_fetched_files(ctx, rid, f.get("pmcid"), f.get("text", ""), f)
+        done += 1
+        pdfs += bool(f.get("auto_pdf"))
+    ctx.save()
+    ctx.log(f"[fulltext] fetched files kept for {done} studies ({pdfs} PDFs downloaded) in {fulltext_dir(ctx) / 'auto'}")
+    return {"studies": done, "pdfs": pdfs}
+
+
 def _parse(ctx: Ctx, path: Path) -> tuple[str, str]:
     from ..docparse import parse_file
     try:
@@ -158,6 +209,8 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
                              for l in oa_locs][:5],
             "supplements_listed": listed_supp[:10], "supplements_used": supp_used,
             "local_file": local.name if local else None}
+    if kind == "fulltext" and local is None:        # fetched by the agent: kept as files beside the user's PDFs
+        keep_fetched_files(ctx, rid, pmcid, text, data)
     st.upsert(f"ft:{rid}", "fulltext", data, depends_on=[f"rec:{rid}"], reason=f"retrieved ({origin}; {parser or 'abstract'})")
     return data
 
