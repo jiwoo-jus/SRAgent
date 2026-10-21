@@ -67,22 +67,39 @@ def inject_eligibility(ctx: Ctx, rid: str, structural: bool = True) -> dict | No
     n = st.get(f"screen:{rid}")
     if not n or n["data"]["decision"] != "include":
         return None
-    data = copy.deepcopy(n["data"])
-    for a in data["criteria"]:
-        if a["id"] == "I3":
-            a["assessment"] = "not_met"
     p = st.get("protocol")["data"]
-    dec, because = screening.rule_decision(p, data["criteria"], data["stage"])
+    crits = {c["id"]: c for c in p.get("criteria", [])}
+    # the flipped criterion must really exclude the study under the protocol's rule: a member of an any_of group
+    # alone does not (the alternatives still hold), so the whole group is flipped; a plain criterion comes first
+    met = [a["id"] for a in n["data"]["criteria"]
+           if a.get("assessment") == "met" and crits.get(a["id"], {}).get("type") == "inclusion"]
+    met.sort(key=lambda cid: bool(crits[cid].get("any_of")))
+    chosen, data, dec, because = None, None, None, None
+    for cid in met:
+        group = [x for x in crits if crits[x].get("any_of") and crits[x]["any_of"] == crits[cid].get("any_of")] or [cid]
+        trial = copy.deepcopy(n["data"])
+        for a in trial["criteria"]:
+            if a["id"] in group:
+                a["assessment"] = "not_met"
+        d, b = screening.rule_decision(p, trial["criteria"], trial["stage"])
+        if d == "exclude":
+            chosen, data, dec, because = group, trial, d, b
+            break
+    if not chosen:
+        return None
     data["decision"], data["because"] = dec, because
+    data.pop("unclear_by_rule", None)
     gold = copy.deepcopy(n["data"])
     st.upsert(n["id"], "screen", data, depends_on=n["depends_on"], actor="injector", reason="planted error")
     if structural:
         for kind in ("ext", "rob"):
             if st.get(f"{kind}:{rid}"):
                 st.set_status(f"{kind}:{rid}", "excluded", actor="injector", reason="planted error")
-    return {"type": "eligibility", "node": n["id"], "field": "I3", "location": n["id"],
-            "gold": {"decision": gold["decision"], "I3": "met"}, "corrupted": {"decision": dec, "I3": "not_met"},
-            "description": f"Study {rid} meets all criteria but was marked excluded (I3 not met)."}
+    label = ", ".join(chosen)
+    return {"type": "eligibility", "node": n["id"], "field": label, "location": n["id"],
+            "gold": {"decision": gold["decision"], **{c: "met" for c in chosen}},
+            "corrupted": {"decision": dec, **{c: "not_met" for c in chosen}},
+            "description": f"Study {rid} meets all criteria but was marked excluded ({label} not met)."}
 
 
 def inject_rob(ctx: Ctx, rid: str, rnd: random.Random) -> dict | None:

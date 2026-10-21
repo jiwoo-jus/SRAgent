@@ -1258,3 +1258,25 @@ def test_reincluded_study_restores_the_statements_that_cited_it(tmp_path):
     assert st.get("syn:S2")["status"] == "active"                       # revived: it cited the study before
     assert "1001" in st.get("syn:S1")["data"]["cites"]
     assert any(c["node"] == "syn:S2" and c["after"] == {"status": "active"} for c in cs["changes"])
+
+
+def test_planted_eligibility_error_really_excludes_under_any_of(tmp_path):
+    """The eligibility corruption flips a criterion whose failure excludes the study under the protocol's rule: with
+    alternatives (any_of), one member alone does not, so the plain criterion is chosen or the whole group flipped."""
+    from sragent.eval.inject import inject_eligibility
+    from sragent.store import ReviewStore
+    import dataclasses
+    st = ReviewStore(tmp_path)
+    crit = [{"id": "I1", "type": "inclusion", "text": "about emicizumab"},
+            {"id": "I3", "type": "inclusion", "text": "original PK", "any_of": "A"},
+            {"id": "I4", "type": "inclusion", "text": "modelled PK", "any_of": "A"}]
+    st.upsert("protocol", "protocol", {"criteria": crit}, depends_on=[])
+    A = lambda **kw: [{"id": k, "assessment": v, "evidence": []} for k, v in kw.items()]
+    st.upsert("screen:1", "screen", {"stage": "full_text", "decision": "include", "because": [], "criteria": A(I1="met", I3="met", I4="met")}, depends_on=[])
+    st.upsert("screen:2", "screen", {"stage": "full_text", "decision": "include", "because": [], "criteria": A(I1="unclear", I3="met", I4="met")}, depends_on=[])
+    ctx = type("C", (), {})(); ctx.store = st
+    e1 = inject_eligibility(ctx, "1", structural=False)
+    assert e1["field"] == "I1" and st.get("screen:1")["data"]["decision"] == "exclude"     # the plain criterion first
+    e2 = inject_eligibility(ctx, "2", structural=False)
+    assert e2["field"] == "I3, I4" and st.get("screen:2")["data"]["decision"] == "exclude"  # the whole group
+    assert e2["corrupted"]["decision"] == "exclude" and e2["gold"]["I4"] == "met"

@@ -490,6 +490,8 @@ Supplied inputs are marked in the run record and in the report. They live in a s
 
 **4. Claim 2: R0 is a reference, not the truth.** R0 is the review before the error was planted. Two outcomes are scored separately: **R0 recovery** (did the revision restore R0?) and **source correctness** (is the revised target right according to the paper, judged from the source text; for eligibility cases, is the study included and a gold include?). When cases are built, agreement with external gold is recorded automatically: eligible-study cases (B, C) use only gold includes with a full text, E uses gold excludes, and for A and D (no value-level gold exists) R0's value is checked against the source. Conflicting or unverifiable cases are flagged and reported separately. Re-scoring (`--suite claim2_rescore --from-run <id>`) always loads that experiment's own `claim2_R0_store.json`.
 
+**4a0. Eligibility corruptions must exclude.** The planted eligibility error (Claim 1's eligibility item, Claim 2's B cases) flips a criterion whose failure excludes the study under the protocol's rule: with `any_of` alternatives one member alone does not, so a plain inclusion criterion is flipped first, else the whole group. Before this (run 20261020-162231_all_v3b and earlier) I3 was flipped alone, the study stayed included at screening while its data were removed, and the dependency-aware revision saw no eligibility flip to act on (B cases 0.4 to 0.5 downstream).
+
 **4a. A cases need a study-specific number.** The number changed in the extraction must appear in a statement that cites the study and in no other included study's data; a shared dose (3 mg/kg, 1.5 mg/kg) stays in the statement, rightly, when one study's value changes, and such a corruption never reaches the synthesis (the builder then tries another study without spending the propagation call).
 
 **4b. Claim 2 builds are saved as they go.** Every case is written to `claim2_built.json` and its corrupted store to `claim2_R1/<id>.json` the moment it is built, so a budget stop during the build (the costly part: the synthesis is rewritten per case) loses nothing, and `--resume` continues from the cases that exist. For development use `claim2_cases_per_type: 2` or `--n-cases 1`.
@@ -691,6 +693,17 @@ False feedback accepted: 1/4 with verification off, 0/4 with it on. Ineligible p
 * Known-answer controls 22/22 correct (95% CI 0.85 to 1.00).
 * Gemini Pro vs Gemma on 40 items: raw agreement 0.975, kappa 0.96. Match, revision and control judgments agreed perfectly. The single disagreement was again an open-ended "is this a genuine error" judgment.
 * So the advisor's suggestion holds in both runs. Judgments made against a known answer are reliable enough to replace human scoring. The 15-item `human_audit_sheet.csv` should focus on the open-ended genuine-error and new-error judgments.
+
+### 11.7 Recommended-model configuration after the fix rounds (run 20261020-162231_all_v3b, git 43731ea)
+
+The first complete run of the post-refactor code with the recommended models (`configs/benchmark/emicizumab_pk/recommended_v3_agentonly.yaml`: Haiku 5.5 for screening, full texts, citation chasing and risk of bias; Sonnet 5.5 at high effort for protocol, search, extraction, synthesis and revisions; GPT-6.1 Sol as verifier and second judge; Gemini 3.1 Pro judge; Gemini 3.8 Flash reviewer at low effort), at development sizes (Claim 1: 3 sets x 1 repeat; Claim 2: 2 cases per type). The row is in `docs/RESULTS.md`. Review $1.84, evaluation $8.63.
+
+* Selection: end-to-end recall 0.93, precision 0.93 (16 included, 14 of 15 gold; the missed one is a correspondence page whose PDF holds no PK data); title/abstract forwarding recall 1.0. The decisive full-text prompt with the whole paper in view did this: one inclusion by the unclear rule against 24 in the run before the fixes.
+* Grounding: extraction values supported by their cited sentences 0.70 (0 unsupported, the rest partial), evidence located 0.99.
+* Synthesis: 9 of 9 statements supported, no overgeneralisation, citations valid, self-check and judge agree on 0.89.
+* Claim 1: detection 0.40 report-only vs 0.53 evidence-linked (repair 0.33 vs 0.53, precision 0.52 vs 0.86); 15 units, sign test p = 0.69. Risk-of-bias errors were found only with the evidence (3/3 vs 0/3); synthesis errors by neither.
+* Claim 2: downstream completion 0.19 local edit vs 0.82 dependency-aware (6 units, sign test p = 0.03, no new errors); A and C cases 1.0, B cases 0.45 because the planted eligibility error did not exclude the study under the any_of protocol (section 10.4, 4a0; fixed after this run). False feedback accepted: 0 of 2 in both conditions.
+* Judge validation: known-answer controls 1.0 (9 items); agreement with the second judge, now a different family (GPT-6.1 Sol), kappa 0.79 overall, 0.28 on the subjective "genuine error" items.
 
 ### 11.6 v1 pilot, for reference (60 records, mixed gpt-6.1-sol and Gemini)
 

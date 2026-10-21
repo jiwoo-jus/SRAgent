@@ -120,15 +120,18 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
     for rid in sorted(inc):
         if scope is not None and f"screen:{rid}" not in scope:
             continue
+        back = False
         if not st.get(f"ext:{rid}") and f"ext:{rid}" not in {i["node"] for i in items}:
             items.append(_item(f"ext:{rid}", "extraction", "extract", ["included, not extracted"], False, rid))
         elif st.get(f"ext:{rid}") and st.get(f"ext:{rid}")["status"] != "active" and \
                 f"ext:{rid}" not in {i["node"] for i in items}:
             items.append(_item(f"ext:{rid}", "extraction", "reactivate", ["included again"], False, rid))
+            back = True   # a study included again: the statements that cited it must get it back (history)
         if st.get(f"ext:{rid}") and not st.get(f"rob:{rid}") and f"rob:{rid}" not in {i["node"] for i in items}:
             items.append(_item(f"rob:{rid}", "rob", "assess", ["included, not assessed"], False, rid))
-        if has_syn and rid not in considered:
-            items.append(_item(f"syn:+{rid}", "synthesis", "integrate", ["included, not in the synthesis"], False, rid))
+        if has_syn and (rid not in considered or back):
+            items.append(_item(f"syn:+{rid}", "synthesis", "integrate",
+                               ["included again, dropped from the synthesis" if back else "included, not in the synthesis"], False, rid))
     # active outputs of studies that are no longer included
     for n in st.by_type("extraction", active_only=True) + st.by_type("rob", active_only=True):
         rid = study_of(n["id"])
