@@ -240,6 +240,23 @@ def cmd_eval_audit(args):
     print(json.dumps(run_all.import_audit(ctx, args.run, args.file), indent=1))
 
 
+def cmd_verify_screening(args):
+    from .stages.screening import verify_existing
+    ctx = _ctx(args)
+    protocol = ctx.store.get("protocol")["data"]
+    print(json.dumps(verify_existing(ctx, protocol, mode=args.mode, only=args.rids or None), indent=1))
+
+
+def cmd_verify_rob(args):
+    from .stages.rob import verify_existing
+    print(json.dumps(verify_existing(_ctx(args), only=args.rids or None), indent=1))
+
+
+def cmd_reassess_rob(args):
+    from .stages.rob import reassess_all
+    print(json.dumps(reassess_all(_ctx(args), only=args.rids or None), indent=1))
+
+
 def cmd_fetch_files(args):
     from .stages.fulltext import backfill_fetched_files
     print(json.dumps(backfill_fetched_files(_ctx(args)), indent=1))
@@ -345,6 +362,20 @@ def main(argv=None):
     p.add_argument("--run", required=True)
     p.add_argument("--file", required=True)
     p.set_defaults(fn=cmd_eval_audit)
+
+    p = sub.add_parser("verify-screening", help="a second reading (roles.verifier) of screening decisions already made; disagreements go to a person"); common(p)
+    p.add_argument("--mode", default="pending", choices=["pending", "full_text", "all"],
+                   help="pending: records undecided after their full text; full_text: every full-text decision too; all: also title/abstract exclusions")
+    p.add_argument("--rids", nargs="*", default=None, help="only these record ids")
+    p.set_defaults(fn=cmd_verify_screening)
+
+    p = sub.add_parser("verify-rob", help="the verifier's second look (roles.verifier) at risk-of-bias drafts flagged with a reason; what it cannot settle goes to a person"); common(p)
+    p.add_argument("--rids", nargs="*", default=None, help="only these record ids")
+    p.set_defaults(fn=cmd_verify_rob)
+
+    p = sub.add_parser("reassess-rob", help="draft every included study's risk of bias again with the current prompt and settings (confirmed drafts are kept)"); common(p)
+    p.add_argument("--rids", nargs="*", default=None, help="only these record ids")
+    p.set_defaults(fn=cmd_reassess_rob)
 
     p = sub.add_parser("fetch-files", help="keep the agent-fetched full texts of an existing review as files (fulltext/auto/: text, and the PMC PDF when available)"); common(p)
     p.set_defaults(fn=cmd_fetch_files)

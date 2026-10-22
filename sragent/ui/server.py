@@ -29,7 +29,7 @@ from ..context import Ctx
 from .configs import Library
 
 STATIC = Path(__file__).parent / "static"
-STAGE_JOBS = ("run", "pdfs", "sync")   # pipeline work: every stage uses its own model (stage_models)
+STAGE_JOBS = ("run", "pdfs", "sync", "reassess_rob")   # pipeline work: every stage uses its own model (stage_models)
 
 
 class App:
@@ -161,6 +161,7 @@ class App:
         if a == "feedback":
             return f"Feedback on {spec.get('target') or 'the review'}: {(spec.get('text') or '')[:60]}"
         return {"pdfs": "Process added PDFs", "sync": "Update outputs after decisions",
+                "reassess_rob": "Redraft every risk-of-bias assessment",
                 "eval": f"Evaluation ({spec.get('suite', 'all')})"}.get(a, a)
 
     # ------------------------------------------------------------ catalog
@@ -256,6 +257,14 @@ class App:
             calls = {"extract": len(pc["need_extract"]), "rob": len(pc["need_rob"]),
                      "feedback": len(pc["new_for_synthesis"]) + 2 * len(pc["excluded_but_cited"]),
                      "synthesis_verify": 3 if (pc["new_for_synthesis"] or pc["excluded_but_cited"]) else 0}
+        elif action == "reassess_rob":
+            import math
+            from ..estimate import ROB_FLAG_RATE
+            st = ctx.store
+            n = sum(1 for r in st.included_ids() if st.get(f"ext:{r}")
+                    and not (st.get(f"rob:{r}") and st.get(f"rob:{r}")["data"].get("human_confirmed")))
+            calls = {"rob": n, "rob_verify": math.ceil(n * ROB_FLAG_RATE)
+                     if (ctx.cfg["pipeline"].get("verify_rob") or "off") == "flagged" else 0}
         elif action == "feedback":
             calls = {"feedback": 3}
         elif action == "rerun":
@@ -347,6 +356,8 @@ class App:
             return base + ["pdfs", "--config", str(cfgp)]
         if a == "sync":
             return base + ["sync", "--config", str(cfgp)]
+        if a == "reassess_rob":
+            return base + ["reassess-rob", "--config", str(cfgp)]
         if a == "feedback":
             c = base + ["feedback", "--config", str(cfgp), "--text", spec["text"]]
             if spec.get("target"):
@@ -535,6 +546,80 @@ class App:
             r = self._apply_op(self.ctx(), op)
             self.saved()
             return r
+
+    def data_items(self, b: dict, lib: Library) -> dict:
+        """The extraction items and quality domains changed in the interface, at any stage: the topic file is
+        rewritten in place, the changed review-defining setting is accepted (recorded), and the update engine then
+        plans the extraction of new items for every included study ("Out-of-date outputs")."""
+        import re as _re
+        if b.get("op") != "save":
+            return {"ok": False, "message": f"unknown op {b.get('op')}"}
+        with self.lock:
+            if not self.idle():
+                return {"ok": False, "message": "A job is running or queued; change the data items when it has finished."}
+
+        def clean(items, kinds):
+            out, seen = [], set()
+            for it in items or []:
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get("name") or "").strip()
+                desc = str(it.get("description") or "").strip()
+                if not _re.fullmatch(r"[a-z][a-z0-9_]*", name):
+                    raise ValueError(f"item name '{name}': letters, digits and _ only, starting with a letter")
+                if not desc:
+                    raise ValueError(f"item '{name}' needs a description")
+                if name in seen:
+                    raise ValueError(f"item '{name}' is listed twice")
+                seen.add(name)
+                e = {"name": name, "description": desc}
+                if kinds and it.get("kind") in ("drug", "disease"):
+                    e["kind"] = it["kind"]
+                out.append(e)
+            if not out:
+                raise ValueError("at least one item is needed")
+            return out
+        try:
+            fields = clean(b.get("fields"), True)
+            domains = clean(b.get("domains"), False) if b.get("domains") is not None else None
+        except ValueError as e:
+            return {"ok": False, "message": str(e)}
+        target = None
+        for path in self._config_files():
+            try:
+                data = yaml.safe_load(Path(path).read_text()) or {}
+            except yaml.YAMLError:
+                continue
+            if isinstance(data.get("topic"), dict) and "extraction_fields" in data["topic"]:
+                target = Path(path)
+                break
+        if target is None:
+            return {"ok": False, "message": "no file of this run defines topic.extraction_fields"}
+        try:
+            text = lib.set_topic_list(target.read_text(), "extraction_fields", fields)
+            if domains is not None:
+                text = lib.set_topic_list(text, "rob_domains", domains)
+        except ValueError as e:
+            return {"ok": False, "message": str(e)}
+        r = lib.save(str(target), text)
+        if not r.get("ok"):
+            return r
+        self.stale = True
+        self.reload()
+        from .. import config_lock
+        try:
+            ctx = Ctx.create(self.cfg, self.run_dir, check_config=False)
+            ctx.quiet = True
+            if config_lock.pending(self.cfg, self.run_dir):
+                config_lock.accept(ctx, "data items or quality domains edited in the interface")
+            self._ctx = None
+        except ValueError as e:
+            return {"ok": False, "message": str(e)}
+        from ..sync import pending_changes
+        pc = pending_changes(self.ctx()).get("stale") or {}
+        n = (pc.get("summary") or {}).get("extraction:extract", 0) + (pc.get("summary") or {}).get("rob:assess", 0)
+        return {"ok": True, "message": f"saved to {lib.rel(target)}" + (f"; {n} output(s) to bring up to date (Out-of-date outputs)" if n else ""),
+                "pending": pc}
 
     def protocol_change(self, b: dict) -> dict:
         """The protocol changed with the review team: revise (the agent applies a change asked in plain words, one call
@@ -1073,6 +1158,11 @@ def make_handler(ws: Workspace):
                     return self._send(200, app.search_strategy(b))
                 if path == "/api/protocol":
                     return self._send(200, app.protocol_change(b))
+                if path == "/api/data_items":
+                    r = app.data_items(b, ws.lib)
+                    if r.get("ok"):
+                        ws.changed()
+                    return self._send(200, r)
                 if path == "/api/bulk":
                     return self._send(200, app.mutate({"_op": "bulk", **b}))
                 if path == "/api/edit":

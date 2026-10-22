@@ -80,6 +80,22 @@ def settle(protocol: dict, assessments: list[dict], stage: str) -> list[dict]:
                 a["model_assessment"] = "unclear"
                 a["assessment"] = "not_met"
                 a["settled"] = "the paper reports this and it does not satisfy the criterion"
+            elif c and c["type"] == "exclusion" and a.get("assessment") == "unclear" and a.get("reported") is False:
+                a["model_assessment"] = "unclear"
+                a["assessment"] = "not_met"
+                a["settled"] = "the paper gives no sign of this, so the exclusion does not apply"
+        # alternatives (any_of): the whole paper was read and it reports none of them: the group is not met
+        groups: dict[str, list[dict]] = {}
+        for a in assessments:
+            c = crits.get(a.get("id"))
+            if c and c["type"] == "inclusion" and c.get("any_of"):
+                groups.setdefault(str(c["any_of"]), []).append(a)
+        for members in groups.values():
+            if members and all(a.get("assessment") == "unclear" and a.get("reported") is False for a in members):
+                for a in members:
+                    a["model_assessment"] = "unclear"
+                    a["assessment"] = "not_met"
+                    a["settled"] = "the paper reports none of the alternatives of this group"
     return assessments
 
 
@@ -117,7 +133,9 @@ def rederive(protocol: dict, d: dict, policy: str = "await") -> tuple[str, list[
         if dec == "exclude":
             return "exclude", because, "title_abstract", None
         return d["decision"], d.get("because", []), "retrieval", None
-    dec, because, by_rule = decide(protocol, d.get("criteria", []), d["stage"], policy)
+    crits = settle(protocol, [dict(a) for a in d.get("criteria", [])], d["stage"])
+    d["criteria"] = crits
+    dec, because, by_rule = decide(protocol, crits, d["stage"], policy)
     return dec, because, d["stage"], by_rule
 
 
@@ -195,14 +213,21 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
         if cites:
             evidence.append(attach(a, cites, text, f"{a.get('id')}={a.get('assessment')}", src_node))
     decision, because, by_rule = decide(protocol, assessments, stage, ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
+    verify = None
+    if _verify_wanted(ctx, stage, decision):
+        verify, decision, because, by_rule = verify_screen(ctx, protocol, rid, stage, text, limit, assessments, decision, because, by_rule)
     data = {"stage": stage, "decision": decision, "because": because, "criteria": assessments,
             "source_kind": "title_abstract" if stage == "title_abstract" else st.text_of(rid)[1],
             "llm_decision": out.get("decision"), "reason": out.get("reason", ""),
             "confidence": out.get("confidence")}
     if by_rule:
         data["unclear_by_rule"] = by_rule
+    if verify:
+        data["screen_verify"] = verify
+        if verify["outcome"] == "decided_by_verifier":
+            data["decided_by"] = "verifier"
     prev = st.get(f"screen:{rid}")
-    reason = f"{stage} screening"
+    reason = f"{stage} screening" + (f" (verifier {'agreed' if verify['agree'] else 'disagreed: ' + verify['outcome']})" if verify else "")
     if stage == "full_text" and prev:
         pd = prev["data"]
         data["title_abstract"] = pd.get("title_abstract") if pd.get("stage") != "title_abstract" else \
@@ -278,6 +303,130 @@ def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str
         st.flag(n["id"], f"The protocol changed (criteria {', '.join(crit_ids)}): the agent would now say "
                 f"'{agent_dec}', your decision '{hd['decision']}' is kept. Please check.", actor="agent", source="reassess")
     return d
+
+
+def _verify_wanted(ctx: Ctx, stage: str, decision: str) -> bool:
+    """pipeline.verify_screening: full_text checks every full-text decision; all also checks title/abstract
+    exclusions (the recall-critical decision; forwarded records are checked by the full text anyway)."""
+    mode = ctx.cfg["pipeline"].get("verify_screening") or "off"
+    if mode == "off":
+        return False
+    if stage == "full_text":
+        if decision == "awaiting":
+            return mode in ("pending", "full_text", "all")     # the screener could not decide: a second reading
+        return mode in ("full_text", "all")
+    return mode == "all" and decision == "exclude"
+
+
+def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, limit, assessments: list[dict],
+                  decision: str, because: list[str], by_rule) -> tuple[dict, str, list[str], str | None]:
+    """A second agent (roles.verifier, else the stage's model) reads the record and decides independently.
+    Agreement: recorded. Disagreement: a title/abstract exclusion is forwarded to the full text (the full text is
+    the better judge); a full-text decision becomes undecided for a person (agent-only: the fulltext_unclear
+    policy applies, flagged). Both readings are kept on the screening node (`screen_verify`)."""
+    import time
+    from ..evidence import resolve, joined
+    checker = ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub.agent_for(
+        "fulltext" if stage == "full_text" else "screen")
+    brief = "; ".join(f"{a.get('id')}={a.get('assessment')}" + (f" ({a['reason'][:80]})" if a.get("reason") else "")
+                      for a in assessments if isinstance(a, dict))
+    out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY.format(
+        criteria=criteria_text(protocol, stage), synonyms=synonyms_text(protocol), record=packed(text, limit),
+        stage=stage.replace("_", "/"), assessments=brief, decision=decision, because=", ".join(because) or "-",
+        stage_rule=prompts.SCREEN_STAGE_RULE[stage])), tag=f"screen_verify_{stage}")
+    own = str(out.get("decision") or "").lower()
+    own = {"include": "include", "exclude": "exclude"}.get(own, "uncertain")
+    agree = bool(out.get("agree")) if "agree" in out else own == decision
+    # the screener's decision in the verifier's terms: at title/abstract "forward" means include or uncertain
+    screener = decision if stage == "full_text" else ("exclude" if decision == "exclude" else "uncertain")
+    if stage != "full_text" and own in ("include", "uncertain") and screener == "uncertain":
+        agree = True
+    if own == screener:
+        agree = True
+    differs = [d for d in (out.get("differs_on") or []) if isinstance(d, dict) and d.get("id")]
+    for d in differs:
+        d["evidence"] = [sp.get("sid") for sp in resolve(d.get("evidence") or [], text).get("spans", []) if sp.get("sid")]
+    rec = {"by": checker.name, "decision": own, "agree": agree, "explanation": str(out.get("explanation") or "")[:400],
+           "differs_on": differs, "ts": time.strftime("%Y-%m-%d %H:%M")}
+    if decision == "awaiting":   # the screener could not decide: the verifier's reading decides, or it stays with a person
+        if own in ("include", "exclude"):
+            rec["outcome"] = "decided_by_verifier"
+            ids = [d["id"] for d in differs] or list(because)
+            for d in differs:    # the verifier's assessments replace the unclear ones it resolved
+                for a in assessments:
+                    if isinstance(a, dict) and a.get("id") == d["id"] and d.get("assessment"):
+                        a.update({"assessment": d["assessment"], "reason": f"verifier: {d.get('reason', '')}"[:300],
+                                  "evidence": d.get("evidence") or [], "reported": True, "model_assessment": a.get("assessment")})
+            return rec, own, ids if own == "exclude" else [], None
+        rec["outcome"] = "still_undecided"
+        return rec, decision, because, by_rule
+    if agree:
+        rec["outcome"] = "agreed"
+        return rec, decision, because, by_rule
+    ids = [d["id"] for d in differs] or list(because) or [a.get("id") for a in assessments[:1] if isinstance(a, dict)]
+    if stage != "full_text":
+        rec["outcome"] = "forwarded"            # the full text decides
+        return rec, "forward", ids, None
+    agent_only = ctx.cfg["pipeline"].get("human_mode") == "agent_only"
+    policy = ctx.cfg["pipeline"].get("fulltext_unclear", "await") if agent_only else "await"
+    new = {"include": "include", "exclude": "exclude"}.get(policy, "awaiting")
+    rec["outcome"] = "pending_disagreement" if new == "awaiting" else f"{new}_by_policy_disagreement"
+    return rec, new, ids, (policy if new != "awaiting" else None)
+
+
+def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: list[str] | None = None) -> dict:
+    """The second reading for records already screened (pipeline.verify_screening was off then): the records undecided
+    after their full text (every mode), with "full_text" every full-text include/exclude too, with "all" every
+    title/abstract exclusion by the agent as well; decisions a person made and records already read twice are skipped.
+    Outcomes are applied as at screening time."""
+    from collections import Counter
+    st = ctx.store
+    todo = []
+    for n in st.by_type("screen", active_only=True):
+        d = n["data"]
+        rid = n["id"].split(":", 1)[1]
+        if only and rid not in only:
+            continue
+        if d.get("human_decision") or d.get("rule") or d.get("screen_verify") or d.get("eligibility_review"):
+            continue                                           # decided by a person, by rule, or already read twice
+        if d["stage"] == "full_text" and d["decision"] == "awaiting":
+            todo.append(rid)                                   # every mode: the records the screener could not decide
+        elif mode in ("full_text", "all") and d["stage"] == "full_text" and d["decision"] in ("include", "exclude"):
+            todo.append(rid)
+        elif mode == "all" and d["stage"] == "title_abstract" and d["decision"] == "exclude":
+            todo.append(rid)
+    ctx.log(f"[screen] second reading of {len(todo)} decisions ({mode})")
+
+    def one(rid):
+        n = st.get(f"screen:{rid}")
+        d = dict(n["data"])
+        stage = d["stage"]
+        text, _ = screen_source(st, rid, stage)
+        limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
+        rec, dec, because, by_rule = verify_screen(ctx, protocol, rid, stage, text, limit, d.get("criteria", []),
+                                                   d["decision"], d.get("because", []), d.get("unclear_by_rule"))
+        d["screen_verify"] = rec
+        if rec["outcome"] not in ("agreed", "still_undecided"):
+            d.update({"decision": dec, "because": because})
+            d.pop("unclear_by_rule", None)
+            if by_rule:
+                d["unclear_by_rule"] = by_rule
+            if rec["outcome"] == "decided_by_verifier":
+                d["decided_by"] = "verifier"
+        st.upsert(n["id"], "screen", d, depends_on=n["depends_on"],
+                  reason=f"second reading by the verifier: {rec['outcome']}")
+        if rec["outcome"] not in ("agreed", "still_undecided") and rid not in st.included_ids():
+            for kind in ("ext", "rob"):
+                if st.get(f"{kind}:{rid}") and st.get(f"{kind}:{rid}")["status"] == "active":
+                    st.set_status(f"{kind}:{rid}", "excluded", reason="study no longer included after the second reading")
+        return rec["outcome"]
+    with ctx.at("fulltext"):
+        outcomes = ctx.map(one, todo)
+    sync_awaiting_flags(ctx)
+    ctx.save()
+    c = dict(Counter(outcomes))
+    ctx.log(f"[screen] second reading done: {c}")
+    return {"checked": len(todo), "outcomes": c}
 
 
 def screen_all(ctx: Ctx, protocol: dict) -> dict:
@@ -378,7 +527,11 @@ def sync_awaiting_flags(ctx: Ctx):
         d, rid = n["data"], n["id"].split(":", 1)[1]
         dec = d["decision"]
         want = None
-        if dec == "awaiting":
+        if dec == "awaiting" and (d.get("screen_verify") or {}).get("outcome") == "pending_disagreement":
+            v = d["screen_verify"]
+            want = ("screening", f"Awaiting classification: the screener and the verifier disagree after full-text screening "
+                                 f"(verifier: {v.get('decision')}; {v.get('explanation', '')[:200]}). Please decide.")
+        elif dec == "awaiting":
             want = ("screening", f"Awaiting classification: criteria {d.get('because')} unclear after "
                                  f"full-text screening (source: {st.text_of(rid)[1]}). Please decide. "
                                  f"{criterion_reasons(protocol, d)}".rstrip())

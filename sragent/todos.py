@@ -10,7 +10,7 @@ To-do kinds and their step
   eligibility   screen     studies "awaiting classification" after full-text screening
   fulltexts     fulltext   one grouped item listing the PDFs that would help (expected file names)
   flag          by node    agent self-check / evidence / term-validation flags
-  rob           rob        confirm or change each risk-of-bias draft
+  rob           rob        risk-of-bias drafts: a person decides the points neither agent settled; the rest optional
   changeset     feedback   accept or reject a proposed revision
   sync          synthesis  outputs that are out of date after human decisions
 """
@@ -91,6 +91,20 @@ def build(ctx: Ctx) -> list[dict]:
             "retmax": (ctx.topic.get("records") or {}).get("pubmed_retmax"),
             "options": [], "context": []})
 
+    # -- data items and quality domains: changeable at any stage (a review-defining setting, accepted when saved;
+    #    new items are then extracted for every included study by the update engine)
+    tp = ctx.topic or {}
+    inc_ids = st.included_ids()
+    todos.append({
+        "id": "fields", "step": "extract", "kind": "fields", "priority": 9, "optional": True,
+        "title": "Data items and quality domains",
+        "question": "What the agent extracts from every included study, and the quality domains it judges.",
+        "fields": [{k: f.get(k) for k in ("name", "kind", "description") if f.get(k)} for f in tp.get("extraction_fields") or []],
+        "domains": [{k: d.get(k) for k in ("name", "description") if d.get(k)} for d in tp.get("rob_domains") or []],
+        "tool": tp.get("rob_tool_name", ""), "n_included": len(inc_ids),
+        "n_extracted": sum(1 for r in inc_ids if st.get(f"ext:{r}")),
+        "options": [], "context": []})
+
     # -- eligibility: awaiting classification (shown as one table in the UI)
     wanted_pdf = st.meta.get("pdf_wanted", {})
     for n in st.by_type("screen"):
@@ -113,8 +127,26 @@ def build(ctx: Ctx) -> list[dict]:
         not_met = [a["id"] for a in unclear if (crit[a["id"]]["type"] == "inclusion" and a.get("assessment") == "not_met")
                    or (crit[a["id"]]["type"] == "exclusion" and a.get("assessment") == "met")]
         has_abs = bool(r.get("abstract"))
-        if not_met:
+        read_full = d.get("source_kind") == "fulltext" or d.get("stage") == "full_text"
+        rv = d.get("eligibility_review") or {}
+        sv = d.get("screen_verify") or {}
+        if sv.get("outcome") == "pending_disagreement":
+            why = f"screener says {'exclude' if d.get('because') else 'include'}, the verifier says {sv.get('decision')}"
+            suggest = {"option": "include" if sv.get("decision") == "include" else "exclude",
+                       "criterion": (d.get("because") or [None])[0], "why": "the two agents disagree after full-text screening; read both and decide"}
+        elif rv.get("outcome") == "pending_disagreement":
+            unclear = unclear or [a for a in d.get("criteria", []) if a.get("id") in (d.get("because") or [])]
+            why = f"{rv['claim']['criterion']}: extraction says exclude, the verifier says include"
+            suggest = {"option": "include", "why": "two agents disagree after extraction; read both and decide"}
+        elif not_met:
             suggest = {"option": "exclude", "criterion": not_met[0], "why": f"agent: {not_met[0]} fails"}
+        elif read_full and not rv and not sv:   # the paper was read in full and is still unclear: a judgment, not a missing file
+            lean = d.get("llm_decision")
+            if lean == "exclude":
+                first = next((a["id"] for a in unclear), "other")
+                suggest = {"option": "exclude", "criterion": first, "why": "read in full; the agent's overall reading leans exclude"}
+            else:
+                suggest = {"option": "include", "why": "read in full; still unclear on these criteria" + (" (the agent leans include)" if lean == "include" else "")}
         else:
             suggest = {"option": "pdf", "why": "needs the full text to decide" if has_abs else "no abstract; needs the full text"}
         todos.append({
@@ -123,8 +155,8 @@ def build(ctx: Ctx) -> list[dict]:
             "meta": f"{_study_label(st, rid)} · {r.get('journal', '')} {r.get('year', '')} · "
                     f"{', '.join(r.get('pub_types') or [])}",
             "pmid": r.get("pmid", ""), "doi": r.get("doi", ""), "has_abstract": has_abs,
-            "abstract": (r.get("abstract") or "")[:1200], "why": why or "criteria unclear",
-            "agent_reason": d.get("reason") or "",
+            "abstract": (r.get("abstract") or "")[:1200], "why": ("Read in full; still unclear: " if read_full else "") + (why or "criteria unclear"),
+            "agent_reason": d.get("reason") or "", "review": d.get("eligibility_review"), "verify": d.get("screen_verify"),
             "suggest": suggest, "criteria": [c for c in crit if crit[c]["type"] != "practical"],
             "question": "Should this study be included?",
             "options": [{"value": "include", "label": "Include"}, {"value": "exclude", "label": "Exclude"},
@@ -223,7 +255,8 @@ def build(ctx: Ctx) -> list[dict]:
                 "free_text": "Add detail or a corrected value (optional)",
                 "link": f"/report#{n['id'] if n['type'] == 'synthesis' else n['id'].replace('rob:', 'rob:')}"})
 
-    # -- risk of bias confirmation
+    # -- risk of bias: a draft needs a person only with a reason the verifier did not settle; the rest are optional
+    from .stages.rob import needs_person, reasons_of
     included = set(st.included_ids())
     for n in st.by_type("rob", active_only=True):
         if n["data"].get("human_confirmed"):
@@ -232,8 +265,12 @@ def build(ctx: Ctx) -> list[dict]:
         if rid not in included:
             continue
         doms = [d.get("domain") for d in n["data"]["domains"]]
+        rv = n["data"].get("rob_verify") or {}
         todos.append({
             "id": f"rob:{rid}", "step": "rob", "kind": "rob", "priority": 4,
+            "optional": not needs_person(n["data"]),
+            "reasons": [r["text"] for r in (n["data"].get("reasons") if "reasons" in n["data"] else reasons_of(n["data"]))],
+            "verify": {k: rv.get(k) for k in ("by", "outcome", "explanation", "changed", "domains")} if rv else None,
             "title": f"{_study_label(st, rid)} [{rid}]: overall {n['data']['overall']}",
             "question": "Is this risk-of-bias draft right?",
             "context": [f"{d.get('domain')}: {d.get('judgment')}  ({(d.get('rationale') or '')[:160]})" for d in n["data"]["domains"]],
@@ -648,7 +685,7 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
     if "flag" in by:
         return {"text": f"Check {len(by['flag'])} point{'s' if len(by['flag']) > 1 else ''} the agent flagged.", "go": "todo", "group": "flags"}
     if "rob" in by:
-        return {"text": f"Confirm the risk-of-bias drafts ({len(by['rob'])} studies).", "go": "todo", "group": "rob"}
+        return {"text": f"Decide the risk-of-bias points neither agent could settle ({len(by['rob'])} studies).", "go": "todo", "group": "rob"}
     if "fulltexts" in by:
         return {"text": "Optional: add full texts for studies extracted from abstracts only.", "go": "pdfs"}
     return {"text": "Everything is up to date. Read the report, and flag anything you disagree with.", "go": "report"}

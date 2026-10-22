@@ -177,9 +177,12 @@ SOURCE ({kind}) — study id {rid}:
 
 The source is split into numbered sentences [s1], [s2], ... under section headings.
 
-Return JSON: {{"fields": {{"<item name>": {{"value": str, "evidence": ["s12", "s40"], "entities": [str]}} , ...}},
+Return JSON: {{"fields": {{"<item name>": {{"value": str, "evidence": ["s12", "s40"], "entities": [str], "note": str}} , ...}},
               "eligibility_doubt": null | {{"criterion": "<criterion id>", "why": str}}}}
 Rules:
+- note: usually empty. Write one sentence only when the value cannot be tied to a sentence of the text as given:
+  it comes from a table or figure that is not in the text, from a supplement, or from several passages combined;
+  say which. A reader checks the paper with that note.
 - eligibility_doubt: set it only when the whole paper shows that the study fails an inclusion criterion or
   meets an exclusion criterion (e.g. all data are from animals or in vitro when humans are required; no
   original data); otherwise null. Do not re-judge borderline cases: this is a safety check, not a second
@@ -199,6 +202,42 @@ Rules:
 - If the item is not reported, value = "NR" and evidence = [].
 - Do not use outside knowledge about the study."""
 
+SCREEN_VERIFY = """An independent check of a screening decision. Another agent assessed this record against the criteria
+below and decided; read the record yourself and say whether you would decide the same.
+
+CRITERIA:
+{criteria}
+
+{synonyms}RECORD ({stage}):
+{record}
+
+THE SCREENER'S ASSESSMENTS: {assessments}
+THE SCREENER'S DECISION: {decision} (because: {because})
+
+Return JSON: {{"decision": "include"|"exclude"|"uncertain", "agree": bool,
+              "differs_on": [{{"id": str, "assessment": "met"|"not_met"|"unclear", "reason": str, "evidence": ["s3", ...]}}],
+              "explanation": str}}
+Rules: judge from the record only; cite sentence ids. "agree" is true when you reach the same decision (include /
+exclude / uncertain), even if a minor assessment differs. List in "differs_on" only the criteria on which your
+assessment changes the decision. {stage_rule}"""
+
+ELIGIBILITY_VERIFY = """A study passed full-text screening; the data-extraction step then read the whole paper and doubts
+that it is eligible. Decide, as an independent check, whether the study stays included.
+
+CRITERION {cid} ({ctype}): {ctext}
+FULL-TEXT SCREENING SAID: {screen_assessment}{screen_reason}
+EXTRACTION SAYS: {why}
+
+PAPER ({kind}; numbered sentences):
+\"\"\"
+{text}
+\"\"\"
+
+Return JSON: {{"verdict": "exclude"|"include", "explanation": str, "evidence": ["s3", ...]}}
+Rules: "exclude" only when the paper shows that the inclusion criterion is not met (or that the exclusion applies);
+"include" when the paper satisfies it, or when the doubt is about something the criterion does not require.
+"evidence": the sentence ids that decide it. One or two sentences of explanation, naming what the paper reports."""
+
 ROB = """Draft a risk-of-bias / study-quality assessment for this study. A human reviewer will
 check it, so every judgment must be traceable to the text.
 
@@ -216,9 +255,44 @@ SOURCE ({kind}) — study id {rid}:
 Return JSON:
 {{"domains": [{{"domain": str, "judgment": "low"|"some_concerns"|"high"|"unclear",
                "rationale": str, "evidence": ["s5", ...]}}],
-  "overall": "low"|"some_concerns"|"high"|"unclear"}}
+  "overall": "low"|"some_concerns"|"high"|"unclear",
+  "doubts": [{{"domain": str, "reason": str}}]}}
 Rules: evidence = ids of the numbered source sentences behind the judgment (1 to 4). If the source does not contain the information needed,
-use "unclear" (not "low")."""
+use "unclear" (not "low"). "doubts": list a domain only when you could not settle its judgment: the text supports more
+than one judgment, statements in it conflict, or the judgment turns on how the domain description is read. Information
+that is simply not reported is "unclear", not a doubt. Most studies have no doubts (an empty list)."""
+
+ROB_VERIFY = """An independent check of a risk-of-bias draft. Another agent assessed this study, and the draft was flagged
+for a second look for the reasons below. Read the study yourself and settle the flagged points.
+
+DOMAINS:
+{domains}
+
+STUDY EXTRACTION:
+{extraction}
+
+THE OTHER AGENT'S DRAFT:
+{draft}
+
+WHY IT WAS FLAGGED:
+{reasons}
+
+SOURCE ({kind}) — study id {rid}:
+\"\"\"
+{text}
+\"\"\"
+
+Return JSON:
+{{"decided": bool,
+  "domains": [{{"domain": str, "judgment": "low"|"some_concerns"|"high"|"unclear", "agree": bool,
+               "rationale": str, "evidence": ["s5", ...]}}],
+  "overall": "low"|"some_concerns"|"high"|"unclear",
+  "explanation": str}}
+Rules: give your judgment for every flagged domain, and for any other domain you would change; cite 1 to 4 sentence
+ids. "unclear" means the source does not report what the domain needs; that is a decision, not a failure to decide.
+"decided": false only when you cannot settle a flagged point from the text either (it supports more than one
+judgment); then say in "explanation" what a person has to decide. The overall judgment is at least as severe as the
+most severe domain unless the domain descriptions say otherwise. Two or three sentences of explanation."""
 
 # ----------------------------------------------------------------------------- synthesis
 SYNTH = """Write the narrative synthesis for a systematic review.

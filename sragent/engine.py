@@ -114,6 +114,22 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
             items.append(_item(nid, t, "render", why, False, None))
         elif t in ("protocol", "search", "criterion"):
             items.append(_item(nid, t, "keep", why, False, None, manual=True))   # re-planning is a person's call
+    # extraction items or risk-of-bias domains added to the config after an output was made: the new setting node
+    # is not among the output's dependencies yet, so it is not "stale", but the output is incomplete
+    planned = {i["node"] for i in items}
+    fdeps, ddeps = set(graph.field_deps(ctx.cfg)) - {"cfg:question"}, set(graph.domain_deps(ctx.cfg)) - {"cfg:rob_tool"}
+    for t, want, action in (("extraction", fdeps, "extract"), ("rob", ddeps, "assess")):
+        for n in st.by_type(t, active_only=True):
+            rid = study_of(n["id"])
+            new = sorted(want - set(n["depends_on"]))
+            if not new or rid not in inc or n["id"] in planned or (scope is not None and not (set(new) & scope) and n["id"] not in scope):
+                continue
+            names = ", ".join(x.split(":", 1)[1] for x in new)
+            pinned = graph.human_pinned(n)
+            if t == "rob" and pinned:
+                items.append(_item(n["id"], t, "keep", [f"new domain(s) {names}; confirmed by you, so kept"], True, rid))
+            else:
+                items.append(_item(n["id"], t, action, [f"new item(s) {names}"], pinned, rid))   # a person's edited values are kept
     # outputs that are missing (not stale: they do not exist yet)
     has_syn = bool(st.by_type("synthesis", active_only=True))
     considered = set(st.meta.get("synthesis_considered") or [])

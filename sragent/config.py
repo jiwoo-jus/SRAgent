@@ -94,6 +94,12 @@ DEFAULTS: dict[str, Any] = {
         "keep_fetched_files": True,   # keep what the agent fetched in fulltext/auto/: the text (.txt) and the PMC PDF when available
         "wait_for_pdfs": False,       # stop before the synthesis while requested full texts are missing (real reviews)
         "confirm_search": False,      # stop before the search until the review team has confirmed the query (To-do list)
+        "verify_rob": "off",          # risk-of-bias drafts with a reason for a second look (the agent's own doubt, a judgment
+                                      #   without a cited sentence, an overall milder than a domain): off -> to a person;
+                                      #   flagged -> the verifier settles them, a person sees only what it cannot settle
+        "verify_screening": "off",    # a second agent (roles.verifier) reads screening decisions: off | pending | full_text | all
+                                      #   pending: only records undecided after their full text (it decides, or leaves it to a person)
+                                      #   full_text: every full-text decision; all: also title/abstract exclusions (disputes go to a person)
         "pdf_parser": "auto",         # auto | azure_cu | pdftotext
         "azure_cu_analyzer": "prebuilt-documentSearch",   # or prebuilt-layout (no figure descriptions, cheaper)
         "vision_pages": False,        # without Azure: transcribe table/figure pages with the (multimodal) agent model

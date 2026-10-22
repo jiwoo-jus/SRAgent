@@ -170,7 +170,9 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
         for k, v in n["data"]["fields"].items():
             chk = v.get("check", {}).get("status", "-")
             tm = "; ".join(f"{t['term']}->{t['status']} {t['ids']}" for t in v.get("terms", []))
-            block.append(f"    {k}: {v['value']} | evidence[{chk}]: {_ev_txt(v)}" + (f" | terms: {tm}" if tm else ""))
+            block.append(f"    {k}: {v['value']} | evidence[{chk}]: {_ev_txt(v)}" + (f" | terms: {tm}" if tm else "")
+                         + (f" | not found as written: {', '.join(v['uncovered'])}" if v.get("uncovered") else "")
+                         + (f" | agent's note: {v['note']}" if v.get("note") else ""))
         L.append(cap("\n".join(block)))
     L += ["", "### Risk-of-bias rationales"]
     for rid in st.included_ids():
@@ -786,10 +788,11 @@ def report_html(ctx: Ctx) -> str:
     for r, n in robs.items():
         jd = {d.get("domain"): d.get("judgment") for d in n["data"]["domains"]}
         rows.append([sref(r)] + [tl(jd.get(d)) for d in dnames] + [tl(n["data"].get("overall")),
-                    "confirmed" if n["data"].get("human_confirmed") else "draft"])
+                    "confirmed" if n["data"].get("human_confirmed") else
+                    "draft, verifier-checked" if (n["data"].get("rob_verify") or {}).get("outcome") in ("agreed", "decided_by_verifier") else "draft"])
     if rows:
         H.append(_table(f"<b>Table {tno()}.</b> Quality judgements per study and domain.", ["Study"] + [f"D{i + 1}" for i in range(len(dnames))] + ["Overall", "Status"],
-                        rows, "D1–D{}: {}. Judgements are the agent's drafts unless marked confirmed.".format(
+                        rows, "D1–D{}: {}. Judgements are the agent's drafts unless marked confirmed; verifier-checked: the points flagged for a second look were settled by a second agent.".format(
                             len(dnames), "; ".join(f"D{i + 1} {_e(_label(d))}" for i, d in enumerate(dnames))),
                         cls=["nw"] + ["c"] * (len(dnames) + 1) + ["nw note"]))
         H.append("<div class='legend'>" + "".join(f"<span>{tl(k)} {v[1]}</span>" for k, v in _JUDGE.items()) + "</div>")
@@ -848,14 +851,16 @@ def report_html(ctx: Ctx) -> str:
             tm = "".join(f"<div class='ev'>{_e(t['term'])} {_badge(t['status'])} <span class='loc'>"
                          f"{_e(', '.join(f'{a}: {b}' for a, b in (t.get('ids') or {}).items()))}</span></div>" for t in v.get("terms", []))
             evh = "" if str(v["value"]).strip().upper().startswith("NR") else _ev_html(v, rid)
-            rows.append([f"<b>{_e(_label(k))}</b>", _e(v["value"]) + tm, evh + (f" {_badge(chk)}" if chk and chk != "located" else "")])
+            unc = (f"<div class='note'>not found as written in the paper: {_e(', '.join(v['uncovered']))}</div>"
+                   if v.get("uncovered") else "") + (f"<div class='note'>Agent: {_e(v['note'])}</div>" if v.get("note") else "")
+            rows.append([f"<b>{_e(_label(k))}</b>", _e(v["value"]) + tm, evh + (f" {_badge(chk)}" if chk and chk != "located" else "") + unc])
         H.append(_table(f"<b>Table A{i + 1}.</b> Extracted data, {_e(lab.get(rid, rid))}.", ["Item", "Extracted value", "Supporting sentences"], rows,
                         cls=["nw", "", ""]).replace("<td class=''>", "<td>"))
         H.append(_fbbox(n["id"]))
         r = st.get(f"rob:{rid}")
         if r:
             H.append(f"<details id='rob:{_e(rid)}'><summary>Quality assessment: overall {_badge(r['data']['overall'])}"
-                     f"{' (confirmed by a reviewer)' if r['data'].get('human_confirmed') else ' (draft)'}</summary>")
+                     f"{' (confirmed by a reviewer)' if r['data'].get('human_confirmed') else ' (draft, flagged points settled by the verifier)' if (r['data'].get('rob_verify') or {}).get('outcome') in ('agreed', 'decided_by_verifier') else ' (draft)'}</summary>")
             H.append(_table("", ["Domain", "Judgement", "Rationale", "Supporting sentences"],
                             [[_e(_label(d.get("domain"))), tl(d.get("judgment")) + " " + _badge(d.get("judgment")), _e(d.get("rationale")), _ev_html(d, rid)]
                              for d in r["data"]["domains"]], cls=["nw", "nw", "", ""]).replace("<p class='cap'></p>", ""))

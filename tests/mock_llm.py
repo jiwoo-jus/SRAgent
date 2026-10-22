@@ -54,11 +54,21 @@ def mock_fn(messages, mode):
         part = re.search(r"part (\d+) of", u)
         sfx = f" (part {part.group(1)})" if part else ""
         return json.dumps({"fields": {n: {"value": f"{n} value 12 participants{sfx}", "evidence": ["s1", "s2"]} for n in names}})
+    if "An independent check of a risk-of-bias draft" in u:          # the verifier's second look at a flagged draft
+        doms = re.findall(r"^- (\w+):", u.split("DOMAINS:", 1)[1].split("STUDY EXTRACTION", 1)[0], flags=re.M)
+        if "children" in u.split("SOURCE (", 1)[1]:
+            return json.dumps({"decided": False, "domains": [{"domain": doms[0], "judgment": "some_concerns", "agree": False,
+                               "rationale": "could be either", "evidence": ["s2"]}], "overall": "low",
+                               "explanation": "Whether the model was validated externally is a judgement a person has to make."})
+        return json.dumps({"decided": True, "domains": [{"domain": doms[0], "judgment": "high", "agree": False,
+                           "rationale": "no comparison group", "evidence": ["s1"]}], "overall": "high",
+                           "explanation": "A case series has no comparison group."})
     if "risk-of-bias" in u:
         doms = re.findall(r"^- (\w+):", u.split("DOMAINS:", 1)[1].split("STUDY EXTRACTION", 1)[0], flags=re.M)
-        src = u.split('"""', 1)[1].strip()[:50]
+        src = u.split('"""', 1)[1].strip()[:80]
+        doubt = "case series" in src or "children" in src                 # the agent doubts one domain of these two
         return json.dumps({"domains": [{"domain": d, "judgment": "low", "rationale": "mock", "evidence": ["s2"]} for d in doms],
-                           "overall": "low"})
+                           "overall": "low", "doubts": [{"domain": doms[0], "reason": "the text supports two readings"}] if doubt else []})
     if "Write the narrative synthesis" in u:
         ids = _ids(u.split("INCLUDED STUDIES", 1)[1])
         return json.dumps({"statements": [{"id": f"S{k + 1}", "text": f"Statement {k + 1} reports 12 participants in adults.",
@@ -130,6 +140,23 @@ def mock_fn(messages, mode):
         return json.dumps({"fields": {n: {"value": f"{n} merged value", "evidence": ["s1"]} for n in names}})
     if "Check one extracted value against the original paper" in u:
         return json.dumps({"label": "supported", "rationale": "mock"})
+    if "An independent check of a screening decision" in u:
+        rec = u.split("RECORD (", 1)[1].split("THE SCREENER'S ASSESSMENTS", 1)[0]
+        if "Valoctocogene" in rec and "DECISION: exclude" in u:       # a title/abstract exclusion the verifier disputes
+            return json.dumps({"decision": "uncertain", "agree": False, "explanation": "gene therapy for haemophilia; could report emicizumab comparators",
+                               "differs_on": [{"id": "I1", "assessment": "unclear", "reason": "comparator not described", "evidence": ["s1"]}]})
+        if "DECISION: awaiting" in u:                                      # the screener could not decide: the verifier reads
+            if "case series" in rec:
+                return json.dumps({"decision": "include", "agree": False, "explanation": "original PK data are reported",
+                                   "differs_on": [{"id": "I3", "assessment": "met", "reason": "PK data in the results", "evidence": ["s1"]}]})
+            return json.dumps({"decision": "uncertain", "agree": True, "explanation": "cannot tell either", "differs_on": []})
+        if "children" in rec and "full/text" in u and "DECISION: include" in u:   # a full-text inclusion the verifier disputes
+            return json.dumps({"decision": "exclude", "agree": False, "explanation": "the children cohort reports no PK of its own",
+                               "differs_on": [{"id": "I3", "assessment": "not_met", "reason": "no original PK data", "evidence": ["s1"]}]})
+        return json.dumps({"decision": "include", "agree": True, "explanation": "same reading", "differs_on": []})
+    if "Decide, as an independent check, whether the study stays included" in u:
+        return json.dumps({"verdict": "include" if "VERIFIER_DISAGREES" in u else "exclude",
+                           "explanation": "mock verifier", "evidence": ["s1"]})
     if "Revise this review protocol as the review team asks" in u:
         cur = _json_after(u, "CURRENT PROTOCOL (JSON):")
         for c in cur.get("criteria", []):

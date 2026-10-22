@@ -27,7 +27,9 @@ def init_cache(cache_dir: str | Path):
 
 
 def get(url: str, params: dict | None = None, *, as_json: bool = True, timeout: int = 40,
-        retries: int = 3, use_cache: bool = True):
+        retries: int = 3, use_cache: bool = True, post: bool = False):
+    """GET (or POST with the same parameters in the body, for requests too long for a URL: E-utilities accept
+    both); cached by url and parameters, rate-limited per host, retried on 429 and 5xx."""
     key = hashlib.sha256(json.dumps([url, params], sort_keys=True).encode()).hexdigest()
     if use_cache and _cache is not None:
         hit = _cache.get(key)
@@ -42,7 +44,8 @@ def get(url: str, params: dict | None = None, *, as_json: bool = True, timeout: 
                 time.sleep(wait)
             _last[host] = time.time()
         try:
-            r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": UA})
+            r = (requests.post(url, data=params, timeout=timeout, headers={"User-Agent": UA}) if post
+                 else requests.get(url, params=params, timeout=timeout, headers={"User-Agent": UA}))
             if r.status_code == 404:
                 body = None
             elif r.status_code == 429 and "budget" in r.text.lower():
@@ -58,4 +61,4 @@ def get(url: str, params: dict | None = None, *, as_json: bool = True, timeout: 
         except (requests.RequestException, ValueError) as e:
             err = e
             time.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(f"GET failed {url} {params}: {err}")
+    raise RuntimeError(f"{'POST' if post else 'GET'} failed {url} {str(params)[:300]}: {err}")

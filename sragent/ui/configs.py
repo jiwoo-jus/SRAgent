@@ -358,6 +358,33 @@ class Library:
         return {**res, "ok": True, "saved": True, "message": msg, "mtime": p.stat().st_mtime, "path": self.rel(p)}
 
     @staticmethod
+    def set_topic_list(text: str, key: str, items: list[dict]) -> str:
+        """Replace the list under `topic.<key>` (extraction_fields, rob_domains) in a topic file's text with `items`,
+        one flow-style entry per line, keeping everything else as written (the key line and its comment included)."""
+        lines = text.splitlines()
+        i = next((n for n, l in enumerate(lines) if re.match(rf"^\s+{re.escape(key)}\s*:", l)), None)
+        if i is None:
+            raise ValueError(f"{key} is not in this file under topic:")
+        indent = len(lines[i]) - len(lines[i].lstrip())
+        j = i + 1
+        while j < len(lines) and (not lines[j].strip() or len(lines[j]) - len(lines[j].lstrip()) > indent):
+            j += 1
+        while j > i + 1 and not lines[j - 1].strip():   # blank lines after the list stay after it
+            j -= 1
+        pad = " " * (indent + 2)
+        new = []
+        for it in items:
+            parts = [f"name: {it['name']}"]
+            if it.get("kind"):
+                parts.append(f"kind: {it['kind']}")
+            parts.append(f"description: {_q(it.get('description', ''))}")
+            new.append(pad + "- {" + ", ".join(parts) + "}")
+        head = lines[i].split("#", 1)[0].rstrip()
+        if "#" in lines[i]:
+            head += "   #" + lines[i].split("#", 1)[1]
+        return "\n".join(lines[:i] + [head] + new + lines[j:]) + "\n"
+
+    @staticmethod
     def set_block(text: str, key: str, value: dict, comment: str = "") -> str:
         """Replace (or add, or remove when empty) one top-level mapping in YAML text, keeping the rest of the
         file, comments included, as written. Each entry is written on one line in flow style."""
@@ -436,6 +463,8 @@ class Library:
             lines.append(f"  fulltext_unclear: {unclear}")
         if mode != "agent_only":
             lines.append("  confirm_search: true     # the search runs with the query you confirm in the To-do list")
+            lines.append("  verify_screening: pending   # a second agent reads the records the screener could not decide; still undecided -> you (full_text / all check every decision)")
+            lines.append("  verify_rob: flagged      # risk-of-bias drafts with a reason for a second look go to the verifier; what it cannot settle -> you")
             lines.append("  wait_for_pdfs: true      # the synthesis waits until the requested PDFs are supplied or declared not obtainable")
         if mr:
             lines.append(f"  max_records: {mr}")

@@ -51,6 +51,8 @@ def postprocess(ctx: Ctx, rid: str, fields_out: dict, text: str, src_node: str) 
             raw = {"value": str(raw)}
         ents = raw.get("entities") if isinstance(raw.get("entities"), list) else None
         item = {"value": str(raw.get("value", "NR"))}
+        if isinstance(raw.get("note"), str) and raw["note"].strip():
+            item["note"] = raw["note"].strip()[:300]
         if item["value"].strip().upper() != "NR":
             cites = cover_numbers(item, cites_of(raw), text)
             evidence.append(attach(item, cites, text, f"{name}={item['value'][:80]}", src_node))
@@ -73,10 +75,26 @@ group groups cohort cohorts phase trial trials reported report using used based 
 """.split())
 
 
+_UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+                                      "fifteen sixteen seventeen eighteen nineteen".split())}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+_NUMWORD = re.compile(r"\b(" + "|".join(_TENS) + r")(?:[- ](" + "|".join(w for w in _UNITS if w != "zero") + r"))?\b|\b("
+                      + "|".join(_UNITS) + r")\b", re.I)
+
+
+def _words_to_digits(m: re.Match) -> str:
+    tens, unit, single = m.group(1), m.group(2), m.group(3)
+    if single:
+        return str(_UNITS[single.lower()])
+    return str(_TENS[tens.lower()] + (_UNITS[unit.lower()] if unit else 0))
+
+
 def _norm_numbers(text: str) -> str:
-    """Decimal forms seen in papers made comparable to the value's: 31·8 and 31,8 become 31.8; .222 becomes 0.222."""
+    """Forms seen in papers made comparable to the value's digits: 31·8 and 31,8 become 31.8; .222 becomes 0.222;
+    "twenty-four" becomes 24."""
     t = re.sub(r"(?<=\d)[·,](?=\d)", ".", text)
-    return re.sub(r"(?<![\w.])\.(?=\d)", "0.", t)
+    t = re.sub(r"(?<![\w.])\.(?=\d)", "0.", t)
+    return _NUMWORD.sub(_words_to_digits, t)
 
 
 def _terms(value: str) -> list[str]:
@@ -191,30 +209,86 @@ DOUBT_SOURCE = "eligibility_doubt"
 
 
 def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
-    """Extraction read the whole paper and doubts the inclusion (the upward check). In agent-only mode the record
-    is screened again on its full text with that doubt as a note; an exclusion stands. Otherwise, or when the
-    re-screen keeps it, the screening node is flagged for a person. Returns 'exclude' or 'flagged'."""
-    import dataclasses
-    from .screening import SCREEN_FLAG_SOURCES, human_decided, screen_one
+    """Extraction read the whole paper and claims the study is not eligible (the upward check). A second agent, the
+    verifier role (else the full-text screening model), decides on the paper. Agreement: the study is excluded, by
+    "extraction + verifier", its outputs set aside. Disagreement: the study becomes undecided (pending), for a person
+    (in agent-only mode the fulltext_unclear policy applies, flagged). Both claims, the verdict, the evidence and the
+    outcome are recorded on the screening node (`eligibility_review`) and shown on the study page.
+    Returns 'exclude', 'pending' or 'kept'."""
+    import time
+    from ..evidence import joined, packed, resolve
+    from .screening import SCREEN_FLAG_SOURCES, human_decided, sync_awaiting_flags
     st = ctx.store
-    what = f"{doubt['criterion']} ({doubt['text']}): {doubt['why']}"
     sc = st.get(f"screen:{rid}")
+    if not sc:
+        return "kept"
+    cid, why = doubt["criterion"], doubt["why"]
+    crit = next((c for c in _protocol(st).get("criteria", []) if c["id"] == cid), {"id": cid, "type": "inclusion", "text": doubt.get("text", "")})
+    first = next((a for a in sc["data"].get("criteria", []) if a.get("id") == cid), {})
+    text, kind = st.text_of(rid)
+    limit = int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
+    checker = ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub.agent_for("fulltext")
+    out = checker.chat(ctx.msgs(prompts.ELIGIBILITY_VERIFY.format(
+        cid=cid, ctype=crit.get("type", "inclusion"), ctext=crit.get("text", ""),
+        screen_assessment=first.get("assessment", "not assessed"),
+        screen_reason=f" ({first['reason']})" if first.get("reason") else "",
+        why=why, kind=kind, text=packed(text, limit))), tag="eligibility_verify")
+    verdict = "exclude" if str(out.get("verdict", "")).lower().startswith("exclude") else "include"
+    spans = resolve(out.get("evidence") or [], text).get("spans", [])
+    review = {"claim": {"by": "extraction", "criterion": cid, "why": why, "ts": time.strftime("%Y-%m-%d %H:%M")},
+              "verifier": {"by": checker.name, "verdict": verdict, "explanation": str(out.get("explanation") or ""),
+                           "evidence": [sp.get("sid") for sp in spans if sp.get("sid")], "quote": joined(spans)}}
+    d = dict(sc["data"])
+    if human_decided(d):     # a person decided this inclusion: it stands; the review is recorded for them
+        review["outcome"] = "kept_human_decision"
+        d["eligibility_review"] = review
+        st.upsert(sc["id"], "screen", d, depends_on=sc["depends_on"], reason=f"eligibility review after extraction ({cid}): your decision stands")
+        if not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in st.get(sc["id"])["flags"]):
+            st.flag(sc["id"], f"After extraction, two agents reviewed this inclusion you decided ({cid}): extraction says exclude "
+                             f"({why[:160]}); the verifier says {verdict}. Your decision is kept; please check.", actor="agent", source=DOUBT_SOURCE)
+        return "kept"
+    crits = []
+    for a in d.get("criteria", []):
+        a = dict(a)
+        if a.get("id") == cid and verdict == "exclude":
+            a.update({"assessment": "met" if crit.get("type") == "exclusion" else "not_met", "reported": True,
+                      "reason": f"after extraction, confirmed by the verifier: {review['verifier']['explanation'][:200]}",
+                      "evidence": review["verifier"]["evidence"], "reviewed_after_extraction": True})
+        crits.append(a)
     agent_only = ctx.cfg["pipeline"].get("human_mode") == "agent_only"
-    if agent_only and sc and not human_decided(sc["data"]) and st.get(f"ft:{rid}"):
-        c = dataclasses.replace(ctx, stage="fulltext",
-                                note=f"The data-extraction step read the whole paper and reports a doubt about eligibility: "
-                                     f"{what}. Check this criterion against the whole paper and decide.")
-        d = screen_one(c, _protocol(st), rid, "full_text", tag_suffix="_recheck")
-        if d["decision"] == "exclude":
-            for f in st.get(sc["id"])["flags"]:   # the screening flags of the old decision ('included by rule' ...) are settled
-                if f["status"] == "open" and f.get("source") in SCREEN_FLAG_SOURCES:
-                    st.resolve_flag(sc["id"], f["id"], f"decision is now 'exclude' ({what[:160]})", actor="agent")
-            ctx.log(f"[extract] {rid}: excluded after the eligibility doubt raised at extraction ({what[:120]})")
-            return "exclude"
-    if sc and not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in sc["flags"]):
-        st.flag(sc["id"], f"Data extraction read the whole paper and doubts this inclusion: {what}. Check this inclusion.",
+    if verdict == "exclude":
+        review["outcome"] = "excluded"
+        d.update({"criteria": crits, "decision": "exclude", "because": [cid], "decided_by": "extraction+verifier",
+                  "eligibility_review": review})
+        d.pop("unclear_by_rule", None)
+        reason = f"excluded after extraction: the verifier agreed with the extraction's doubt on {cid}"
+        outcome = "exclude"
+    else:
+        policy = ctx.cfg["pipeline"].get("fulltext_unclear", "await") if agent_only else "await"
+        decision = {"include": "include", "exclude": "exclude"}.get(policy, "awaiting")
+        review["outcome"] = "pending_disagreement" if decision == "awaiting" else f"{decision}_by_policy_disagreement"
+        d.update({"decision": decision, "because": [cid], "decided_by": "extraction+verifier", "eligibility_review": review})
+        if decision != "awaiting":
+            d["unclear_by_rule"] = policy
+        reason = f"two agents disagree after extraction on {cid}: extraction says exclude, the verifier says include; " + \
+                 ("a person decides" if decision == "awaiting" else f"pipeline.fulltext_unclear: {policy}")
+        outcome = "pending" if decision == "awaiting" else ("exclude" if decision == "exclude" else "kept")
+    st.upsert(sc["id"], "screen", d, depends_on=sc["depends_on"], reason=reason)
+    for f in st.get(sc["id"])["flags"]:
+        if f["status"] == "open" and f.get("source") in SCREEN_FLAG_SOURCES + (DOUBT_SOURCE,):
+            st.resolve_flag(sc["id"], f["id"], f"eligibility reviewed after extraction: {review['outcome']}", actor="agent")
+    if outcome in ("exclude", "pending"):
+        for kind_ in ("ext", "rob"):
+            nid = f"{kind_}:{rid}"
+            if st.get(nid) and st.get(nid)["status"] == "active":
+                st.set_status(nid, "excluded", reason=f"study {'excluded' if outcome == 'exclude' else 'undecided'} after the eligibility review")
+    sync_awaiting_flags(ctx)
+    if outcome == "kept" and not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in st.get(sc["id"])["flags"]):
+        st.flag(sc["id"], f"Two agents disagree after extraction ({cid}): extraction says exclude ({why[:160]}); the verifier says "
+                         f"include ({review['verifier']['explanation'][:160]}). Included by pipeline.fulltext_unclear; check this inclusion.",
                 actor="agent", source=DOUBT_SOURCE)
-    return "flagged"
+    ctx.log(f"[extract] {rid}: eligibility doubt on {cid}; verifier says {verdict}; outcome {review['outcome']}")
+    return outcome
 
 
 def extract_one(ctx: Ctx, rid: str) -> dict:
@@ -240,10 +314,8 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
         mode = f"{len(parts)} parts"
         doubt = next((d for d in (_doubt(st, o.get("eligibility_doubt")) for o in outs) if d), None)
     if doubt:
-        if recheck_eligibility(ctx, rid, doubt) == "exclude":
-            old = st.get(f"ext:{rid}")
-            if old and old["status"] == "active":
-                st.set_status(old["id"], "retired", reason="the study was excluded after an eligibility doubt raised at extraction")
+        outcome = recheck_eligibility(ctx, rid, doubt)
+        if outcome in ("exclude", "pending"):   # not included any more: the extraction is kept aside, not stored as active
             return {}
     fields, evidence = postprocess(ctx, rid, raw_fields, text, src_node)
     kept = keep_human_edits(st.get(f"ext:{rid}"), fields)
@@ -258,16 +330,9 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
     st.upsert(f"ext:{rid}", "extraction", data, depends_on=[f"screen:{rid}", src_node] + field_deps(ctx.cfg),
               evidence=evidence, reason="extracted")
     n = st.get(f"ext:{rid}")
-    uncovered = []
     for name, item in fields.items():
-        if item.get("check", {}).get("status") == "none":
-            st.flag(n["id"], f"No source location cited for '{name}'; please check the value.",
-                    actor="agent", source="evidence_check")
-        elif item.get("uncovered"):
-            uncovered.append(f"{name}: {', '.join(item['uncovered'][:5])}")
-    if uncovered:   # one flag per study, not one per field
-        st.flag(n["id"], "Numbers not found in the paper's text as written (a sum, a rounding or a misread? check them against the paper): "
-                + "; ".join(uncovered[:8]), actor="agent", source="evidence_check")
+        # a value with no sentence behind it (check "none") and a number not found as written (item["uncovered"]) are
+        # markers shown beside the value with the agent's note, not flags: a reader checks them when it matters
         for t in item.get("terms", []):
             if t["status"] == "not_found":
                 st.flag(n["id"], f"Term '{t['term']}' in '{name}' not found in RxNorm/PubChem/ChEMBL/MONDO.",

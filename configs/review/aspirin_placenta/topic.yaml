@@ -1,0 +1,42 @@
+# Review topic: aspirin_placenta. Edit freely; `sragent ui` checks this file when you save it.
+topic:
+  key: aspirin_placenta
+  question: >-
+    How does aspirin modulate placental development in humans: which placental proteins, mRNAs and
+    miRNAs respond to aspirin, through which signalling pathways, and with what effect on placental
+    development, at which doses or concentrations?
+  # Plain-words eligibility; the agent turns it into atomic criteria you approve before screening.
+  seed_eligibility: >-
+    Include original studies in which aspirin, acetylsalicylic acid or salicylate is applied to human
+    placental or trophoblast cells (primary cytotrophoblast, HTR-8/SVneo, BeWo, JEG-3 and similar),
+    human placental tissue or explants, or pregnant women, and in which placental development,
+    placental proteins, mRNAs or miRNAs (for example miR-200), signalling pathways, or oxidative-stress
+    readouts (ROS, NADPH oxidase, antioxidant enzymes) are measured. Human endothelial models (HUVEC,
+    HUMEC) count when they are used as models of the placental vasculature. In vitro, ex vivo and
+    in vivo human designs all qualify. Exclude animal-only studies, reviews, editorials and
+    commentaries, and studies without aspirin exposure.
+  # Deterministic exclusions before any LLM call (sragent/rules.py).
+  screening_rules: [empty_record, conference_abstract, erratum, editorial, review, off_topic_no_abstract]
+  records:
+    source: pubmed           # the agent writes the PubMed query; you confirm it in the To-do list
+    pubmed_retmax: 3000      # most records to retrieve
+    maxdate: "2026/10/21"  # search end date
+  extraction_fields:         # kind: drug | disease turns on database term checks
+    - {name: study_design, description: "Design and model: in vitro cell study, ex vivo placental explant or tissue, in vivo human (RCT, cohort, case series with placental outcomes). State n (independent experiments, placentas or participants)."}
+    - {name: model_system, description: "Human cells or tissue studied (primary cytotrophoblast, HTR-8/SVneo, BeWo, JEG-3, HUVEC, HUMEC, villous explants, decidua, placental biopsies), their source and gestational age; whether the model stands for the placenta or for its vasculature."}
+    - {name: aspirin_exposure, kind: drug, description: "Form (aspirin, acetylsalicylic acid, salicylic acid) and dose as reported, then converted to one unit: micromolar for cells and explants (1 ug/mL = 5.55 uM; aspirin MW 180.16), mg per day for pregnant women; duration, timing (gestational week or culture time), route."}
+    - {name: comparator, kind: drug, description: "Vehicle, untreated, dose levels compared, or other agents (heparin, other NSAIDs, COX inhibitors)."}
+    - {name: clinical_context, kind: disease, description: "Pregnancy condition or risk the model represents (preeclampsia, fetal growth restriction, recurrent pregnancy loss, normal pregnancy, hypoxia or oxidative-stress challenge)."}
+    - {name: placental_development_outcome, description: "Development endpoints measured and their results with numbers: trophoblast proliferation, migration, invasion, syncytialisation, apoptosis, angiogenesis or tube formation, villous morphology, placental weight, uteroplacental Doppler; direction and size of the aspirin effect."}
+    - {name: proteins_and_markers, description: "Proteins, mRNAs and miRNAs measured (e.g. sFlt-1, PlGF, VEGF, COX-1, COX-2, PGE2, thromboxane, HIF-1a, eNOS, NOX or NADPH oxidase, Nrf2, HO-1, miR-200 family) with method (western blot, ELISA, qPCR) and the direction and magnitude of change with aspirin, with numbers and units."}
+    - {name: oxidative_stress_readouts, description: "ROS, NADPH oxidase activity, antioxidant enzymes, lipid peroxidation and related markers, with values and the aspirin effect."}
+    - {name: signalling_pathway, description: "The pathway the study tests or claims (COX/prostaglandin, NF-kB, PI3K/Akt, MAPK/ERK, Nrf2, AMPK, Wnt, others) and how it was established (inhibitor, knockdown, phosphorylation, reporter) versus inferred; keep demonstrated and speculated apart."}
+    - {name: dose_response, description: "Relationship between aspirin dose or concentration and the outcome: effective concentration, threshold, non-linear or biphasic effects, cytotoxic range; NR if one dose only."}
+  rob_tool_name: "In-vitro and clinical placental study quality"
+  rob_domains:
+    - {name: dose_relevance, description: "Is the aspirin concentration within the human-achievable range (plasma salicylate at low-dose aspirin is low micromolar), or justified if higher?"}
+    - {name: model_relevance, description: "Is the model a valid stand-in for human placental development (primary trophoblast or tissue versus transformed lines; endothelial lines as vascular proxies)?"}
+    - {name: replication_and_controls, description: "Independent biological replicates, vehicle and positive controls, blinding of measurements where applicable."}
+    - {name: measurement_validity, description: "Validated assays and antibodies, quantified images, appropriate statistics for the readouts."}
+    - {name: confounding_and_allocation, description: "For clinical and ex vivo studies: allocation quality, baseline differences, indication for aspirin, confounder control."}
+    - {name: selective_reporting, description: "All measured markers and endpoints reported; consistency between methods and results."}

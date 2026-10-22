@@ -730,13 +730,15 @@ function renderTodo(fromPoll){
   const fb = [...k("clarify"), ...k("changeset"), ...k("disagreement")];
   const groups = [["protocol","Protocol",k("protocol").filter(t => !t.approved).length],["search","Search strategy",k("search").filter(t => !t.optional).length],["feedback","Agent answers",fb.length],["eligibility","Eligibility",k("eligibility").length],
     ["sync","Out-of-date outputs",k("sync").length],["fulltexts","Full texts",(k("fulltexts")[0]||{files:[]}).files.length],["edits","Your edits",k("manual_edit").length],
-    ["flags","Flagged points",k("flag").length],["rob","Risk of bias",k("rob").length],["ruled","Excluded automatically",(S.ruled||[]).length]].filter(x => x[2]);
+    ["flags","Flagged points",k("flag").length],["rob","Risk of bias",k("rob").filter(t => !t.optional).length],["ruled","Excluded automatically",(S.ruled||[]).length]].filter(x => x[2]);
   const parts = [nextBanner()];
   if (groups.length > 1) parts.push(`<div class="jump">${groups.map(([id,l,n]) => `<button onclick="scrollToId('g-${id}')">${l}<span class="cnt">${n}</span></button>`).join("")}</div>`);
   const gen = (id, title, items, sub) => items.length ? `<div class="grp" id="g-${id}">${grpHead(title, items.length, sub)}${items.map(card).join("")}</div>` : "";
   const pt = k("protocol")[0];
   parts.push(pt ? (pt.approved && provenanceMode() === "agent_only" ? "" :
     `<div class="grp" id="g-protocol">${pt.approved ? `<details data-k="protocol-approved"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Protocol (approved) · ${pt.criteria.length} criteria · open to change them</summary>${protocolCard(pt)}</details>` : grpHead("Protocol", 1) + protocolCard(pt)}</div>`) : "");
+  const fi = k("fields")[0];
+  parts.push(fi ? `<div class="grp" id="g-fields"><details data-k="fields"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Data items and quality domains · ${fi.fields.length} items, ${fi.domains.length} domains · open to change them (at any stage)</summary>${fieldsCard(fi)}</details></div>` : "");
   const sq = k("search")[0];
   parts.push(sq ? (sq.ran ? `<div class="grp" id="g-search"><details data-k="search-ran"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Search strategy (ran) · ${Number(sq.ran.hits || 0).toLocaleString()} PubMed hits, ${Number(sq.ran.retrieved || 0).toLocaleString()} fetched · open to see the query and the alternatives</summary>${searchRanCard(sq)}</details></div>` : searchCard(sq)) : "");
   parts.push(gen("feedback", "The agent's answers to your feedback", fb, "Accept or reject proposed revisions; where the agent disagreed with you, decide who is right."));
@@ -752,7 +754,10 @@ function renderTodo(fromPoll){
   if (ft) parts.push(`<div class="grp" id="g-fulltexts" data-step="fulltext">${grpHead("Full texts", ft.files.length, "Supplying these PDFs lets the agent finish the full-text review.")}${pdfPanel(ft, true)}</div>`);
   parts.push(gen("edits", "Your edits", k("manual_edit"), "Outputs that depend on something you edited. Decide whether the agent should propose updates."));
   parts.push(gen("flags", "Points the agent flagged", k("flag"), "Self-check and evidence flags. Say it is fine, or ask the agent to fix it."));
-  parts.push(robTable(k("rob")));
+  parts.push(robTable(k("rob").filter(t => !t.optional)));
+  parts.push(robTable(k("rob").filter(t => t.optional), true));
+  if (k("rob").length && judging()) parts.push(`<div class="row small mut" style="margin:-4px 0 18px;gap:10px"><button class="btn sm" onclick="redraftRob(this)">${ic("refresh","sm")} Redraft all risk-of-bias assessments</button>
+    <span class="grow">Asks the agent again with the current prompt and settings; drafts you confirmed or changed are kept. With <code>verify_rob: flagged</code> the verifier settles the flagged ones.</span><span class="msg robrd"></span></div>`);
   parts.push(ruledList());
   const any = T.length;
   $("#v-todo").innerHTML = parts.join("") + (any ? "" : `<div class="card"><div class="empty"><div class="ei">${ic("check")}</div><b>All caught up</b>Nothing is waiting for you right now.</div></div>`) +
@@ -802,6 +807,31 @@ function protocolCard(t){
       : `<button class="btn primary" ${a.option?"":"disabled"} onclick="submitTodo('${t.id}')">Submit</button>${a.option ? "" : `<span class="hint">Choose an answer first</span>`}`}<span id="m-protocol" class="msg"></span></div></div>`;
 }
 function provenanceMode(){ return (S && S.run && S.run.human_mode) || ""; }
+/* the eligibility review after extraction: the extraction's claim, the verifier's verdict, the outcome */
+function reviewBox(r){
+  const OUT = {excluded:["Excluded: both agents agree the study is not eligible","bad"], pending_disagreement:["Undecided: the two agents disagree; your call","warn"],
+    kept_human_decision:["Your decision is kept; the review is recorded","info"], include_by_policy_disagreement:["Included by the pipeline rule although the agents disagree","warn"],
+    exclude_by_policy_disagreement:["Excluded by the pipeline rule although the agents disagree","warn"]};
+  const o = OUT[r.outcome] || [r.outcome, ""];
+  return `<div style="margin-top:8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px">
+    <div class="xs" style="font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)">Eligibility review after extraction</div>
+    <div class="small" style="margin-top:6px"><b>Extraction</b> (${esc(r.claim.criterion)}): exclude. ${esc(r.claim.why)}</div>
+    <div class="small" style="margin-top:4px"><b>Verifier</b> (${esc(r.verifier.by||"")}): ${esc(r.verifier.verdict)}. ${esc(r.verifier.explanation)}${(r.verifier.evidence||[]).length ? ` <span class="xs mono mut">${esc(r.verifier.evidence.join(", "))}</span>` : ""}</div>
+    ${r.verifier.quote ? `<div class="xs mut" style="margin-top:4px;white-space:pre-wrap">${esc(r.verifier.quote.slice(0, 500))}</div>` : ""}
+    <div style="margin-top:6px">${badge(o[0], o[1], "dot")}</div></div>`;
+}
+/* the verifier's independent check of a screening decision */
+function verifyBox(v){
+  const OUT = {agreed:["Verifier agrees","ok"], decided_by_verifier:["The screener could not decide; the verifier did","ok"], still_undecided:["Neither agent could decide; your call","warn"],
+    forwarded:["Verifier disagreed; forwarded to the full text","info"], pending_disagreement:["Screener and verifier disagree; your call","warn"],
+    include_by_policy_disagreement:["Disagreement; included by the pipeline rule","warn"], exclude_by_policy_disagreement:["Disagreement; excluded by the pipeline rule","warn"]};
+  const o = OUT[v.outcome] || [v.outcome, ""];
+  return `<div style="margin-top:8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px">
+    <div class="xs" style="font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)">Second reading of the screening decision</div>
+    <div class="small" style="margin-top:6px"><b>Verifier</b> (${esc(v.by||"")}): ${esc(v.decision)}. ${esc(v.explanation||"")}</div>
+    ${(v.differs_on||[]).map(d => `<div class="xs mut" style="margin-top:3px">${esc(d.id)}: ${esc(d.assessment)}${d.reason ? " · " + esc(d.reason) : ""}${(d.evidence||[]).length ? ` <span class="mono">${esc(d.evidence.join(", "))}</span>` : ""}</div>`).join("")}
+    <div style="margin-top:6px">${badge(o[0], o[1], "dot")}</div></div>`;
+}
 function pcEditStart(){ const t = S.todos.find(x => x.kind === "protocol"); PC.edit = (t.criteria || []).map(c => ({...c})); renderTodo(); }
 function pcEditAdd(){
   const t = S.todos.find(x => x.kind === "protocol"); const n = PC.edit.filter(c => c.type === "inclusion").length + 1;
@@ -827,6 +857,44 @@ async function pcAsk(text){
   PC.ask = "";
   const r = await pcCall({op:"revise", instruction:text.trim()}, "Asking the agent…");
   if (r.ok) { delete answers["protocol"]; renderTodo(); }
+}
+
+/* data items and quality domains: editable at any stage; saved into the topic file, accepted, then brought up to date */
+const FC = {edit:null, busy:""};
+function fieldsCard(t){
+  const e = FC.edit;
+  const frow = (f, i) => e ? `<tr style="${f.remove ? "opacity:.45" : ""}"><td><input class="mono" style="width:170px" value="${esc(f.name||"")}" oninput="FC.edit.fields[${i}].name=this.value" placeholder="item_name"></td>
+      <td><select onchange="FC.edit.fields[${i}].kind=this.value"><option value="" ${!f.kind?"selected":""}>text</option><option value="drug" ${f.kind==="drug"?"selected":""}>drug (term check)</option><option value="disease" ${f.kind==="disease"?"selected":""}>disease (term check)</option></select></td>
+      <td><textarea rows="2" style="width:100%" oninput="FC.edit.fields[${i}].description=this.value">${esc(f.description||"")}</textarea>
+        <button class="link small" onclick="FC.edit.fields[${i}].remove=!FC.edit.fields[${i}].remove;renderTodo()">${f.remove ? "keep" : "remove"}</button></td></tr>`
+    : `<tr><td class="mono" style="font-weight:600">${esc(f.name)}</td><td class="small mut">${esc(f.kind || "text")}</td><td>${esc(f.description)}</td></tr>`;
+  const drow = (d, i) => e ? `<tr style="${d.remove ? "opacity:.45" : ""}"><td><input class="mono" style="width:170px" value="${esc(d.name||"")}" oninput="FC.edit.domains[${i}].name=this.value" placeholder="domain_name"></td>
+      <td colspan="2"><textarea rows="2" style="width:100%" oninput="FC.edit.domains[${i}].description=this.value">${esc(d.description||"")}</textarea>
+        <button class="link small" onclick="FC.edit.domains[${i}].remove=!FC.edit.domains[${i}].remove;renderTodo()">${d.remove ? "keep" : "remove"}</button></td></tr>`
+    : `<tr><td class="mono" style="font-weight:600">${esc(d.name)}</td><td colspan="2">${esc(d.description)}</td></tr>`;
+  const F = e ? e.fields : t.fields, D = e ? e.domains : t.domains;
+  return `<div class="card"><div class="card-b"><div class="q">${esc(t.question)}</div>
+    <div class="small" style="font-weight:600;margin-top:4px">Extraction items</div>
+    <div class="tw" style="border:1px solid var(--line);border-radius:10px;margin:6px 0 12px"><table class="crit"><thead><tr><th>Name</th><th>Kind</th><th>What to extract</th></tr></thead><tbody>${F.map(frow).join("")}</tbody></table></div>
+    ${e ? `<button class="btn sm" onclick="FC.edit.fields.push({name:'',description:''});renderTodo()">Add an item</button>` : ""}
+    <div class="small" style="font-weight:600;margin-top:14px">Quality domains${t.tool ? ` <span class="mut" style="font-weight:400">· ${esc(t.tool)}</span>` : ""}</div>
+    <div class="tw" style="border:1px solid var(--line);border-radius:10px;margin:6px 0 12px"><table class="crit"><thead><tr><th>Name</th><th colspan="2">What to judge</th></tr></thead><tbody>${D.map(drow).join("")}</tbody></table></div>
+    ${e ? `<button class="btn sm" onclick="FC.edit.domains.push({name:'',description:''});renderTodo()">Add a domain</button>` : ""}
+    <div class="xs mut" style="margin-top:12px">${t.n_extracted ? `${t.n_extracted} of ${t.n_included} included studies are extracted. A new or changed item is extracted for each of them on "Update now" (one extraction call per study; values you edited are kept); a removed item is dropped. A new domain is judged the same way; your confirmed judgments are kept.` : "Nothing is extracted yet: changes apply from the first extraction on."} The change is a review-defining setting: it is written to the topic file, accepted on your behalf and recorded.</div>
+  </div>
+  <div class="card-f">${e ? `<button class="btn primary" onclick="fcSave()" ${FC.busy ? "disabled" : ""}>${ic("check","sm")} Save (no LLM)</button><button class="btn" onclick="FC.edit=null;renderTodo()">Cancel</button>`
+    : `<button class="btn" onclick="fcEdit()">${ic("edit","sm")} Edit items and domains</button>`}<span class="hint">${esc(FC.busy)}</span><span id="m-fields" class="msg"></span></div></div>`;
+}
+function fcEdit(){ const t = S.todos.find(x => x.kind === "fields"); FC.edit = {fields: t.fields.map(f => ({...f})), domains: t.domains.map(d => ({...d}))}; renderTodo(); }
+async function fcSave(){
+  const body = {op:"save", fields: FC.edit.fields.filter(f => !f.remove).map(f => ({name:f.name.trim(), kind:f.kind||"", description:f.description.trim()})),
+                domains: FC.edit.domains.filter(d => !d.remove).map(d => ({name:d.name.trim(), description:d.description.trim()}))};
+  FC.busy = "Saving…"; renderTodo();
+  const r = await api("/api/data_items", body);
+  FC.busy = "";
+  const m = document.getElementById("m-fields"); if (m) msg(m, r);
+  if (r.ok) { toast(r.message || "Saved"); FC.edit = null; } else toast(r.message || r.error || "Not saved", true);
+  await refresh(true); renderTodo();
 }
 
 /* search strategy: the agent's query and alternatives with PubMed counts; ask for changes; confirm the query to run */
@@ -945,6 +1013,7 @@ function eligTable(items){
           <button class="link small" onclick="openStudy('${t.rid}')">Study page</button></div>
         <div class="small" style="margin-top:6px"><span class="mut">Undecided:</span> ${esc(t.why)}</div>
         ${t.agent_reason ? `<div class="xs mut" style="margin-top:4px"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em">Agent</span> ${esc(t.agent_reason)}</div>` : ""}
+        ${t.review ? reviewBox(t.review) : ""}${t.verify ? verifyBox(t.verify) : ""}
         ${t.abstract ? `<details data-k="abs-${esc(t.rid)}" style="margin-top:6px"><summary>Abstract</summary><div class="abstract">${esc(t.abstract)}</div></details>` : `<div class="xs mut" style="margin-top:6px">No abstract</div>`}
       </div>
       <div class="dec">${seg}${reason}
@@ -1004,8 +1073,21 @@ async function pdfUnwant(rid){ const r = await api("/api/bulk", {kind:"pdf_unwan
 async function pdfUnavailable(rid){ const r = await api("/api/bulk", {kind:"pdf_unavailable", ids:[rid]}); toast(r.ok ? "Marked as not obtainable" : (r.message||r.error), !r.ok); refresh(true); }
 
 /* risk of bias: one table, bulk confirm */
-function robTable(items){
+function robWhy(t){
+  const v = t.verify, J = j => esc(JLAB[j]||j);
+  const why = (t.reasons||[]).length ? `<div class="xs" style="margin-top:6px;color:var(--warn)"><b>Why a second look:</b> ${t.reasons.map(esc).join("; ")}</div>` : "";
+  if (!v) return why;
+  const OUT = {agreed:["The verifier agreed with the draft","ok"], decided_by_verifier:["The verifier settled the flagged points","ok"], still_undecided:["Neither agent could settle it; your call","warn"]};
+  const [lab, cls] = OUT[v.outcome] || [v.outcome, ""];
+  const ch = (v.changed||[]).map(c => `${esc(human(c.domain))}: agent ${J(c.agent)}, verifier ${J(c.verifier)}`).join("; ");
+  const own = v.outcome === "still_undecided" && (v.domains||[]).length ? `<div class="xs mut">Verifier's leaning: ${v.domains.map(d => `${esc(human(d.domain))} ${J(d.judgment)}`).join("; ")}</div>` : "";
+  return `${why}<div style="margin-top:6px;padding:6px 10px;border:1px solid var(--line);border-radius:8px">
+    <div class="xs">${badge(lab, cls, "dot")} <span class="mut">${esc(v.by||"verifier")}</span>${ch ? ` · ${ch}` : ""}</div>
+    ${v.explanation ? `<div class="xs mut" style="margin-top:2px">${esc(v.explanation)}</div>` : ""}${own}</div>`;
+}
+function robTable(items, opt){
   if (!items.length) return "";
+  const O = opt ? "o" : "";
   const rows = items.map(t => {
     const ed = robEdit[t.rid];
     const doms = t.domains.map(d => `<span class="rob-chip ${JCOL[d.judgment]||""}" title="${esc(JLAB[d.judgment]||d.judgment)}: ${esc(d.rationale)}"><i></i>${esc(human(d.domain))} <b>${esc(JLAB[d.judgment]||d.judgment)}</b></span>`).join("");
@@ -1020,23 +1102,25 @@ function robTable(items){
     return `<tr><td style="width:36px"><input type="checkbox" aria-label="Select" ${robSel[t.rid]?"checked":""} onchange="robSel['${t.rid}']=this.checked"></td>
       <td style="min-width:170px;width:220px"><b>${esc(t.title.split(":")[0].replace(/\s*\[\d+\]$/, ""))}</b><div class="xs mut mono">${esc(t.rid)}</div>
         <div class="small" style="margin-top:4px;display:flex;gap:10px"><a target="_blank" href="${U(t.link)}">Report</a><button class="link small" onclick="openStudy('${t.rid}')">Study page</button></div></td>
-      <td>${doms}${edit}</td>
+      <td>${doms}${robWhy(t)}${edit}</td>
       <td class="nowrap r">${ed ? "" : `<button class="btn sm" onclick="robOpen('${t.rid}')">${ic("edit","sm")} Change</button>`}</td></tr>`;
   }).join("");
-  return `<div class="grp" id="g-rob" data-step="rob">${grpHead("Risk-of-bias drafts", items.length, `Hover a domain for the agent's rationale. Tick the studies you agree with and confirm them together, or use "Change" to set any number of domains at once.`)}
-    <div class="card"><div class="card-h"><div class="row grow"><button class="btn sm" onclick="robAll(true)">Select all</button><button class="btn sm ghost" onclick="robAll(false)">Clear</button>
-      <button class="btn sm primary" onclick="robConfirm()">${ic("check","sm")} Confirm selected</button><span id="robmsg" class="msg"></span></div>
+  const table = `<div class="card"><div class="card-h"><div class="row grow"><button class="btn sm" onclick="robAll(true,${!!opt})">Select all</button><button class="btn sm ghost" onclick="robAll(false,${!!opt})">Clear</button>
+      <button class="btn sm primary" onclick="robConfirm(${!!opt})">${ic("check","sm")} Confirm selected</button><span id="robmsg${O}" class="msg"></span></div>
       <div class="legend">${["low","some_concerns","high","unclear"].map(j => `<span><i style="background:${{low:"var(--ok)",some_concerns:"var(--warn)",high:"var(--bad)",unclear:"var(--mut-2)"}[j]}"></i>${JLAB[j]}</span>`).join("")}</div></div>
-    <div class="card-b flush tw"><table><tbody>${rows}</tbody></table></div></div></div>`;
+    <div class="card-b flush tw"><table><tbody>${rows}</tbody></table></div></div>`;
+  if (opt) return `<div class="grp" id="g-rob-opt" data-step="rob"><details data-k="rob-optional"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Risk-of-bias drafts with nothing to settle · ${items.length} studies · optional: open to read, confirm or change them (the report marks them as drafts)</summary>${table}</details></div>`;
+  return `<div class="grp" id="g-rob" data-step="rob">${grpHead("Risk of bias: points neither agent could settle", items.length, `Each study shows why it was flagged and what the verifier said. Hover a domain for the rationale. Confirm the draft, or use "Change" to set any number of domains at once.`)}${table}</div>`;
 }
 function robOpen(rid){ const t = S.todos.find(x => x.kind==="rob" && x.rid===rid); robEdit[rid] = {j: t.domains.map(d => d.judgment), text:""}; renderTodo(); }
-function robAll(v){ S.todos.filter(t => t.kind==="rob").forEach(t => robSel[t.rid] = v); renderTodo(); }
-async function robConfirm(){
-  const ids = S.todos.filter(t => t.kind==="rob" && robSel[t.rid]).map(t => t.id);
-  if (!ids.length) { $("#robmsg").innerHTML = `<span class="err">Tick at least one study</span>`; return; }
+function robAll(v, opt){ S.todos.filter(t => t.kind==="rob" && !!t.optional === !!opt).forEach(t => robSel[t.rid] = v); renderTodo(); }
+async function robConfirm(opt){
+  const ids = S.todos.filter(t => t.kind==="rob" && !!t.optional === !!opt && robSel[t.rid]).map(t => t.id);
+  const M = $("#robmsg" + (opt ? "o" : ""));
+  if (!ids.length) { M.innerHTML = `<span class="err">Tick at least one study</span>`; return; }
   const r = await api("/api/bulk", {kind:"rob_confirm", ids});
   ids.forEach(i => delete robSel[i.slice(4)]);
-  $("#robmsg").innerHTML = `<span class="saved">${ic("check","sm")} ${esc(r.message)}</span>`; toast(r.message || "Confirmed"); refresh(true);
+  M.innerHTML = `<span class="saved">${ic("check","sm")} ${esc(r.message)}</span>`; toast(r.message || "Confirmed"); refresh(true);
 }
 async function robChange(rid){
   const t = S.todos.find(x => x.kind==="rob" && x.rid===rid), e = robEdit[rid];
@@ -1285,6 +1369,16 @@ function renderPdfs(fromPoll){
        ${n ? `<div style="margin-top:12px"><button class="btn primary" onclick="processPdfs(this)">${ic("play","sm")} Process ${n} added file${n>1?"s":""}</button><div class="msg pdfmsg"></div></div>` : `You can still drop PDFs named <code>&lt;PMID&gt;.pdf</code> in <code>${esc(S.fulltext.dir)}</code>.`}</div></div>`;
   open.forEach(([k, o]) => { const d = document.querySelector(`#v-pdfs details[data-k="${CSS.escape(k)}"]`); if (d) d.open = o; });
 }
+async function redraftRob(btn){
+  const e = await api("/api/estimate", {action:"reassess_rob"});
+  const n = ((e.rows||[]).find(r => r.stage === "rob") || {}).calls;
+  if (!confirm(`Redraft ${n != null ? n + " " : ""}risk-of-bias assessments? Estimated cost about $${Number(e.total_usd||0).toFixed(2)}. Drafts you confirmed are kept.`)) return;
+  const r = await api("/api/run", {action:"reassess_rob", extra_budget: runOpts.extra_budget});
+  const m = btn.parentElement.querySelector(".robrd");
+  if (m) m.innerHTML = r.id ? `<span class="saved">${ic("check","sm")} Started; progress is in Run and Activity</span>` : `<span class="err">${esc(r.error)}</span>`;
+  toast(r.id ? "Redrafting the risk-of-bias assessments" : (r.error || "Failed"), !r.id);
+  setTimeout(() => refresh(true), 800);
+}
 async function processPdfs(btn){
   await ensureModels();
   const st = M.settings || {};
@@ -1447,7 +1541,8 @@ function renderStudy(){
         ${E.decision==="exclude"?`<label>Reason</label><div><select onchange="ST.edit.criterion=this.value"><option value="">Criterion…</option>${crits.concat(["other"]).map(c=>`<option ${E.criterion===c?"selected":""}>${esc(c)}</option>`).join("")}</select></div>`:""}
         </div>${editBar("Save (no LLM)")}</div>` : "";
     out.push(sec("Eligibility", `<div class="row">${badge(s.decision, tone(s.decision) || "", "dot")}
-        <span class="small mut">${esc(human(s.stage))} · because ${esc((s.because||[]).join(", ")||"–")} · v${s.version}</span></div>
+        <span class="small mut">${esc(human(s.stage))} · because ${esc((s.because||[]).join(", ")||"–")}${s.decided_by ? ` · decided by ${esc(s.decided_by.replace("+", " + "))}` : ""} · v${s.version}</span></div>
+        ${s.eligibility_review ? reviewBox(s.eligibility_review) : ""}${s.screen_verify ? verifyBox(s.screen_verify) : ""}
         ${s.rule?`<div class="small" style="margin-top:8px">Rule <b>${esc(s.rule)}</b>: ${esc(s.rule_reason)}</div>`:""}
         ${s.human_decision?`<div class="small" style="margin-top:8px">Your decision: <b>${esc(s.human_decision.decision)}</b> ${esc(s.human_decision.reason||"")} ${esc(s.human_decision.note||"")}</div>`:""}
         ${s.llm_reason?`<div class="quote"><span class="xs mut" style="display:block;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Agent</span>${esc(s.llm_reason)}</div>`:""}
@@ -1463,7 +1558,7 @@ function renderStudy(){
         <td style="min-width:240px">${editing ? `<textarea oninput="ST.edit.fields['${f.name}']=this.value">${esc(E.fields[f.name])}</textarea>` : esc(f.value)}
           ${f.edited?`<div class="xs mut" style="margin-top:4px">${ic("edit","sm")} edited by you; was “${esc(String(f.edited.before).slice(0,120))}”</div>`:""}
           ${(f.terms||[]).map(t => `<div class="small" style="margin-top:4px">${badge(human(t.status), t.status==="validated"?"ok":t.status==="not_found"?"bad":"warn","sq")} ${esc(t.term)} <span class="xs mut mono">${esc(Object.entries(t.ids||{}).map(([k,v]) => k+":"+v).join(" "))}</span></div>`).join("")}</td>
-        <td style="min-width:280px">${evList(f.evidence)}${f.check && f.check!=="located"?`<div style="margin-top:4px">${badge(f.check,"warn")}</div>`:""}</td></tr>`).join("");
+        <td style="min-width:280px">${evList(f.evidence)}${f.check && f.check!=="located"?`<div style="margin-top:4px">${badge(f.check==="none" ? "no source sentence" : f.check,"warn")}</div>`:""}${f.note ? `<div class="xs mut" style="margin-top:4px"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em">Agent</span> ${esc(f.note)}</div>` : ""}${(f.uncovered||[]).length ? `<div class="xs mut" style="margin-top:4px" title="A sum, a rounding or a different spelling in the paper is the usual reason; nothing is required of you">not found as written in the paper: ${esc(f.uncovered.join(", "))}</div>` : ""}</td></tr>`).join("");
     out.push(sec(`Extracted data <span class="small mut" style="font-weight:400">v${x.version} · from ${esc(x.source_kind)}${x.status!=="active"?" · "+esc(x.status):""}</span>`,
       `<div class="tw" style="margin:-16px -18px"><table><thead><tr><th>Item</th><th>Value</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table></div>
        ${editing?`<div style="margin-top:28px">${editBar("Save (no LLM)")}</div>
@@ -1476,11 +1571,12 @@ function renderStudy(){
     const rows = b.domains.map((x,i) => `<tr><td style="width:180px"><b>${esc(human(x.domain))}</b></td>
         <td style="width:160px">${editing ? `<select onchange="ST.edit.changes[${i}].judgment=this.value">${["low","some_concerns","high","unclear"].map(j=>`<option value="${j}" ${E.changes[i].judgment===j?"selected":""}>${JLAB[j]}</option>`).join("")}</select>`
           : `<span class="rob-chip ${JCOL[x.judgment]||""}" style="cursor:default"><i></i>${esc(JLAB[x.judgment]||x.judgment)}</span>`}
-          ${x.judgment_agent && x.judgment_agent!==x.judgment?`<div class="xs mut">agent: ${esc(JLAB[x.judgment_agent]||x.judgment_agent)}</div>`:""}</td>
+          ${x.judgment_agent && x.judgment_agent!==x.judgment?`<div class="xs mut">agent: ${esc(JLAB[x.judgment_agent]||x.judgment_agent)}${x.decided_by==="verifier"?"; set by the verifier":""}</div>`:""}</td>
         <td class="small" style="min-width:200px">${editing ? `<textarea oninput="ST.edit.changes[${i}].rationale=this.value">${esc(E.changes[i].rationale)}</textarea>` : esc(x.rationale)}</td>
         <td style="min-width:260px">${evList(x.evidence, 1)}</td></tr>`).join("");
-    out.push(sec(`Risk of bias <span class="small mut" style="font-weight:400">overall <b style="color:var(--fg-2)">${esc(JLAB[b.overall]||b.overall)}</b> · ${b.confirmed?"confirmed":"draft"} · v${b.version}</span>`,
+    out.push(sec(`Risk of bias <span class="small mut" style="font-weight:400">overall <b style="color:var(--fg-2)">${esc(JLAB[b.overall]||b.overall)}</b> · ${b.confirmed?"confirmed":(b.verify && b.verify.outcome!=="still_undecided"?"draft, checked by the verifier":"draft")} · v${b.version}</span>`,
       `<div class="tw" style="margin:-16px -18px"><table><thead><tr><th>Domain</th><th>Judgment</th><th>Rationale</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table></div>
+       ${(b.reasons||[]).length || b.verify ? `<div style="margin-top:26px">${robWhy({reasons: b.reasons, verify: b.verify})}</div>` : ""}
        ${editing?`<div style="margin-top:28px">${editBar("Save and confirm (no LLM)")}</div>`:""}`,
       editing || !judging() ? "" : `<button class="btn sm" onclick="editRob()">${ic("edit","sm")} Edit domains</button>`, "s-rob"));
   }

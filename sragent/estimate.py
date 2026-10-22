@@ -19,8 +19,10 @@ DEFAULTS = {
     "search": (550, 450, 2200),
     "screen_title_abstract": (1050, 280, 1700),
     "screen_full_text": (2500, 300, 1200),
+    "screen_verify": (2600, 200, 900),
     "extract": (6000, 750, 1500),
     "rob": (6000, 600, 2000),
+    "rob_verify": (6500, 300, 1200),
     "synthesis": (10000, 1800, 6000),
     "synthesis_verify": (10000, 60, 1500),
     "synthesis_repair": (10000, 500, 2500),
@@ -29,7 +31,8 @@ DEFAULTS = {
 # estimate rows -> pipeline stage whose model does that work (stage_models)
 ROW_STAGE = {"plan": "plan", "search": "search", "screen_title_abstract": "screen", "screen_full_text": "fulltext",
              "extract": "extract", "rob": "rob", "synthesis": "synthesize", "synthesis_verify": "synthesize",
-             "synthesis_repair": "synthesize", "feedback": "feedback"}
+             "synthesis_repair": "synthesize", "screen_verify": "fulltext", "rob_verify": "rob", "feedback": "feedback"}
+ROB_FLAG_RATE = 1.0     # share of risk-of-bias drafts with a reason for a second look (aspirin review, Haiku: 40 of 40 had the agent's own doubts)
 FORWARD_RATE = 0.56     # share of records forwarded past title/abstract (v2)
 INCLUDE_RATE = 0.09     # share of records finally included (v2)
 RETRIEVED_RATE = 0.6    # share of forwarded records whose full text can be retrieved (benchmark runs: 25/42, 36/55)
@@ -94,6 +97,11 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
     waiting = sum(1 for n in st.by_type("screen") if n["data"]["stage"] == "retrieval")   # no full text yet: no call
     if "fulltext" in order:
         calls["screen_full_text"] = int((len(forwarded_known) + calls["screen_title_abstract"] * FORWARD_RATE) * RETRIEVED_RATE)
+    vs = ctx.cfg["pipeline"].get("verify_screening") or "off"
+    if vs in ("full_text", "all") and "fulltext" in order:
+        calls["screen_verify"] = calls.get("screen_full_text", 0)
+    if vs == "all" and "screen" in order:
+        calls["screen_verify"] = calls.get("screen_verify", 0) + int(calls.get("screen_title_abstract", 0) * (1 - FORWARD_RATE))
     inc = st.included_ids()
     pending_ft = sum(1 for n in forwarded_known if not st.get(f"ext:{n['id'].split(':', 1)[1]}"))
     n_inc_future = int(calls["screen_title_abstract"] * INCLUDE_RATE) + math.ceil(pending_ft * INCLUDE_RATE / FORWARD_RATE)
@@ -119,6 +127,8 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
             calls["screen_full_text"] += math.ceil((n_new + n_inc_future) * RECHECK_RATE)
     if "rob" in order:
         calls["rob"] = sum(1 for r in inc if not st.get(f"rob:{r}")) + n_inc_future
+        if (ctx.cfg["pipeline"].get("verify_rob") or "off") == "flagged":
+            calls["rob_verify"] = math.ceil(calls["rob"] * ROB_FLAG_RATE)
     if "synthesize" in order:
         if not st.by_type("synthesis", active_only=True):
             calls["synthesis"] = 1
@@ -167,7 +177,7 @@ def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None) -> dict:
     for stage, n in calls.items():
         if not n:
             continue
-        if stage == "synthesis_verify":   # the check is made by the verifier role (default: the agent role)
+        if stage in ("synthesis_verify", "screen_verify", "rob_verify"):   # checks are made by the verifier role (default: the agent role)
             c = role_cfg(cfg, "verifier") if (cfg.get("roles") or {}).get("verifier") else role_cfg(cfg, "agent")
         else:
             c = stage_cfg(cfg, ROW_STAGE.get(stage, "feedback"))

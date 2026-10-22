@@ -208,7 +208,7 @@ def test_todos_answers_and_user_files(tmp_path):
     st.upsert(n["id"], "screen", d, depends_on=n["depends_on"])
     ids = {t["id"]: t for t in todos.build(ctx)}
     assert "protocol" in ids and "elig:1003" in ids and any(k.startswith("rob:") for k in ids)
-    assert all(t["question"] and (t["options"] or t["kind"] in ("search",) or t.get("approved")) for t in ids.values())   # search / approved protocol: custom cards
+    assert all(t["question"] and (t["options"] or t["kind"] in ("search", "fields") or t.get("approved")) for t in ids.values())   # custom cards
     # a record whose full-text review is blocked is requested, unless declared not obtainable
     n = st.get("screen:1004")
     before = dict(n["data"])
@@ -723,16 +723,19 @@ def test_numbers_in_a_value_are_cited_or_flagged():
     sid = lambda frag: next(s["sid"] for s in segment(text) if frag in s["text"])
     item = {"value": "Trough 52 ug/mL at week 5; half-life 27 days; clearance 0.27 L/day in 12 adults"}
     cites = cover_numbers(item, [sid("Trough")], text)
-    assert item["auto_evidence"] == [sid("Clearance")] and sid("Clearance") in cites   # 0.27: one sentence, cited
-    assert "27" not in item["uncovered"]                            # 27 occurs in two sentences: in the paper, not guessed, not flagged
-    assert "12" in item["uncovered"]                                # "Twelve" is not a digit: found nowhere, flagged for the reviewer
+    assert set(item["auto_evidence"]) == {sid("Clearance"), sid("Twelve")} and sid("Clearance") in cites   # 0.27 and "Twelve" (12): one sentence each, cited
+    assert "27" not in item.get("uncovered", [])                    # 27 occurs in two sentences: in the paper, not guessed, not marked
+    assert "12" not in item.get("uncovered", [])                    # "Twelve" is read as 12 (number words count)
     # decimal forms papers use (31·8, 31,8, .222) count as the same number; a distinctive term gets its sentence cited
     t2 = "## Methods\nA prospective single-centre cohort was enrolled.\n## Results\nTrough was 31·8 ug/mL; the ratio was ,222 at baseline; r = .222 overall."
     i2 = {"value": "Prospective single-centre cohort; trough 31.8 ug/mL; ratio 0.222"}
     c2 = cover_numbers(i2, [sid2 := next(s["sid"] for s in segment(t2) if "Trough" in s["text"])], t2)
     assert "uncovered" not in i2                                     # 31·8 and .222 found in their written forms
     assert next(s["sid"] for s in segment(t2) if "prospective" in s["text"]) in c2   # the design sentence is cited for the term
-    assert "52" not in item["uncovered"] and "5" not in item["uncovered"]   # cited / a single digit (not checked)
+    assert "uncovered" not in item or ("52" not in item["uncovered"] and "5" not in item["uncovered"])   # cited / single digit
+    i3 = {"value": "Trough 99 ug/mL"}
+    cover_numbers(i3, [sid("Trough")], text)
+    assert i3["uncovered"] == ["99"]                                 # a number nowhere in the paper is marked, not flagged
     plain = {"value": "Adults with haemophilia A"}
     assert cover_numbers(plain, ["s1"], text) == ["s1"] and "uncovered" not in plain
 
@@ -1101,57 +1104,60 @@ def test_full_text_unclear_on_a_reported_criterion_is_not_met():
     assert criterion_reasons(protocol, d2) == "I2 (Study provides data on humans.). Agent: needs full text"
 
 
-def test_extraction_doubt_about_eligibility_rechecks_or_flags(tmp_path):
-    """The upward check: extraction read the whole paper and says the study fails a criterion. Agent-only: the
-    record is screened again on its full text with that doubt as a note and the exclusion stands (the extraction is
-    retired). Human-in-the-loop: nothing is decided for the person; the screening node is flagged, the extraction kept."""
-    import re as _re
-    from sragent import pipeline
+def test_extraction_doubt_is_settled_by_a_second_agent(tmp_path):
+    """The upward check: extraction claims the study is not eligible; the verifier decides on the paper. Agreement:
+    excluded by "extraction + verifier", outputs set aside, the old screening flag settled. Disagreement: the study
+    becomes undecided (pending) for the person, with both claims recorded and shown; nothing stays included on a
+    split decision."""
+    from sragent import pipeline, todos
     from sragent.stages import extraction
+    from sragent.studies import status_of
 
     def doubting(messages, mode):
         u = messages[-1]["content"]
-        if "Extract the following items" in u and "study id 1001" in u:
+        if "Extract the following items" in u and ("study id 1001" in u or "study id 1002" in u):
             base = json.loads(mock_fn(messages, mode))
-            base["eligibility_doubt"] = {"criterion": "I2", "why": "all PK data are from cynomolgus monkeys"}
+            base["eligibility_doubt"] = {"criterion": "I2", "why": "all PK data are from cynomolgus monkeys" + (" VERIFIER_DISAGREES" if "study id 1002" in u else "")}
             return json.dumps(base)
-        if "Assess this record against each eligibility criterion" in u and "REVIEWER NOTE" in u:
-            return json.dumps({"criteria": [{"id": i, "assessment": "not_met" if i == "I2" else "met", "reported": True,
-                                             "reason": "monkeys only", "evidence": ["s1"]} for i in ("I1", "I2", "I3")],
-                               "decision": "exclude", "reason": "animal data only", "confidence": 0.9})
         return mock_fn(messages, mode)
 
-    (tmp_path / "a").mkdir()
-    (tmp_path / "h").mkdir()
-    ctx = make_ctx(tmp_path / "a", extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
-                                                            "human_mode": "agent_only", "fulltext_unclear": "include"}})
+    ctx = make_ctx(tmp_path)
     pipeline.run(ctx)
-    assert ctx.store.get("screen:1001")["data"]["decision"] == "include" and ctx.store.get("ext:1001")
-    ctx.store.flag("screen:1001", "Included by rule although criteria ['I2'] were still unclear ...", actor="agent", source="screening_unclear")
+    st = ctx.store
+    assert st.get("screen:1001")["data"]["decision"] == "include" and st.get("ext:1001")
+    st.flag("screen:1001", "Included by rule although criteria ['I2'] were still unclear ...", actor="agent", source="screening_unclear")
     ctx.hub.mock_fn = doubting
-    ctx.hub.cache_read = False          # the same extraction prompt as before: not from the cache
+    ctx.hub.cache_read = False
     ctx.hub._clients.clear()
     with ctx.at("extract"):
-        extraction.extract_all(ctx, only=["1001"])
-    sc = ctx.store.get("screen:1001")["data"]
-    assert sc["decision"] == "exclude" and sc["because"] == ["I2"] and "1001" not in ctx.store.included_ids()
-    assert ctx.store.get("ext:1001")["status"] == "retired"
-    assert not [f for f in ctx.store.get("screen:1001")["flags"] if f["status"] == "open"]   # the old 'included by rule' flag is settled
+        extraction.extract_all(ctx, only=["1001", "1002"])
+    # 1001: the verifier agrees -> excluded by extraction + verifier
+    d = st.get("screen:1001")["data"]
+    assert d["decision"] == "exclude" and d["because"] == ["I2"] and d["decided_by"] == "extraction+verifier"
+    assert d["eligibility_review"]["outcome"] == "excluded" and d["eligibility_review"]["verifier"]["verdict"] == "exclude"
+    assert next(a for a in d["criteria"] if a["id"] == "I2")["assessment"] == "not_met"
+    assert "1001" not in st.included_ids() and st.get("ext:1001")["status"] == "excluded"
+    assert not [f for f in st.get("screen:1001")["flags"] if f["status"] == "open"]
+    assert status_of(st, "1001")[1] == "excluded (extraction + verifier)"
+    # 1002: the verifier disagrees -> pending, for the person, with both claims; not included
+    d2 = st.get("screen:1002")["data"]
+    assert d2["decision"] == "awaiting" and d2["eligibility_review"]["outcome"] == "pending_disagreement"
+    assert "1002" not in st.included_ids() and st.get("ext:1002")["status"] == "excluded"
+    assert status_of(st, "1002")[0] == "pending" and "disagree" in status_of(st, "1002")[1]
+    t = next(x for x in todos.build(ctx) if x["kind"] == "eligibility" and x["rid"] == "1002")
+    assert t["review"]["claim"]["criterion"] == "I2" and t["suggest"]["option"] == "include"
+    assert "disagree" in t["suggest"]["why"] and "the verifier says include" in t["why"]
     rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
-    assert any(r["tag"] == "screen_full_text_recheck" for r in rows)
-
-    ctx2 = make_ctx(tmp_path / "h")
-    pipeline.run(ctx2)
-    ctx2.hub.mock_fn = doubting
-    ctx2.hub.cache_read = False
-    ctx2.hub._clients.clear()
-    with ctx2.at("extract"):
-        extraction.extract_all(ctx2, only=["1001"])
-    n = ctx2.store.get("screen:1001")
-    assert n["data"]["decision"] == "include"
-    assert [f for f in n["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
-    assert ctx2.store.get("ext:1001")["data"]["eligibility_doubt"]["criterion"] == "I2"
-    assert not _re.search("REVIEWER NOTE", json.dumps(ctx2.store.get("ext:1001")["data"]))
+    assert sum(r["tag"] == "eligibility_verify" for r in rows) == 2
+    # a person's decision stands: the review is recorded and flagged, nothing changes
+    st.upsert("screen:1003", "screen", {**st.get("screen:1003")["data"], "human_decision": {"decision": "include", "ts": 0}}, depends_on=st.get("screen:1003")["depends_on"], actor="user")
+    ctx.hub.mock_fn = lambda m, mode: doubting(m, mode) if "study id 1003" not in m[-1]["content"] else json.dumps({**json.loads(mock_fn(m, mode)), "eligibility_doubt": {"criterion": "I2", "why": "monkeys"}})
+    ctx.hub._clients.clear()
+    with ctx.at("extract"):
+        extraction.extract_all(ctx, only=["1003"])
+    d3 = st.get("screen:1003")["data"]
+    assert d3["decision"] == "include" and d3["eligibility_review"]["outcome"] == "kept_human_decision"
+    assert [f for f in st.get("screen:1003")["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
 
 
 def test_faulted_synthesis_statements_get_one_repair_round(tmp_path):
@@ -1483,3 +1489,268 @@ def test_pointing_to_the_sentence_behind_a_flagged_number_confirms_it(tmp_path):
     assert "s2" in item["evidence"] and item["confirmed_by"].startswith("the review team")
     assert not [f for f in st.get("ext:1001")["flags"] if f["status"] == "open" and "-> agent:" in f["text"]]
     assert not [t for t in todos.build(ctx) if t["kind"] == "disagreement"]
+
+
+def test_an_extraction_item_added_to_the_config_is_extracted_for_every_included_study(tmp_path):
+    """A new extraction field (a review-defining setting, accepted after the start) is not a dependency of the
+    existing extractions, so they are not stale; the engine still plans to extract it, keeps a person's edited values,
+    and the synthesis statements that rest on changed data are revised."""
+    from sragent import engine, graph, pipeline
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    before = set(st.get("ext:1001")["data"]["fields"])
+    ctx.cfg["topic"]["extraction_fields"].append({"name": "funding", "description": "Funding source."})
+    ctx.topic = ctx.cfg["topic"]
+    assert "field:funding" in graph.sync_settings(st, ctx.cfg)
+    p = engine.plan(ctx)
+    ex = [i for i in p["items"] if i["type"] == "extraction"]
+    assert ex and all(i["action"] == "extract" and "funding" in " ".join(i["why"]) for i in ex)
+    cs = engine.execute(ctx, {"id": "t", "changes": []}, tag="t", render=False)
+    after = st.get("ext:1001")["data"]["fields"]
+    assert set(after) == before | {"funding"} and "field:funding" in st.get("ext:1001")["depends_on"]
+    assert not [i for i in engine.plan(ctx)["items"] if i["type"] == "extraction"]   # done once
+
+
+def test_data_items_changed_in_the_interface_at_any_stage(tmp_path):
+    """The extraction items and quality domains are edited from the To-do page: the topic file is rewritten in place,
+    the review-defining change is accepted and recorded, and the engine plans the new item for every extracted study."""
+    import shutil
+    from sragent.ui.server import Workspace
+    from sragent.ui.configs import Library
+    cdir = tmp_path / "configs" / "review" / "t"
+    cdir.mkdir(parents=True)
+    topic = (ROOT / "configs/benchmark/emicizumab_pk/topic.yaml").read_text()
+    (cdir / "topic.yaml").write_text(topic)
+    recf = tmp_path / "recs.jsonl"
+    recf.write_text("\n".join(json.dumps(r) for r in RECORDS))
+    (cdir / "run.yaml").write_text(f"""include: [topic.yaml]
+run_dir: {tmp_path / 'run'}
+cache_dir: {tmp_path / 'cache'}
+llm_defaults: {{provider: mock, model: mock, concurrency: 1}}
+pipeline: {{fulltext: false, validate_terms: false, citation_chasing: false}}
+topic: {{records: {{source: file, file: {recf}}}}}
+""")
+    # the helper keeps the key line and its comment, rewrites only the list
+    new_text = Library.set_topic_list(topic, "extraction_fields", [{"name": "a", "kind": "drug", "description": "A."}, {"name": "b", "description": "B \"quoted\"."}])
+    assert "extraction_fields:" in new_text and "- {name: a, kind: drug, description: A.}" in new_text or "name: a" in new_text
+    assert "rob_domains:" in new_text and "pk_results" not in new_text.split("extraction_fields:", 1)[1].split("rob_tool_name", 1)[0]
+    from sragent import pipeline
+    from sragent.config import load_config
+    fdir = tmp_path / "run" / "fulltext"
+    fdir.mkdir(parents=True, exist_ok=True)
+    for r in RECORDS:                               # full texts supplied, as make_ctx does: inclusion needs them
+        if r["rid"] in ("1001", "1002", "1003"):
+            (fdir / f"{r['rid']}.txt").write_text(f"## Title\n{r['title']}\n## Methods\n" + (r["abstract"] + " ") * 25)
+    ctx = Ctx.create(load_config(cdir / "run.yaml"), mock_fn=mock_fn)   # the review itself, with the test mock
+    ctx.quiet = True
+    pipeline.run(ctx)
+    assert ctx.store.included_ids()
+    ws = Workspace(None, str(tmp_path / "configs"))
+    app = ws.get("configs/review/t/run.yaml")   # paths are relative to the folder that holds configs/
+    fields = [dict(f) for f in app.cfg["topic"]["extraction_fields"]] + [{"name": "funding", "description": "Funding source."}]
+    r = app.data_items({"op": "save", "fields": fields}, ws.lib)
+    assert r["ok"], r
+    assert "funding" in (cdir / "topic.yaml").read_text() and "pk_results" in (cdir / "topic.yaml").read_text()
+    assert any(f["name"] == "funding" for f in app.cfg["topic"]["extraction_fields"])     # reloaded
+    from sragent.config_lock import changes as cfg_changes
+    assert cfg_changes(app.ctx().store) and (r["pending"].get("summary") or {}).get("extraction:extract", 0) >= 1
+    bad = app.data_items({"op": "save", "fields": [{"name": "Bad Name", "description": "x"}]}, ws.lib)
+    assert not bad["ok"] and "letters" in bad["message"]
+
+
+def test_long_pubmed_terms_are_posted(monkeypatch):
+    """A date filter over hundreds of PMIDs is far too long for a URL (HTTP 414); such terms go in a POST body."""
+    from sragent.sources import http, pubmed
+    seen = []
+    monkeypatch.setattr(http, "get", lambda url, params=None, **kw: seen.append((kw.get("post"), len(params["term"]))) or
+                        {"esearchresult": {"count": "1", "idlist": [params["term"].split("[")[0]], "querytranslation": ""}})
+    pubmed.esearch("aspirin[tiab]")
+    keep = pubmed.within_dates([str(10000000 + i) for i in range(200)], maxdate="2026/10/21")
+    assert seen[0][0] is False and seen[1][0] is True and seen[1][1] > 1500 and keep
+
+
+def test_full_text_settles_unreported_alternatives_and_exclusions():
+    """Read in full: alternatives of which the paper reports none are not met as a group, and an exclusion the paper
+    gives no sign of does not apply; rederive applies the same rule to stored assessments (no model call)."""
+    from sragent.stages.screening import settle, rederive
+    protocol = {"criteria": [{"id": "I1", "type": "inclusion", "text": "about aspirin"},
+                             {"id": "I4", "type": "inclusion", "text": "HUVEC data", "any_of": "A"},
+                             {"id": "I5", "type": "inclusion", "text": "trophoblast data", "any_of": "A"},
+                             {"id": "E5", "type": "exclusion", "text": "reports none of HUVEC or trophoblast"}]}
+    A = lambda **kw: [{"id": k, "assessment": v[0], "reported": v[1], "evidence": []} for k, v in kw.items()]
+    a = settle(protocol, A(I1=("met", True), I4=("unclear", False), I5=("unclear", False), E5=("unclear", False)), "full_text")
+    by = {x["id"]: x for x in a}
+    assert by["I4"]["assessment"] == "not_met" and "none of the alternatives" in by["I4"]["settled"]
+    assert by["E5"]["assessment"] == "not_met" and "does not apply" in by["E5"]["settled"]
+    b = settle(protocol, A(I1=("met", True), I4=("unclear", False), I5=("met", True), E5=("unclear", False)), "full_text")
+    assert {x["id"]: x["assessment"] for x in b}["I4"] == "unclear"            # one alternative met: the group stands as it is
+    d = {"stage": "full_text", "decision": "awaiting", "criteria": A(I1=("met", True), I4=("unclear", False), I5=("unclear", False), E5=("unclear", False))}
+    dec, because, stage, by_rule = rederive(protocol, d, "await")
+    assert dec == "exclude" and set(because) == {"I4", "I5"}
+    assert settle(protocol, A(I4=("unclear", False), I5=("unclear", False)), "title_abstract")[0]["assessment"] == "unclear"
+
+
+def test_screening_decisions_get_a_second_reading(tmp_path):
+    """pipeline.verify_screening: a second agent decides independently. Agreement is recorded; a disputed
+    title/abstract exclusion is forwarded to the full text; a disputed full-text decision becomes undecided for the
+    person with both readings; the agent-only policy applies instead when nobody is in the loop."""
+    from sragent import pipeline, todos
+    from sragent.studies import status_of
+    ctx = make_ctx(tmp_path, extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False, "verify_screening": "all"}})
+    pipeline.run(ctx)
+    st = ctx.store
+    d1 = st.get("screen:1001")["data"]
+    assert d1["decision"] == "include" and d1["screen_verify"]["outcome"] == "agreed" and d1["screen_verify"]["agree"]
+    d4 = st.get("screen:1004")["data"]        # excluded at title/abstract, disputed: forwarded, then no full text
+    assert d4["screen_verify"]["outcome"] == "forwarded" and d4["decision"] in ("fulltext_unavailable", "forward")
+    assert d4.get("title_abstract", {}).get("decision") == "forward" or d4["decision"] == "forward"
+    d2 = st.get("screen:1002")["data"]        # included at full text, disputed: undecided for the person
+    assert d2["decision"] == "awaiting" and d2["screen_verify"]["outcome"] == "pending_disagreement" and d2["because"] == ["I3"]
+    assert "1002" not in st.included_ids() and status_of(st, "1002")[1] == "undecided: screener and verifier disagree"
+    t = next(x for x in todos.build(ctx) if x["kind"] == "eligibility" and x["rid"] == "1002")
+    assert t["verify"]["decision"] == "exclude" and t["suggest"]["option"] == "exclude" and "disagree" in t["suggest"]["why"]
+    assert any(f["status"] == "open" and "verifier disagree" in f["text"] for f in st.get("screen:1002")["flags"])
+    rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
+    assert sum(r["tag"].startswith("screen_verify_") for r in rows) >= 4
+    (tmp_path / "ao").mkdir()
+    ctx2 = make_ctx(tmp_path / "ao", extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
+                                                              "verify_screening": "full_text", "human_mode": "agent_only", "fulltext_unclear": "include"}})
+    pipeline.run(ctx2)
+    e2 = ctx2.store.get("screen:1002")["data"]
+    assert e2["decision"] == "include" and e2["screen_verify"]["outcome"] == "include_by_policy_disagreement" and e2["unclear_by_rule"] == "include"
+    assert ctx2.store.get("screen:1004")["data"].get("screen_verify") is None   # full_text mode: title/abstract exclusions not checked
+
+
+def test_second_reading_of_decisions_already_made(tmp_path):
+    """verify-screening applies the second reading to a finished review: agreements recorded, a disputed full-text
+    inclusion becomes undecided with its outputs set aside, a disputed title/abstract exclusion is forwarded; records
+    a person decided are skipped, and nothing is read twice."""
+    from sragent import pipeline
+    from sragent.stages.screening import verify_existing
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)                                   # verify_screening off: no second readings yet
+    st = ctx.store
+    assert not any(n["data"].get("screen_verify") for n in st.by_type("screen"))
+    r = verify_existing(ctx, st.get("protocol")["data"], mode="all")
+    assert r["checked"] >= 4 and r["outcomes"].get("agreed", 0) >= 2
+    assert st.get("screen:1002")["data"]["decision"] == "awaiting" and st.get("ext:1002")["status"] == "excluded"
+    assert st.get("screen:1004")["data"]["decision"] == "forward" and st.get("screen:1004")["data"]["screen_verify"]["outcome"] == "forwarded"
+    assert st.get("screen:1001")["data"]["decision"] == "include" and st.get("screen:1001")["data"]["screen_verify"]["agree"]
+    r2 = verify_existing(ctx, st.get("protocol")["data"], mode="all")
+    assert r2["checked"] == 0                            # nothing is read twice
+
+
+def test_pending_mode_lets_the_verifier_decide_undecided_records(tmp_path):
+    """verify_screening: pending reads only records the screener could not decide after their full text: the
+    verifier's decision stands (included (verifier)), and a record neither can decide stays with the person."""
+    from sragent import pipeline
+    from sragent.stages.screening import verify_existing
+    from sragent.studies import status_of
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    for rid in ("1003", "1001"):                         # make two included records undecided, as if unclear after full text
+        n = st.get(f"screen:{rid}")
+        st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "because": ["I3"]}, depends_on=n["depends_on"])
+    r = verify_existing(ctx, st.get("protocol")["data"], mode="pending")
+    assert r["checked"] == 2 and r["outcomes"] == {"decided_by_verifier": 1, "still_undecided": 1}
+    d3 = st.get("screen:1003")["data"]                  # the case series: the verifier decided include
+    assert d3["decision"] == "include" and d3["decided_by"] == "verifier" and status_of(st, "1003")[1] == "included (verifier)"
+    assert next(a for a in d3["criteria"] if a["id"] == "I3")["assessment"] == "met"
+    d1 = st.get("screen:1001")["data"]                  # neither could decide: stays with the person
+    assert d1["decision"] == "awaiting" and d1["screen_verify"]["outcome"] == "still_undecided"
+    assert st.get("screen:1002")["data"].get("screen_verify") is None          # decided records are not read in pending mode
+
+
+def test_rob_drafts_need_a_person_only_with_an_open_reason(tmp_path):
+    """verify_rob off: a draft the agent doubts is a required To-do with its reason; a draft without a reason is optional
+    (shown, not waiting). The reasons also cover a judgment without a cited sentence and an overall milder than a domain."""
+    from sragent import pipeline, todos
+    from sragent.stages.rob import reasons_of
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    rob = {t["rid"]: t for t in todos.build(ctx) if t["kind"] == "rob"}
+    assert set(rob) == {"1001", "1002", "1003"}
+    assert rob["1001"]["optional"] and not rob["1001"]["reasons"]
+    assert not rob["1002"]["optional"] and not rob["1003"]["optional"]
+    assert "could not settle it" in rob["1003"]["reasons"][0]
+    na = todos.next_action(ctx, [t for t in todos.build(ctx) if t["kind"] == "rob"], False, 0)
+    assert "neither agent could settle (2 studies)" in na["text"]
+    kinds = lambda d: [r["kind"] for r in reasons_of(d)]
+    assert kinds({"domains": [{"domain": "a", "judgment": "high", "check": {"status": "none"}}], "overall": "high"}) == ["no_evidence"]
+    assert kinds({"domains": [{"domain": "a", "judgment": "high", "check": {"status": "verified"}}], "overall": "low"}) == ["overall_milder"]
+    assert kinds({"domains": [{"domain": "a", "judgment": "unclear", "check": {"status": "none"}}], "overall": "unclear"}) == []
+
+
+def test_rob_verifier_settles_flagged_drafts_and_leaves_the_rest_to_a_person(tmp_path):
+    """verify_rob flagged: only drafts with a reason are read again. The verifier's decision replaces the draft's (the
+    agent's judgment is kept beside it, both readings recorded); what it cannot settle stays a required To-do."""
+    from sragent import pipeline, todos
+    from sragent.studies import study_detail
+    ctx = make_ctx(tmp_path)
+    ctx.cfg["pipeline"]["verify_rob"] = "flagged"
+    pipeline.run(ctx)
+    st = ctx.store
+    assert st.get("rob:1001")["data"].get("rob_verify") is None                   # no reason: not read again
+    d3 = st.get("rob:1003")["data"]
+    assert d3["rob_verify"]["outcome"] == "decided_by_verifier" and d3["overall"] == "high" and d3["overall_agent"] == "low"
+    dom = d3["domains"][0]
+    assert dom["judgment"] == "high" and dom["judgment_agent"] == "low" and dom["decided_by"] == "verifier"
+    assert d3["rob_verify"]["changed"][0]["agent"] == "low"
+    d2 = st.get("rob:1002")["data"]
+    assert d2["rob_verify"]["outcome"] == "still_undecided" and d2["overall"] == "low"   # the draft stays as it was
+    rob = {t["rid"]: t for t in todos.build(ctx) if t["kind"] == "rob"}
+    assert rob["1003"]["optional"] and rob["1001"]["optional"] and not rob["1002"]["optional"]
+    assert rob["1002"]["verify"]["outcome"] == "still_undecided"
+    page = study_detail(ctx, "1003")["rob"]
+    assert page["verify"]["outcome"] == "decided_by_verifier" and page["domains"][0]["decided_by"] == "verifier"
+
+
+def test_verify_rob_backfill_reads_only_flagged_unchecked_drafts(tmp_path):
+    from sragent import pipeline
+    from sragent.stages.rob import verify_existing
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)                                                              # verify_rob off: drafts with doubts wait
+    r = verify_existing(ctx)
+    assert r == {"checked": 2, "outcomes": {"decided_by_verifier": 1, "still_undecided": 1}}
+    assert verify_existing(ctx)["checked"] == 0                                    # already read: not again
+
+
+def test_reassess_rob_redrafts_all_but_confirmed(tmp_path):
+    from sragent import pipeline, todos
+    from sragent.stages.rob import reassess_all
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    todos.apply(ctx, {"todo_id": "rob:1001", "option": "confirm", "text": "fine"})
+    v = {r: ctx.store.get(f"rob:{r}")["version"] for r in ("1001", "1002", "1003")}
+    ctx.cfg["pipeline"]["verify_rob"] = "flagged"
+    r = reassess_all(ctx)
+    assert r["redrafted"] == 2 and r["kept_confirmed"] == 1
+    assert r["outcomes"] == {"decided_by_verifier": 1, "still_undecided": 1}
+    assert ctx.store.get("rob:1001")["version"] == v["1001"] and ctx.store.get("rob:1002")["version"] > v["1002"]
+
+
+def test_reassess_rob_resumes_without_paying_twice(tmp_path):
+    from sragent import pipeline
+    from sragent.llm import BudgetExceeded
+    from sragent.stages import rob
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    real, calls = rob.rob_one, []
+    def failing(c, rid):
+        if rid == "1003":
+            raise BudgetExceeded("budget")
+        calls.append(rid)
+        return real(c, rid)
+    rob.rob_one = failing
+    try:
+        import pytest
+        with pytest.raises(BudgetExceeded):
+            rob.reassess_all(ctx)
+    finally:
+        rob.rob_one = real
+    assert ctx.store.meta.get("rob_reassess")
+    done = set(calls)
+    r = rob.reassess_all(ctx)                                    # resumes: only what the first pass did not draft
+    assert r["redrafted"] == 3 - len(done) and "rob_reassess" not in ctx.store.meta

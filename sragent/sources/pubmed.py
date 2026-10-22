@@ -21,7 +21,7 @@ def esearch(term: str, retmax: int = 500, mindate: str | None = None, maxdate: s
     p = {"db": "pubmed", "term": term, "retmax": retmax, "retmode": "json", "tool": "sragent", **_extra}
     if mindate or maxdate:
         p.update({"datetype": "pdat", "mindate": mindate or "1900", "maxdate": maxdate or "3000"})
-    d = http.get(f"{EUTILS}/esearch.fcgi", p) or {}
+    d = http.get(f"{EUTILS}/esearch.fcgi", p, post=len(term) > 1500) or {}   # long terms (PMID lists) go in the body
     r = d.get("esearchresult", {})
     return {"count": int(r.get("count", 0)), "pmids": r.get("idlist", []),
             "translation": r.get("querytranslation", "")}

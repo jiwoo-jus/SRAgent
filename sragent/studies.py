@@ -49,15 +49,29 @@ def status_of(st, rid: str) -> tuple[str, str, str]:
     crit = criteria_by_id(st)
     because = ", ".join(f"{b} ({crit[b]['text'][:70]})" if b in crit else b for b in d.get("because", []))
     hd = d.get("human_decision")
+    rv = d.get("eligibility_review") or {}
     if d["decision"] == "exclude":
         if d.get("rule"):
             return "excluded", "excluded (rule)", d.get("rule_reason", d["rule"])
         if hd:
             return "excluded", "excluded (you)", (hd.get("reason") or "") + (f"; {hd['note']}" if hd.get("note") else "")
+        if d.get("decided_by") == "extraction+verifier":
+            return "excluded", "excluded (extraction + verifier)", because + (f"; verifier: {rv.get('verifier', {}).get('explanation', '')[:160]}" if rv else "")
+        if d.get("decided_by") == "verifier":
+            return "excluded", "excluded (verifier)", because + f"; {(d.get('screen_verify') or {}).get('explanation', '')[:160]}"
         return "excluded", f"excluded (agent, {_stage(d['stage'])})", because
     if d["decision"] == "include":
-        return "included", "included (you)" if hd else "included", (hd or {}).get("note", "") if hd else ""
+        if hd:
+            return "included", "included (you)", hd.get("note", "")
+        if d.get("decided_by") == "verifier":
+            return "included", "included (verifier)", (d.get("screen_verify") or {}).get("explanation", "")[:160]
+        return "included", "included", ""
     if d["decision"] == "awaiting":
+        sv = d.get("screen_verify") or {}
+        if sv.get("outcome") == "pending_disagreement":
+            return "pending", "undecided: screener and verifier disagree", f"screener: {because or 'include'}; verifier: {sv.get('decision')} ({sv.get('explanation', '')[:120]})"
+        if d.get("decided_by") == "extraction+verifier":
+            return "pending", "undecided: agents disagree after extraction", f"extraction says exclude ({because}); the verifier says include"
         return "pending", "undecided after full-text review", "unclear: " + because
     if d["decision"] == "fulltext_unavailable":
         no = rid in st.meta.get("pdf_unavailable", [])
@@ -243,6 +257,8 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
             "decision": d["decision"], "stage": d.get("stage"), "because": d.get("because", []),
             "rule": d.get("rule"), "rule_reason": d.get("rule_reason"), "human_decision": d.get("human_decision"),
             "llm_decision": d.get("llm_decision"), "llm_reason": d.get("reason"), "version": sc["version"],
+            "decided_by": d.get("decided_by"), "eligibility_review": d.get("eligibility_review"),
+            "screen_verify": d.get("screen_verify"),
             "title_abstract": d.get("title_abstract"),
             "criteria": [{"id": a.get("id"), "type": (crit.get(a.get("id")) or {}).get("type"),
                           "text": (crit.get(a.get("id")) or {}).get("text", ""), "assessment": a.get("assessment"),
@@ -254,12 +270,16 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
         out["extraction"] = {"status": ext["status"], "version": ext["version"], "source_kind": ext["data"].get("source_kind"),
                              "fields": [{"name": k, "value": v.get("value"), "evidence": _ev(v),
                                          "check": (v.get("check") or {}).get("status"), "terms": v.get("terms", []),
-                                         "edited": v.get("edited")} for k, v in ext["data"]["fields"].items()]}
+                                         "uncovered": v.get("uncovered") or [], "note": v.get("note") or "", "edited": v.get("edited")}
+                                        for k, v in ext["data"]["fields"].items()]}
     if rob:
+        from .stages.rob import reasons_of as rob_reasons
         out["rob"] = {"status": rob["status"], "version": rob["version"], "overall": rob["data"].get("overall"),
                       "confirmed": rob["data"].get("human_confirmed"),
+                      "reasons": [r["text"] for r in rob_reasons(rob["data"])], "verify": rob["data"].get("rob_verify"),
                       "domains": [{"domain": x.get("domain"), "judgment": x.get("judgment"), "rationale": x.get("rationale"),
                                    "judgment_agent": x.get("judgment_agent"), "human_note": x.get("human_note"),
+                                   "decided_by": x.get("decided_by"),
                                    "evidence": _ev(x)} for x in rob["data"]["domains"]]}
     out["synthesis"] = [{"id": n["id"], "text": n["data"]["text"], "cites": n["data"]["cites"],
                          "support": (n["data"].get("verification") or {}).get("support")}
