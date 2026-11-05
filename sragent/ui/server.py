@@ -40,6 +40,7 @@ class App:
         self.config_path = str(Path(config_path).resolve())
         self.lock = threading.RLock()
         self.job = None
+        self.busy = None    # a model call asked from a page (protocol revision, search suggestions) is running
         self.queue: list[dict] = []
         self.pending_answers: list[dict] = []
         self.stale = False
@@ -314,8 +315,9 @@ class App:
     def submit(self, spec: dict) -> dict:
         spec = {**spec, "id": uuid.uuid4().hex[:8], "status": "queued", "created": time.time()}
         spec["label"] = spec.get("label") or self.label_for(spec)
-        if not spec.get("agent"):
-            spec.update({k: v for k, v in self._last_models().items() if k not in spec})
+        # a job carries a model only when the person picked one for that job; otherwise every call follows
+        # stage_models (pipeline stages, and `feedback` for revisions). The last budget top-up carries over.
+        spec.update({k: v for k, v in self._last_budget().items() if k not in spec})
         self._record(spec)
         if spec.get("action") in ("run", "pdfs", "sync", "eval"):
             (self.run_dir / "ui_settings.json").write_text(json.dumps(
@@ -384,7 +386,7 @@ class App:
         while True:
             spec = None
             with self.lock:
-                if self.job is None and self.queue and App.slot.acquire(blocking=False):
+                if self.job is None and not self.busy and self.queue and App.slot.acquire(blocking=False):
                     spec = self.queue.pop(0)
                     self.job = spec
                     App.running = self
@@ -496,7 +498,7 @@ class App:
             res = todos.apply(self.ctx(), ans)
             self.saved()
         if res.get("job"):
-            self.submit({**self._last_models(), **res["job"]})
+            self.submit({**self._last_budget(), **res["job"]})
         return res
 
     def _drain_answers(self):
@@ -515,7 +517,7 @@ class App:
         self.pending_answers = []
         self.saved()
         for j in jobs:
-            self.queue.append({**self._last_models(), **j, "id": uuid.uuid4().hex[:8], "status": "queued"})
+            self.queue.append({**self._last_budget(), **j, "id": uuid.uuid4().hex[:8], "status": "queued"})
 
     def _apply_op(self, ctx, op: dict) -> dict:
         from .. import actions, todos
@@ -621,27 +623,76 @@ class App:
         return {"ok": True, "message": f"saved to {lib.rel(target)}" + (f"; {n} output(s) to bring up to date (Out-of-date outputs)" if n else ""),
                 "pending": pc}
 
+    def _model_call(self, label: str, check, work, finish, watch: tuple = ()) -> dict:
+        """A model call asked from a page. `check(ctx)` runs under the lock (an error message or None); `work(sandbox)`
+        runs WITHOUT it, on a copy of the store, so every poll and decision keeps answering and no job starts meanwhile;
+        `finish(ctx, sandbox, result)` applies the result under the lock, unless what the work wrote (or the `watch`
+        nodes) changed in the meantime."""
+        import dataclasses
+        with self.lock:
+            if self.job is not None:
+                return {"ok": False, "message": f"A job is running; {label} when it has finished."}
+            if self.busy:
+                return {"ok": False, "message": f"The agent is already working ({self.busy}); try again in a moment."}
+            ctx = self.ctx()
+            err = check(ctx)
+            if err:
+                return {"ok": False, "message": err}
+            self.busy = label
+            base = ctx.store.clone()
+            sb = dataclasses.replace(ctx, store=ctx.store.clone())
+        try:
+            res = work(sb)
+        except Exception as e:
+            with self.lock:
+                self.busy = None
+            return {"ok": False, "message": str(e)[:300]}
+        with self.lock:
+            self.busy = None
+            live = self.ctx()
+            d = sb.store.diff(base)
+            nodes = set(d["new"]) | set(d["changed"]) | set(watch)
+            if any((live.store.get(n) or {}).get("version") != (base.get(n) or {}).get("version") for n in nodes) or \
+                    any(live.store.meta.get(k) != base.meta.get(k) for k in d["meta"]):
+                return {"ok": False, "message": "The review changed while the agent was working; please ask again."}
+            try:
+                r = finish(live, sb, res)
+            except Exception as e:
+                return {"ok": False, "message": str(e)[:300]}
+            live.save()
+            self.saved()
+            return r
+
     def protocol_change(self, b: dict) -> dict:
         """The protocol changed with the review team: revise (the agent applies a change asked in plain words, one call
         to the plan stage's model) or edit (a person's edits to the criteria, no model call). Approval is asked again."""
         from ..stages import planning
         op = b.get("op")
+        if op == "revise":
+            ins = (b.get("instruction") or "").strip()
+            if not ins:
+                return {"ok": False, "message": "say what to change"}
+
+            def draft(sb):
+                with sb.at("plan"):
+                    return planning.draft_revision(sb, ins)
+
+            def apply(live, sb, dr):
+                r = planning.apply_revision(live, ins, dr)
+                return {"ok": True, **r, "message": ("protocol revised; approve it again" if r.get("applied")
+                                                      else "nothing changed: " + (r.get("explanation") or ""))}
+            return self._model_call("change the protocol", lambda c: None if c.store.get("protocol") else
+                                    "Draft the protocol first (Run: up to stage 1).", draft, apply, watch=("protocol",))
         with self.lock:
             if self.job is not None:
                 return {"ok": False, "message": "A job is running; change the protocol when it has finished."}
+            if self.busy:
+                return {"ok": False, "message": f"The agent is already working ({self.busy}); try again in a moment."}
             ctx = self.ctx()
             if not ctx.store.get("protocol"):
                 return {"ok": False, "message": "Draft the protocol first (Run: up to stage 1)."}
             try:
-                if op == "revise":
-                    ins = (b.get("instruction") or "").strip()
-                    if not ins:
-                        return {"ok": False, "message": "say what to change"}
-                    with ctx.at("plan"):
-                        r = planning.revise_protocol(ctx, ins)
-                    r = {"ok": True, **r, "message": ("protocol revised; approve it again" if r.get("applied")
-                                                       else "nothing changed: " + (r.get("explanation") or ""))}
-                elif op == "edit":
+                if op == "edit":
                     r = planning.edit_criteria(ctx, b.get("criteria") or [], note=b.get("note") or "")
                     r = {"ok": True, **r, "message": "criteria saved; approve the protocol" if r.get("applied") else "nothing changed"}
                 else:
@@ -657,9 +708,35 @@ class App:
         refine (a change asked in plain words), count (any query), confirm (the query the search will run), clear."""
         from ..stages import search
         op = b.get("op")
+
+        def ready(c):
+            if c.store.get("search") is not None:
+                return "The search has already run; a new query needs a fresh run folder."
+            return None if (c.store.get("protocol") or {}).get("data") else "Draft the protocol first (Run: up to stage 1)."
+
+        def keep(live, sb, r):   # the work wrote only the strategy notes: take them over
+            live.store.meta["search_strategy"] = search.strategy_meta(sb.store)
+            return r
+        if op == "suggest":
+            def work(sb):
+                with sb.at("search"):
+                    m = search.suggest_queries(sb, sb.store.get("protocol")["data"])
+                return {"ok": True, "variants": m["variants"], "message": f"{len(m['variants']) - 1} alternatives proposed"}
+            return self._model_call("choose the search strategy", ready, work, keep, watch=("protocol",))
+        if op == "refine":
+            q, ins = (b.get("query") or "").strip(), (b.get("instruction") or "").strip()
+            if not q or not ins:
+                return {"ok": False, "message": "a query and a request are needed"}
+
+            def work(sb):
+                with sb.at("search"):
+                    return {"ok": True, **search.refine_query(sb, sb.store.get("protocol")["data"], q, ins)}
+            return self._model_call("choose the search strategy", ready, work, keep, watch=("protocol",))
         with self.lock:
             if self.job is not None:
                 return {"ok": False, "message": "A job is running; choose the search strategy when it has finished."}
+            if self.busy:
+                return {"ok": False, "message": f"The agent is already working ({self.busy}); try again in a moment."}
             ctx = self.ctx()
             st = ctx.store
             if st.get("search") is not None:
@@ -668,17 +745,7 @@ class App:
             if not protocol:
                 return {"ok": False, "message": "Draft the protocol first (Run: up to stage 1)."}
             try:
-                if op == "suggest":
-                    with ctx.at("search"):
-                        m = search.suggest_queries(ctx, protocol)
-                    r = {"ok": True, "variants": m["variants"], "message": f"{len(m['variants']) - 1} alternatives proposed"}
-                elif op == "refine":
-                    q, ins = (b.get("query") or "").strip(), (b.get("instruction") or "").strip()
-                    if not q or not ins:
-                        return {"ok": False, "message": "a query and a request are needed"}
-                    with ctx.at("search"):
-                        r = {"ok": True, **search.refine_query(ctx, protocol, q, ins)}
-                elif op == "count":
+                if op == "count":
                     q = (b.get("query") or "").strip()
                     if not q:
                         return {"ok": False, "message": "write a query first"}
@@ -839,9 +906,9 @@ class App:
         from .. import provenance
         return provenance.mode(self.ctx())
 
-    def _last_models(self) -> dict:
+    def _last_budget(self) -> dict:
         s = self._settings()
-        return {k: s[k] for k in ("agent", "extra_budget") if s.get(k)}
+        return {"extra_budget": s["extra_budget"]} if s.get("extra_budget") else {}
 
     # ------------------------------------------------------------ state
     def state(self) -> dict:

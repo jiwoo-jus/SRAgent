@@ -1,7 +1,8 @@
 """Bring the review up to date after human input (decisions, added PDFs), dependency-aware.
 
 process_pdfs(ctx)      convert new/changed user files in <run_dir>/fulltext, re-screen those studies at
-                       full text (unless a human already decided), re-extract and re-assess included ones
+                       full text (unless a human already decided), re-extract included ones (under
+                       update_policy.extraction); risk of bias and synthesis follow through the update engine
 sync_dependents(ctx)   make extraction / RoB / synthesis consistent with the current eligibility
                        decisions: extract + assess newly included studies, deactivate excluded ones,
                        integrate new studies into the synthesis and remove excluded ones from it
@@ -10,7 +11,7 @@ Both write a change summary to the run log and regenerate the reports.
 from __future__ import annotations
 
 from .context import Ctx
-from .stages import extraction, fulltext, report, rob, screening, synthesis
+from .stages import extraction, fulltext, report, screening
 
 
 def process_pdfs(ctx: Ctx) -> dict:
@@ -32,20 +33,22 @@ def process_pdfs(ctx: Ctx) -> dict:
             unreadable.append(rid)
             continue
         if rid in st.included_ids():
-            import copy
-            old = copy.deepcopy(st.get(f"ext:{rid}")["data"]) if st.get(f"ext:{rid}") else None
-            extraction.extract_one(ctx, rid)
-            rob.rob_one(ctx, rid)
-            reextracted.append(rid)
-            if old is not None and st.by_type("synthesis", active_only=True):
-                # the values may have changed with the full text: revise only the outputs that depend on them
-                from . import feedback
-                new_data = st.get(f"ext:{rid}")["data"]
-                if feedback._changed(old, new_data, "extraction"):
-                    cs = {"id": f"pdf_{rid}", "changes": []}
-                    feedback._propagate(ctx, cs, f"ext:{rid}", old, new_data,
-                                        "re-extracted from the full-text PDF supplied by the user", "pdf", 0, {f"ext:{rid}"})
-                    ctx.log(f"[pdfs] {rid}: dependent outputs revised: {sorted({c['node'] for c in cs['changes']})}")
+            had = st.get(f"ext:{rid}")
+            mode = (ctx.cfg.get("update_policy") or {}).get("extraction", "auto")
+            if had and mode != "auto":
+                # update_policy.extraction: a person sees the re-extraction first (a re-run from the study page is
+                # a proposal); nothing is rewritten here
+                if not any(f["status"] == "open" and f.get("source") == "pdf" for f in had["flags"]):
+                    st.flag(had["id"], "A full text was added after this extraction. Re-run the extraction from the "
+                                       f"study page to update it (update_policy.extraction: {mode}).", actor="agent", source="pdf")
+            else:
+                extraction.extract_one(ctx, rid)
+                if rid not in st.included_ids():   # the eligibility re-check after extraction set the study aside
+                    rescreened += [] if rid in rescreened else [rid]
+                else:
+                    reextracted.append(rid)
+            # the risk of bias and the synthesis statements that depend on the new values are now out of date: the
+            # update engine below (sync_dependents) brings them up to date under update_policy, like any other change
         ctx.save()
     screening.sync_awaiting_flags(ctx)
     res = {"processed": new, "rescreened": rescreened, "reextracted": reextracted, "unreadable": unreadable}

@@ -272,6 +272,12 @@ def test_ui_app_state_and_estimate(tmp_path):
     job = yaml.safe_load(app._write_job_config({"action": "rerun", "agent": {"provider": "local", "model": "auto"}}).read_text())
     assert job["local"]["endpoints_file"] == str((tmp_path / "local_endpoints.yaml").resolve())
     assert job["job_agent"]["provider"] == "local"     # a model picked for one re-run: this job only
+    with app.lock:                                     # the worker cannot take these jobs while the lock is held
+        app.submit({"action": "run", "until": "report", "agent": {"provider": "local", "model": "auto"}, "extra_budget": 3})
+        later = app.submit({"action": "rerun", "rid": "1001", "step": "extract"})   # no model picked for this job
+        app.queue.clear()
+    assert "agent" not in later and later["extra_budget"] == 3   # the last Run-page model does not carry over
+    assert "job_agent" not in yaml.safe_load(app._write_job_config(later).read_text())
     job = yaml.safe_load(app._write_job_config({"action": "run", "agent": {"provider": "local", "model": "auto"}}).read_text())
     assert "job_agent" not in job and "agent" not in (job.get("roles") or {})   # pipeline jobs follow stage_models
     r = app.answer({"todo_id": "protocol", "option": "approve"})
@@ -615,6 +621,33 @@ def test_a_persons_eligibility_decision_is_never_overwritten(tmp_path):
     assert cs["kind"] == "rerun" and st.get("screen:1003")["data"]["human_decision"]["decision"] == "include"
 
 
+def test_an_added_pdf_follows_the_update_policy(tmp_path):
+    """'Process added PDFs' re-extracts, but the risk of bias and the synthesis that depend on the new values are
+    brought up to date by the update engine under update_policy: with `propose` nothing is rewritten without approval."""
+    from sragent import pipeline, sync
+    from sragent.stages import fulltext
+    ctx = make_ctx(tmp_path, extra_cfg={"update_policy": {"rob": "propose", "synthesis": "propose"}})
+    pipeline.run(ctx)
+    st = ctx.store
+    syn = {n["id"]: (n["version"], n["data"]) for n in st.by_type("synthesis", active_only=True)}
+    assert any("1001" in d["cites"] for _, d in syn.values())
+    rob_v = st.get("rob:1001")["version"]
+
+    def new_values(messages, mode):
+        out = mock_fn(messages, mode)
+        u = messages[-1]["content"]
+        return out.replace("12 participants", "40 participants") if "Extract the following items" in u and "study id 1001" in u else out
+
+    ctx.hub.mock_fn = new_values
+    ctx.hub.cache_read = False
+    ctx.hub._clients.clear()
+    (fulltext.fulltext_dir(ctx) / "1001.txt").write_text("## Methods\n" + "Emicizumab prophylaxis, 40 patients, trough 45 ug/mL. " * 60)
+    r = sync.process_pdfs(ctx)
+    assert "1001" in r["reextracted"] and "40 participants" in str(st.get("ext:1001")["data"]["fields"])
+    assert st.get("rob:1001")["version"] == rob_v                                  # proposed, not applied
+    assert {n["id"]: (n["version"], n["data"]) for n in st.by_type("synthesis", active_only=True)} == syn
+
+
 def test_human_edits_survive_a_re_extraction_and_re_assessment(tmp_path):
     """A value a person edited and a risk of bias a person confirmed are kept when the study is
     extracted or assessed again (e.g. after a new full text)."""
@@ -925,6 +958,26 @@ def test_reverse_index_and_append_only_changelog(tmp_path):
 
 
 # ---------------------------------------------------------------- the update engine (refactor step 2)
+def test_an_answer_after_a_criterion_change_keeps_the_reassessment_pending(tmp_path):
+    """A person's eligibility answer (or any bookkeeping write) on a screen node does not stamp it current with a
+    protocol it never saw: the criterion added before the answer is still re-assessed."""
+    import yaml
+    from sragent import engine, pipeline, todos
+    from sragent.stages import planning
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    n = st.get("screen:1002")
+    st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "stage": "full_text"}, depends_on=n["depends_on"])
+    p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
+    p["criteria"].append({"id": "E1", "type": "exclusion", "text": "studies only in children", "stage": "title_abstract"})
+    yaml.safe_dump(p, open(ctx.run_dir / "protocol.yaml", "w"), sort_keys=False)
+    planning.plan(ctx)                                                   # the protocol changes first ...
+    assert todos.apply(ctx, {"todo_id": "elig:1002", "option": "include", "text": "PK table"})["ok"]   # ... then the answer
+    by = {i["node"]: i for i in engine.plan(ctx)["items"]}
+    assert by["screen:1002"]["action"] == "reassess" and by["screen:1002"]["criteria"] == ["E1"]
+
+
 def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
     import yaml
     from sragent import actions, engine, pipeline, todos
@@ -1158,6 +1211,40 @@ def test_extraction_doubt_is_settled_by_a_second_agent(tmp_path):
     d3 = st.get("screen:1003")["data"]
     assert d3["decision"] == "include" and d3["eligibility_review"]["outcome"] == "kept_human_decision"
     assert [f for f in st.get("screen:1003")["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
+
+
+def test_first_extraction_set_aside_by_the_eligibility_check_does_not_crash(tmp_path):
+    """A first extraction (no ext node yet) whose eligibility re-check sets the study aside writes no extraction:
+    the re-run, the update engine and the PDF path carry on, show the screening change, and draft no RoB."""
+    from sragent import actions, engine, pipeline
+
+    def doubting(messages, mode):
+        u = messages[-1]["content"]
+        if "Extract the following items" in u and ("study id 1001" in u or "study id 1002" in u):
+            base = json.loads(mock_fn(messages, mode))
+            base["eligibility_doubt"] = {"criterion": "I2", "why": "all PK data are from cynomolgus monkeys"}
+            return json.dumps(base)
+        return mock_fn(messages, mode)
+
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    for rid in ("1001", "1002"):
+        for k in ("ext", "rob"):
+            st.nodes.pop(f"{k}:{rid}", None)
+    ctx.hub.mock_fn = doubting
+    ctx.hub.cache_read = False
+    ctx.hub._clients.clear()
+    # re-run of extraction from the study page: a proposal with the screening change, no crash
+    cs = actions.rerun(ctx, "1001", "extract", propagate=False)
+    assert any(c["node"] == "screen:1001" and c["after"]["decision"] == "exclude" for c in cs["changes"])
+    assert not any(c["node"] == "ext:1001" for c in cs["changes"])
+    # the update engine's extract item
+    ecs = {"changes": []}
+    with ctx.at("extract"):
+        engine._extract(ctx, ecs, {"rid": "1002", "action": "extract"})
+    assert st.get("ext:1002") is None
+    assert any(c["node"] == "screen:1002" and c["after"]["decision"] == "exclude" for c in ecs["changes"])
 
 
 def test_faulted_synthesis_statements_get_one_repair_round(tmp_path):
@@ -1406,6 +1493,49 @@ def test_search_strategy_is_chosen_with_the_review_team(tmp_path, monkeypatch):
     assert sn["query"] == r["query"] and sn["query_source"] == "confirmed by the review team" and sn["confirmed"]["note"] == "team choice"
     card = next(x for x in todos.build(ctx) if x["kind"] == "search")   # the card stays, read-only, once the search ran
     assert card["optional"] and card["ran"]["query"] == r["query"] and card["ran"]["source"] == "confirmed by the review team"
+
+
+def test_a_protocol_revision_from_the_page_does_not_hold_the_interface(tmp_path):
+    """The model call behind 'Ask the agent' (protocol) runs without the app lock: the interface keeps answering while
+    the model works, no job starts meanwhile, and the revision is applied when the call returns."""
+    import threading
+    import yaml
+    from sragent import pipeline
+    from sragent.ui.server import App
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx, until="plan")
+    cfgp = tmp_path / "ui.yaml"
+    cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_")}
+    cfg["models_file"] = "models.yaml"
+    cfg["local"] = {**cfg["local"], "endpoints_file": "local_endpoints.yaml"}
+    cfgp.write_text(yaml.safe_dump(cfg))
+    (tmp_path / "models.yaml").write_text((ROOT / "configs/models.yaml").read_text())
+    (tmp_path / "local_endpoints.yaml").write_text(yaml.safe_dump({"endpoints": []}))
+    app = App(str(cfgp))
+    started, release = threading.Event(), threading.Event()
+
+    def slow(messages, mode):
+        if "Revise this review protocol" in messages[-1]["content"]:
+            started.set()
+            release.wait(10)
+        return mock_fn(messages, mode)
+
+    hub = app.ctx().hub
+    hub.mock_fn, hub.cache_read = slow, False
+    hub._clients.clear()
+    out = {}
+    t = threading.Thread(target=lambda: out.update(app.protocol_change({"op": "revise", "instruction": "widen I2"})))
+    t.start()
+    assert started.wait(10)
+    poll = threading.Thread(target=lambda: out.update(state=app.state()))
+    poll.start()
+    poll.join(5)
+    assert not poll.is_alive() and "todos" in out["state"]                      # answered while the model works
+    assert app.busy and app.protocol_change({"op": "revise", "instruction": "again"})["ok"] is False
+    release.set()
+    t.join(10)
+    assert out["ok"] and out["applied"] and not app.busy
+    assert "widened as asked" in app.ctx().store.get("protocol")["data"]["criteria"][1]["text"]
 
 
 def test_protocol_changed_with_the_review_team(tmp_path):

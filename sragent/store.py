@@ -75,7 +75,10 @@ class ReviewStore:
     # ------------------------------------------------------------ basic ops
     def upsert(self, node_id: str, ntype: str, data: dict, *, depends_on: Iterable[str] = (),
                evidence: list[dict] | None = None, status: str = "active",
-               actor: str = "agent", reason: str = "created") -> dict:
+               actor: str = "agent", reason: str = "created", current: bool = True) -> dict:
+        """Create or update a node. current=True (a computation from its inputs): the node is stamped current with
+        every input. current=False (a person's answer, a status or bookkeeping write): the input versions it last
+        saw are kept, so an input that changed meanwhile still makes it out of date."""
         now = time.time()
         old = self.nodes.get(node_id)
         deps = sorted(set(depends_on))
@@ -89,7 +92,7 @@ class ReviewStore:
             return node
         same = old["data"] == data and old["status"] == status and (evidence is None or old["evidence"] == evidence)
         if same:   # recomputed with the same result: current with its inputs, but not a new version
-            return self.touch(node_id, deps if depends_on else None)
+            return self.touch(node_id, deps if depends_on else None) if current else old
         old["history"].append({"version": old["version"], "data": copy.deepcopy(old["data"]),
                                "evidence": copy.deepcopy(old["evidence"]), "status": old["status"],
                                "ts": old["updated"]})
@@ -97,7 +100,11 @@ class ReviewStore:
         old["data"] = data
         before = list(old["depends_on"])
         old["depends_on"] = deps if depends_on else old["depends_on"]
-        old["dep_versions"] = self._dep_versions(old["depends_on"])   # computed now: current with its inputs
+        if current:
+            old["dep_versions"] = self._dep_versions(old["depends_on"])   # computed now: current with its inputs
+        else:   # not recomputed: keep what it last saw; a newly added input is recorded as it is now
+            seen, now_v = old.get("dep_versions") or {}, self._dep_versions(old["depends_on"])
+            old["dep_versions"] = {d: seen.get(d, now_v.get(d)) for d in old["depends_on"]}
         self._index(node_id, before, old["depends_on"])
         if evidence is not None:
             old["evidence"] = evidence

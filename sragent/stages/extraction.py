@@ -242,7 +242,8 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     if human_decided(d):     # a person decided this inclusion: it stands; the review is recorded for them
         review["outcome"] = "kept_human_decision"
         d["eligibility_review"] = review
-        st.upsert(sc["id"], "screen", d, depends_on=sc["depends_on"], reason=f"eligibility review after extraction ({cid}): your decision stands")
+        st.upsert(sc["id"], "screen", d, depends_on=sc["depends_on"], current=False,
+                  reason=f"eligibility review after extraction ({cid}): your decision stands")
         if not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in st.get(sc["id"])["flags"]):
             st.flag(sc["id"], f"After extraction, two agents reviewed this inclusion you decided ({cid}): extraction says exclude "
                              f"({why[:160]}); the verifier says {verdict}. Your decision is kept; please check.", actor="agent", source=DOUBT_SOURCE)
@@ -273,7 +274,7 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
         reason = f"two agents disagree after extraction on {cid}: extraction says exclude, the verifier says include; " + \
                  ("a person decides" if decision == "awaiting" else f"pipeline.fulltext_unclear: {policy}")
         outcome = "pending" if decision == "awaiting" else ("exclude" if decision == "exclude" else "kept")
-    st.upsert(sc["id"], "screen", d, depends_on=sc["depends_on"], reason=reason)
+    st.upsert(sc["id"], "screen", d, depends_on=sc["depends_on"], reason=reason, current=False)
     for f in st.get(sc["id"])["flags"]:
         if f["status"] == "open" and f.get("source") in SCREEN_FLAG_SOURCES + (DOUBT_SOURCE,):
             st.resolve_flag(sc["id"], f["id"], f"eligibility reviewed after extraction: {review['outcome']}", actor="agent")

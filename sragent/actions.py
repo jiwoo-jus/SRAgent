@@ -124,7 +124,7 @@ def edit(ctx: Ctx, op: dict) -> dict:
         if d.get("rule"):
             d["rule_restored"] = {"rule": d.pop("rule"), "note": "manual decision"}
         deps = n["depends_on"] if n else [f"rec:{rid}", "protocol"]
-        st.upsert(f"screen:{rid}", "screen", d, depends_on=deps, actor="user",
+        st.upsert(f"screen:{rid}", "screen", d, depends_on=deps, actor="user", current=False,
                   reason=f"manual eligibility decision: {before} -> {dec}.{sfx}")
         for f in st.get(f"screen:{rid}")["flags"]:
             if f["status"] == "open" and f.get("source") in ("screening", None, "feedback") and "pending review" not in f["text"]:
@@ -267,6 +267,7 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
     t0, usd0 = time.time(), ctx.hub.tracker.spent
     before_node = st.get(nid)
     before = copy.deepcopy(before_node["data"]) if before_node else None
+    screen_before = copy.deepcopy((st.get(f"screen:{rid}") or {}).get("data"))
     ft = st.get(f"ft:{rid}")
     stage = "full_text" if (before or {}).get("stage") == "full_text" or (ft and ft["data"].get("kind") == "fulltext") \
         else "title_abstract"
@@ -293,10 +294,16 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
     finally:
         llm.cache = cache
         sb.stage = None        # revising dependent outputs is feedback work (stage_models.feedback)
-    after = sb.store.get(nid)["data"]
+    after_node = sb.store.get(nid)
+    after = after_node["data"] if after_node else None
+    screen_after = (sb.store.get(f"screen:{rid}") or {}).get("data")
+    if step != "screen" and screen_before and screen_after and screen_before.get("decision") != screen_after.get("decision"):
+        # extraction re-checked eligibility and changed the decision: that is part of what the reviewer accepts
+        cs["changes"].append({"node": f"screen:{rid}", "role": "dependent", "before": screen_before,
+                              "after": copy.deepcopy(screen_after)})
     if before_node and before.get("human_decision"):
         cs["explanation"] = f"Note: this replaces your earlier manual decision ({before['human_decision']['decision']})."
-    if before is None or feedback._changed(before, after, sb.store.get(nid)["type"]) or \
+    if after is not None and (before is None or feedback._changed(before, after, after_node["type"])) or \
             (step == "screen" and before.get("decision") != after.get("decision")):
         cs["changes"].append({"node": nid, "role": "target", "before": before, "after": after})
         same_decision = step == "screen" and before and before.get("decision") == after.get("decision")

@@ -441,7 +441,7 @@ def apply(ctx: Ctx, answer: dict) -> dict:
             d["decision"] = opt
             d["because"] = [extra.get("criterion") or "human"] if opt == "exclude" else []
             d["human_decision"] = {"decision": opt, "note": text, "reason": extra.get("criterion"), "ts": time.time()}
-            st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user",
+            st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user", current=False,
                       reason=f"human eligibility decision: {opt}" + (f" ({text})" if text else ""))
             for f in n["flags"]:
                 if f["status"] == "open":

@@ -413,7 +413,7 @@ def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: lis
                 d["unclear_by_rule"] = by_rule
             if rec["outcome"] == "decided_by_verifier":
                 d["decided_by"] = "verifier"
-        st.upsert(n["id"], "screen", d, depends_on=n["depends_on"],
+        st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], current=False,
                   reason=f"second reading by the verifier: {rec['outcome']}")
         if rec["outcome"] not in ("agreed", "still_undecided") and rid not in st.included_ids():
             for kind in ("ext", "rob"):
@@ -473,7 +473,8 @@ def _mark_retrieval(ctx: Ctx, rid: str, status: str, reason: str):
     if d.get("human_decision", {}).get("decision") == "include":
         d["human_decision_pending_fulltext"] = d.pop("human_decision")
     d.update({"decision": status, "stage": "retrieval", "because": [], "retrieval_note": reason})
-    st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], reason=f"full-text retrieval: {status} ({reason})")
+    st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], reason=f"full-text retrieval: {status} ({reason})",
+              current=False)
 
 
 def review_one(ctx: Ctx, protocol: dict, rid: str, refetch: bool = False) -> str:
@@ -566,7 +567,7 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
                 d["unclear_by_rule"] = by_rule
             else:
                 d.pop("unclear_by_rule", None)
-            st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user",
+            st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user", current=False,
                       reason="protocol revised: decision re-derived from stored assessments")
             for f in n["flags"]:
                 if f["status"] == "open" and f["source"] in SCREEN_FLAG_SOURCES:

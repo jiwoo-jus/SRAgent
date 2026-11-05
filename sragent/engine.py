@@ -369,8 +369,15 @@ def _extract(ctx: Ctx, cs: dict, i: dict) -> None:
         fulltext.fetch_one(ctx, rid)
     old = st.get(f"ext:{rid}")
     before = copy.deepcopy(old["data"]) if old else None
+    sc = st.get(f"screen:{rid}")
+    screen_before = copy.deepcopy(sc["data"]) if sc else None
     extraction.extract_one(ctx, rid)
-    _record(cs, f"ext:{rid}", before, st.get(f"ext:{rid}")["data"], i["action"], ntype="extraction")
+    new = st.get(f"ext:{rid}")
+    if new is not None:   # absent when the eligibility re-check after a first extraction set the study aside
+        _record(cs, f"ext:{rid}", before, new["data"], i["action"], ntype="extraction")
+    sc = st.get(f"screen:{rid}")
+    if screen_before and sc and screen_before.get("decision") != sc["data"].get("decision"):
+        _record(cs, sc["id"], screen_before, copy.deepcopy(sc["data"]), "eligibility_review", ntype="screen")
 
 
 def _rob(ctx: Ctx, cs: dict, i: dict) -> None:

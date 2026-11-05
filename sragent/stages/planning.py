@@ -112,12 +112,22 @@ def apply_protocol(ctx: Ctx, protocol: dict, actor: str, reason: str, record: di
 
 def revise_protocol(ctx: Ctx, instruction: str) -> dict:
     """The agent revises the protocol as the review team asks (one call to the plan stage's model), then applies it."""
-    st = ctx.store
-    cur = (st.get("protocol") or {}).get("data") or {}
+    return apply_revision(ctx, instruction, draft_revision(ctx, instruction))
+
+
+def draft_revision(ctx: Ctx, instruction: str) -> dict:
+    """The model call of a protocol revision; writes nothing (the interface runs it without holding the review)."""
+    cur = (ctx.store.get("protocol") or {}).get("data") or {}
     out = ctx.agent.chat(ctx.msgs(prompts.PLAN_REVISE.format(
         protocol=json.dumps(cur, ensure_ascii=False, indent=1), instruction=instruction)), tag="plan_revise")
-    new = out.get("protocol")
-    explanation = str(out.get("explanation") or "")
+    return {"protocol": out.get("protocol"), "explanation": str(out.get("explanation") or "")}
+
+
+def apply_revision(ctx: Ctx, instruction: str, draft: dict) -> dict:
+    """Apply a drafted revision: recorded in protocol_revisions; approval is asked again."""
+    st = ctx.store
+    cur = (st.get("protocol") or {}).get("data") or {}
+    new, explanation = draft.get("protocol"), draft.get("explanation") or ""
     if not isinstance(new, dict) or not new.get("criteria"):
         return {"applied": False, "explanation": explanation or "the agent returned no protocol", "changed": {}}
     for kc in new.get("key_concepts", []):        # keep the validated synonyms of unchanged concepts

@@ -389,6 +389,8 @@ then one agent-only run of `benchmark/emicizumab_pk` compared with the v3 result
 
 ## 9. Decisions to take first
 
+Decided on 2026-11-05: all six as recommended below.
+
 1. **Split `fulltext` into `retrieve` and `eligibility`** (recommended: yes; PRISMA counts them apart,
    the To-do already does, retrieval has no LLM).
 2. **Separate TA and FT screening nodes** (`screen:<rid>` and `elig:<rid>`) instead of one node with a

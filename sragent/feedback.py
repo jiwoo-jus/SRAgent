@@ -581,7 +581,14 @@ def _include_study(sb: Ctx, cs: dict, rid: str, tp: str, integrate: bool = True)
             cs["changes"].append({"node": nid, "role": "dependent", "before": {"status": "excluded"},
                                   "after": {"status": "active"}})
         elif st.get(nid) is None:
+            sc_before = copy.deepcopy((st.get(f"screen:{rid}") or {}).get("data"))
             fn(sb, rid)
+            if st.get(nid) is None:   # the eligibility re-check after extraction set the study aside
+                sc = st.get(f"screen:{rid}")
+                if sc and sc_before and sc_before.get("decision") != sc["data"].get("decision"):
+                    cs["changes"].append({"node": sc["id"], "role": "dependent", "before": sc_before,
+                                          "after": copy.deepcopy(sc["data"])})
+                return
             cs["changes"].append({"node": nid, "role": "dependent", "before": None, "after": st.get(nid)["data"]})
     if not integrate:
         return

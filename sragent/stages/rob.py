@@ -23,7 +23,7 @@ def rob_one(ctx: Ctx, rid: str) -> dict:
         # a person confirmed (or changed) this assessment: it is not drafted again; the source change is noted
         ftn = st.get(f"ft:{rid}")
         d = dict(old["data"], source_version=ftn["version"] if ftn else None)
-        st.upsert(old["id"], "rob", d, depends_on=old["depends_on"], evidence=old["evidence"],
+        st.upsert(old["id"], "rob", d, depends_on=old["depends_on"], evidence=old["evidence"], current=False,
                   reason="source changed; the assessment a person confirmed is kept")
         if not any(f["status"] == "open" and f["source"] == "source_changed" for f in old["flags"]):
             st.flag(old["id"], "The full text changed after you confirmed this assessment; it was kept. "
