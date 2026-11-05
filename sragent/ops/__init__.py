@@ -42,7 +42,7 @@ class Op:
 REGISTRY: dict[str, Op] = {}
 
 
-def operation(name: str, stage: str, kind: str, reach: bool = False, category: str = "human_judgment"):
+def operation(name: str, stage: str, kind: str, reach: bool = False, category: str = "human_judgment", log: bool = True):
     assert kind in KINDS, kind
 
     def deco(fn):
@@ -65,7 +65,7 @@ def operation(name: str, stage: str, kind: str, reach: bool = False, category: s
             res = res if isinstance(res, dict) else {"ok": True, "result": res}
             res.setdefault("ok", True)
             res.setdefault("message", "done" if res["ok"] else "refused")
-            if kind == "human" and _log:
+            if kind == "human" and _log and log:
                 args = dict(zip(params, a)) | kw
                 _log_decision(ctx, name, args, res)
                 if res["ok"]:

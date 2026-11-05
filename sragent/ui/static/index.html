@@ -25,15 +25,14 @@
       <div class="lbl">Stages</div>
       <div id="stagenav" class="stagenav"></div>
       <div class="lbl">Review</div>
-      <a href="#/todo" data-t="todo"><svg class="i" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8M13 12h8M13 18h8"/></svg>To-do<span id="todo-n" class="cnt warn"></span></a>
+      <a href="#/needs" data-t="needs"><svg class="i" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8M13 12h8M13 18h8"/></svg>Needs you<span id="needs-n" class="cnt warn"></span></a>
       <a href="#/studies" data-t="studies"><svg class="i" viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>Studies</a>
-      <a href="#/pdfs" data-t="pdfs"><svg class="i" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6M9 15l3 3 3-3"/></svg>Full texts<span id="pdf-n" class="cnt"></span></a>
       <div class="lbl">Agent</div>
-      <a href="#/run" data-t="run"><svg class="i" viewBox="0 0 24 24"><path d="m7 4 13 8-13 8z"/></svg>Run</a>
       <a href="#/activity" data-t="activity"><svg class="i" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Activity<span id="act-n" class="cnt info"></span></a>
       <div class="lbl">Output</div>
       <a href="/report" id="reportlink" target="_blank" rel="noopener"><svg class="i" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg>Report<svg class="i sm" viewBox="0 0 24 24" style="margin-left:auto;color:var(--mut-2)"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></a>
       <div class="lbl">Setup</div>
+      <a href="#/settings" data-t="settings"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
       <a href="#/configs" data-t="configs"><svg class="i" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m10 13-2 2 2 2M14 13l2 2-2 2"/></svg>Configs</a>
     </nav>
     <div class="side-foot">
@@ -52,9 +51,8 @@
     <main>
       <section id="v-steps"></section>
       <section id="v-stage" hidden></section>
-      <section id="v-todo" hidden></section>
-      <section id="v-run" hidden></section>
-      <section id="v-pdfs" hidden></section>
+      <section id="v-needs" hidden></section>
+      <section id="v-settings" hidden></section>
       <section id="v-studies" hidden></section>
       <section id="v-activity" hidden></section>
       <section id="v-configs" hidden></section>
@@ -66,5 +64,7 @@
 <script src="/static/js/app.js"></script>
 <script src="/static/js/ops.js"></script>
 <script src="/static/js/stage.js"></script>
+<script src="/static/js/needs.js"></script>
+<script src="/static/js/settings.js"></script>
 </body>
 </html>

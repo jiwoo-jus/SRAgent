@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "job.op:op (applied)"
+   "job.rob.recompute:recompute (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -23,7 +23,7 @@
    },
    "op": "rob.recompute"
   },
-  "message": "the agent will propose a re-assessment",
+  "message": "rob.recompute queued",
   "ok": true
  },
  "review": {

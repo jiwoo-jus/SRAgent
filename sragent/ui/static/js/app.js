@@ -4,8 +4,9 @@ const trunc = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, 
 let S = null, M = null, tab = "steps", showSnoozed = false, lastJobId = null;
 const answers = {};            // todo id -> {option, text, extra}
 let STAGES = [];               // [key, label] of every stage, in order: the server's registry (sragent/stagespec.py)
-const VIEWS = ["steps","stage","todo","studies","pdfs","run","activity","configs"];
-const TITLES = {steps:["Overview","Where the review stands and the next thing to do"], stage:["Stage",""], todo:["To-do","Decisions and checks waiting for you"],
+const VIEWS = ["steps","stage","needs","studies","settings","activity","configs"];
+const TITLES = {steps:["Overview","Where the review stands and the next thing to do"], stage:["Stage",""], needs:["Needs you","Everything waiting for a person, by stage"],
+  settings:["Settings","Models per stage, the spending cap, evaluations"], todo:["To-do","Decisions and checks waiting for you"],
   studies:["Studies","Every record, its status and the evidence behind it"], pdfs:["Full texts","PDFs that would help the agent, and how to add them"],
   run:["Run","Start the agent, choose a model and see the cost first"], activity:["Activity","Jobs, proposals, comments and the full change history"],
   configs:["Configs","Every run file: open one, edit it, or set up a new review"]};
@@ -100,7 +101,7 @@ function activate(t, noload){
   if (noload) return;
   render();
   if (NOCFG) return;      // no run file open: only the Configs page has data
-  if (t === "run") loadModels();
+  if (t === "settings") loadModels();
   if (t === "studies") loadStudies();
   if (t === "activity") loadActivity();
 }
@@ -111,6 +112,8 @@ function route(){
     if (!confirm("Discard your unsaved changes to " + CF.path + "?")) { history.pushState(null, "", "#/configs/edit/" + encodeURIComponent(CF.path)); return; }
     CF.dirty = false;
   }
+  const moved = {todo: "#/needs", pdfs: "#/stage/retrieve", run: "#/settings"}[t0];
+  if (moved) { history.replaceState(null, "", moved); return route(); }
   const t = VIEWS.includes(t0) ? t0 : NOCFG ? "configs" : "steps";
   if (t === "configs") {
     CF.sub = ["edit","new-topic","new-run"].includes(rid) ? rid : "list"; CF.arg = decodeURIComponent(arg || "");
@@ -175,9 +178,9 @@ function renderChrome(){
   const ao = S.run.human_mode === "agent_only";
   $("#mode").innerHTML = `<span class="badge ${ao ? "info" : ""} dot" title="${ao ? "Agent-only: the agent makes every judgment; people may only supply the full texts it asks for." : "Human in the loop: you approve, correct and confirm the agent's work."}">${ao ? "Agent-only" : "Human in the loop"}</span>`;
   $("#spent").textContent = usd(S.run.spent_usd);
-  $("#todo-n").textContent = S.todos.filter(t => !t.snoozed && !t.optional).length || "";
+  $("#needs-n").textContent = S.todos.filter(t => !t.snoozed && !t.optional).length || "";
   const ft = S.todos.find(t => t.kind === "fulltexts");
-  $("#pdf-n").textContent = ft ? (ft.files.filter(x => !x.present).length || "") : "";
+  // (the Full texts count is on the retrieve stage in the stage list)
   const j = S.job.current;
   $("#act-n").textContent = ((j ? 1 : 0) + (S.job.queued || 0)) || "";
   let w = "", top = "";
@@ -207,16 +210,15 @@ function render(fromPoll){
     if (!fromPoll) renderStage();
     else if (!typing && !unchanged("stage", [S.todos, S.steps, S.job, S.stale])) openStage(STG.key, true);
   }
-  if (tab === "todo") renderTodo(fromPoll);
-  if (tab === "run") { if (!fromPoll) renderRun(); else { renderJob(); runWarn(); } }
-  if (tab === "pdfs") renderPdfs(fromPoll);
+  if (tab === "needs") renderNeeds(fromPoll);
+  if (tab === "settings" && !fromPoll) renderSettings();
   if (tab === "activity") renderJobsCard(fromPoll);
 }
 
 /* ---------------- next step banner ---------------- */
 function nextBanner(){
   const n = S.next || {};
-  const label = {todo:"Open to-do", run:"Open Run", pdfs:"Open Full texts", report:"Open report"}[n.go] || "Go";
+  const label = {todo:"Open", run:"Open the stage", pdfs:"Open Full texts", report:"Open report"}[n.go] || "Go";
   const icon = {todo:"todo", run:"play", pdfs:"file", report:"report"}[n.go] || "arrowR";
   const running = !!S.job.current && n.go === "run";
   return `<div class="next"><div class="ni">${running ? `<span class="spin" style="border-color:rgba(255,255,255,.35);border-top-color:#fff;width:16px;height:16px"></span>` : ic(icon)}</div>
@@ -227,14 +229,17 @@ function goNext(){
   const n = S.next || {};
   if (n.go === "todo") goTodoGroup(n.group);
   else if (n.go === "run") presetRun(n.until || "report");
-  else if (n.go === "pdfs") show("pdfs");
+  else if (n.go === "pdfs") go("#/stage/retrieve");
   else window.open(U("/report"), "_blank");
 }
-function goTodoGroup(group){ show("todo"); setTimeout(() => scrollToId("g-" + (group || "")), 60); }
-function goTodoStep(step){
-  if (step === "retrieve") return show("pdfs");
-  show("todo"); setTimeout(() => { const el = document.querySelector(`#v-todo [data-step="${step}"]`); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 60);
-}
+/* every decision lives on its stage page; what belongs to no stage (answers to your feedback) is on Needs you */
+const GROUP_STAGE = {protocol:"protocol", search:"search", eligibility:"eligibility", sync:"synthesis", fulltexts:"retrieve",
+                     rob:"rob", ruled:"screen", fields:"extract"};
+function goTodoGroup(group){ const s = GROUP_STAGE[group]; go(s ? "#/stage/" + s : "#/needs"); }
+function goTodoStep(step){ go(step && step !== "feedback" ? "#/stage/" + step : "#/needs"); }
+const RUN_OP = {protocol:"protocol.draft", search:"search.run", screen:"screen.run", retrieve:"retrieve.run", eligibility:"eligibility.run",
+                extract:"extract.run", rob:"rob.run", synthesis:"synthesis.write", report:"report.render"};
+function runTo(stage){ const o = RUN_OP[stage]; if (o) runOp(o, {}, `Run up to ${stage}`); }
 
 /* ---------------- overview ---------------- */
 function renderSteps(fromPoll){
@@ -260,14 +265,14 @@ function renderSteps(fromPoll){
   const rows = S.steps.map((s, i) => {
     const st = s.status === "done" ? "done" : s.status === "needs you" ? "you" : s.status === "ready to run" ? "ready" : "todo";
     const label = s.label.replace(/^\d+\.\s*/, "");
-    const link = s.key !== "feedback" ? `#/stage/${s.key}` : "#/todo";
+    const link = s.key !== "feedback" ? `#/stage/${s.key}` : "#/needs";
     const facts = String(s.summary || "").split(" · ").map(x => `<span>${esc(x)}</span>`).join(`<span class="sep">·</span>`);
     return `<li class="stp ${st}">
       <div class="si">${st === "done" ? ic("check","sm") : st === "you" ? "!" : st === "ready" ? ic("play","sm") : i + 1}</div>
       <div style="min-width:0"><div class="sh"><a class="stl" href="${link}"><b>${esc(label)}</b></a>${st === "you" ? badge("needs you","warn") : st === "ready" ? badge("ready to run","info") : st === "todo" ? badge("to do") : ""}</div>
         <div class="ss">${facts}</div></div>
       <div class="sa">${s.todos ? `<button class="btn sm" onclick="goTodoStep('${s.key}')">Review ${s.todos} ${ic("arrowR","sm")}</button>` : ""}
-        ${s.run_until ? `<button class="btn sm ghost reveal" onclick="presetRun('${s.run_until}')" title="Open Run with this stage selected">${ic("play","sm")} Run to here</button>` : ""}</div></li>`;
+        ${RUN_OP[s.key] ? `<button class="btn sm ghost" onclick="runTo('${s.key}')" title="Run the review up to this stage (finished work is kept)">${ic("play","sm")} Run to here</button>` : ""}</div></li>`;
   }).join("");
   const stale = S.stale || {n:0};
   const staleBox = stale.n ? `<div class="callout warn">${ic("refresh")}<div class="grow">${stale.n} output${stale.n>1?"s are":" is"} out of date: a dependency changed after ${stale.n>1?"they were":"it was"} computed (${Object.entries(stale.by_type||{}).map(([t,n]) => `${n} ${t}`).join(", ")}${stale.pinned ? `; ${stale.pinned} decided or edited by you, kept` : ""}).${stale.est_usd != null ? ` Updating costs about ${usd(stale.est_usd)}.` : ""}
@@ -281,58 +286,14 @@ function renderSteps(fromPoll){
     ${S.ruled.length ? `<div class="callout plain">${ic("info")}<div>${S.ruled.length} records were excluded automatically by publication-type rules (conference abstracts, reviews, editorials, off-topic records without an abstract).
       <button class="link" onclick="goTodoGroup('ruled')">See and restore them</button></div></div>` : ""}`;
 }
-function presetRun(stage){ runOpts.action = "run"; runOpts.until = stage; show("run"); }
+function presetRun(stage){ go("#/stage/" + (stage === "report" ? "synthesis" : stage)); }   // its toolbar runs it
 
 /* ---------------- to-do ---------------- */
 const elig = {};     // rid -> {option, criterion, text}
 const robSel = {};   // rid -> bool
 const robEdit = {};  // rid -> {domain, judgment, text, open}
-function renderTodo(fromPoll){
-  // keep the page still while the user is typing or choosing in a field, and when nothing changed
-  const ae = document.activeElement;
-  if (fromPoll && ae && $("#v-todo").contains(ae) && ["INPUT","TEXTAREA","SELECT"].includes(ae.tagName)) return;
-  const sig = [S.todos, S.ruled, S.next, S.fulltext.new_files, showSnoozed, !!S.job.current];
-  if (fromPoll && unchanged("todo", sig)) return;
-  if (!fromPoll) unchanged("todo", sig);
-  const openDetails = [...document.querySelectorAll("#v-todo details[data-k][open]")].map(d => d.dataset.k);
-  const T = S.todos.filter(t => showSnoozed || !t.snoozed);
-  const k = kind => T.filter(t => t.kind === kind);
-  const fb = [...k("clarify"), ...k("changeset"), ...k("disagreement")];
-  const groups = [["protocol","Protocol",k("protocol").filter(t => !t.approved).length],["search","Search strategy",k("search").filter(t => !t.optional).length],["feedback","Agent answers",fb.length],["eligibility","Eligibility",k("eligibility").length],
-    ["sync","Out-of-date outputs",k("sync").length],["fulltexts","Full texts",(k("fulltexts")[0]||{files:[]}).files.length],["edits","Your edits",k("manual_edit").length],
-    ["flags","Flagged points",k("flag").length],["rob","Risk of bias",k("rob").filter(t => !t.optional).length],["ruled","Excluded automatically",(S.ruled||[]).length]].filter(x => x[2]);
-  const parts = [nextBanner()];
-  if (groups.length > 1) parts.push(`<div class="jump">${groups.map(([id,l,n]) => `<button onclick="scrollToId('g-${id}')">${l}<span class="cnt">${n}</span></button>`).join("")}</div>`);
-  const gen = (id, title, items, sub) => items.length ? `<div class="grp" id="g-${id}">${grpHead(title, items.length, sub)}${items.map(card).join("")}</div>` : "";
-  const pt = k("protocol")[0];
-  parts.push(pt ? (pt.approved && provenanceMode() === "agent_only" ? "" :
-    `<div class="grp" id="g-protocol">${pt.approved ? `<details data-k="protocol-approved"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Protocol (approved) · ${pt.criteria.length} criteria · open to change them</summary>${protocolCard(pt)}</details>` : grpHead("Protocol", 1) + protocolCard(pt)}</div>`) : "");
-  const fi = k("fields")[0];
-  parts.push(fi ? `<div class="grp" id="g-fields"><details data-k="fields"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Data items and quality domains · ${fi.fields.length} items, ${fi.domains.length} domains · open to change them (at any stage)</summary>${fieldsCard(fi)}</details></div>` : "");
-  const sq = k("search")[0];
-  parts.push(sq ? (sq.ran ? `<div class="grp" id="g-search"><details data-k="search-ran"><summary class="small mut" style="cursor:pointer;margin:4px 0 10px">Search strategy (ran) · ${Number(sq.ran.hits || 0).toLocaleString()} PubMed hits, ${Number(sq.ran.retrieved || 0).toLocaleString()} fetched · open to see the query and the alternatives</summary>${searchRanCard(sq)}</details></div>` : searchCard(sq)) : "");
-  parts.push(gen("feedback", "The agent's answers to your feedback", fb, "Accept or reject proposed revisions; where the agent disagreed with you, decide who is right."));
-  parts.push(eligTable(k("eligibility")));
-  const sy = k("sync")[0];
-  if (sy) parts.push(`<div class="grp" id="g-sync" data-step="synthesis">${grpHead("Out-of-date outputs")}<div class="card">
-      <div class="card-b"><div class="q" style="font-weight:600;margin-bottom:6px">${esc(sy.title)}</div>
-      <ul class="ctx" style="margin:0;padding-left:18px;color:var(--fg-2);font-size:13px">${sy.context.map(c => `<li>${esc(c)}</li>`).join("")}</ul></div>
-      <div class="card-f"><button class="btn primary" onclick="answerNow('sync','sync')">${ic("refresh","sm")} Update now</button>
-      <button class="btn" onclick="answerNow('sync','later')">Later</button>
-      <span class="hint grow">Extracts and assesses newly included studies and revises only the affected synthesis statements (a few cents with Gemini Flash).</span><span id="m-sync" class="msg"></span></div></div></div>`);
-  const ft = k("fulltexts")[0];
-  if (ft) parts.push(`<div class="grp" id="g-fulltexts" data-step="retrieve">${grpHead("Full texts", ft.files.length, "Supplying these PDFs lets the agent finish the full-text review.")}${pdfPanel(ft, true)}</div>`);
-  parts.push(gen("edits", "Your edits", k("manual_edit"), "Outputs that depend on something you edited. Decide whether the agent should propose updates."));
-  parts.push(gen("flags", "Points the agent flagged", k("flag"), "Self-check and evidence flags. Say it is fine, or ask the agent to fix it."));
-  parts.push(robTable(k("rob").filter(t => !t.optional)));
-  parts.push(robTable(k("rob").filter(t => t.optional), true));
-  if (k("rob").length && judging()) parts.push(`<div class="row small mut" style="margin:-4px 0 18px;gap:10px"><button class="btn sm" onclick="redraftRob(this)">${ic("refresh","sm")} Redraft all risk-of-bias assessments</button>
-    <span class="grow">Asks the agent again with the current prompt and settings; drafts you confirmed or changed are kept. With <code>verify_rob: flagged</code> the verifier settles the flagged ones.</span><span class="msg robrd"></span></div>`);
-  parts.push(ruledList());
-  const any = T.length;
-  $("#v-todo").innerHTML = parts.join("") + (any ? "" : `<div class="card"><div class="empty"><div class="ei">${ic("check")}</div><b>All caught up</b>Nothing is waiting for you right now.</div></div>`) +
-    `<label class="small mut" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" ${showSnoozed?"checked":""} onchange="showSnoozed=this.checked;renderTodo()"> Show items set to "later"</label>`;
-  openDetails.forEach(key => { const d = document.querySelector(`#v-todo details[data-k="${CSS.escape(key)}"]`); if (d) d.open = true; });
+function renderTodo(){   // the To-do forms redraw the page they are on (a stage page, or Needs you)
+  if (tab === "stage") renderStage(); else if (tab === "needs") renderNeeds(); else render();
 }
 /* protocol: ask the agent for a change in plain words, or edit criteria in place; then approve */
 const PC = {edit:null, ask:"", busy:""};
@@ -410,7 +371,8 @@ function pcEditAdd(){
 }
 async function pcCall(body, busy){
   PC.busy = busy; renderTodo();
-  const r = await api("/api/protocol", body);
+  const r = (await runOp(...(body.op === "revise" ? ["protocol.revise", {instruction: body.instruction}, "Ask the agent to change the protocol"]
+                                                 : ["protocol.edit_criteria", {criteria: body.criteria, note: body.note || ""}, "Change the criteria"]))) || {ok: false, message: "cancelled"};
   PC.busy = "";
   const m = document.getElementById("m-protocol"); if (m) msg(m, r);
   if (!r.ok) toast(r.message || r.error || "Failed", true); else toast(r.message || "Done");
@@ -523,7 +485,10 @@ function ssPick(i){ const t = S.todos.find(x => x.kind === "search"); SS.pick = 
 function ssUse(q){ SS.custom = q; SS.pick = q; renderTodo(); }
 async function ssCall(body, busy){
   SS.busy = busy; renderTodo();
-  const r = await api("/api/search_strategy", body);
+  const OPN = {suggest: "search.suggest_variants", refine: "search.refine", count: "search.count", confirm: "search.confirm_strategy", clear: "search.clear_strategy"};
+  const args = {suggest: {}, refine: {query: body.query, instruction: body.instruction}, count: {query: body.query},
+                confirm: {query: body.query, note: body.note || ""}, clear: {}}[body.op];
+  const r = (await runOp(OPN[body.op], args, "Search strategy: " + body.op)) || {ok: false, message: "cancelled"};
   SS.busy = "";
   const m = document.getElementById("m-search"); if (m) msg(m, r);
   if (!r.ok) toast(r.message || r.error || "Failed", true);
@@ -599,7 +564,9 @@ async function saveElig(){
   const items = rids.map(r => ({rid:r, ...elig[r]}));
   const bad = items.filter(i => i.option === "exclude" && !i.criterion);
   if (bad.length) { $("#eligmsg").innerHTML = `<span class="err">Choose a reason for each exclusion</span>`; return; }
-  const r = await api("/api/bulk", {kind:"eligibility", items});
+  const r = await runOp("eligibility.decide_many", {items: items.map(i => ({rid: i.rid, decision: i.option, criterion: i.criterion, note: i.text || ""}))},
+                        `Save ${items.length} eligibility decision(s)`);
+  if (!r) return;
   $("#eligmsg").innerHTML = r.ok ? `<span class="saved">${ic("check","sm")} ${esc(r.message)}</span>` : `<span class="err">${esc(r.message||r.error)}</span>`;
   if (r.ok) toast(r.message || "Saved");
   rids.forEach(r => delete elig[r]);
@@ -639,8 +606,8 @@ function pdfPanel(ft, compact){
         <div class="tw" style="margin-top:10px;background:var(--surface);border:1px solid var(--line);border-radius:10px"><table><thead><tr><th>Status</th><th>File name</th><th>Study</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <div class="row" style="margin-top:10px"><a class="btn sm" href="${U('/needed_pdfs.csv')}">${ic("download","sm")} Download list (CSV)</a></div></details></div></div>`;
 }
-async function pdfUnwant(rid){ const r = await api("/api/bulk", {kind:"pdf_unwant", ids:[rid]}); toast(r.ok ? "The agent will decide without this full text" : (r.message||r.error), !r.ok); refresh(true); }
-async function pdfUnavailable(rid){ const r = await api("/api/bulk", {kind:"pdf_unavailable", ids:[rid]}); toast(r.ok ? "Marked as not obtainable" : (r.message||r.error), !r.ok); refresh(true); }
+async function pdfUnwant(rid){ await runOp("retrieve.decide_without", {rids:[rid]}, `Decide ${rid} without another full text`); }
+async function pdfUnavailable(rid){ await runOp("retrieve.declare_unobtainable", {rids:[rid]}, `${rid}: not obtainable`); }
 
 /* risk of bias: one table, bulk confirm */
 function robWhy(t){
@@ -688,20 +655,23 @@ async function robConfirm(opt){
   const ids = S.todos.filter(t => t.kind==="rob" && !!t.optional === !!opt && robSel[t.rid]).map(t => t.id);
   const M = $("#robmsg" + (opt ? "o" : ""));
   if (!ids.length) { M.innerHTML = `<span class="err">Tick at least one study</span>`; return; }
-  const r = await api("/api/bulk", {kind:"rob_confirm", ids});
+  const r = await runOp("rob.confirm", {rids: ids.map(i => i.slice(4))}, `Confirm ${ids.length} risk-of-bias assessment(s)`);
+  if (!r) return;
   ids.forEach(i => delete robSel[i.slice(4)]);
   M.innerHTML = `<span class="saved">${ic("check","sm")} ${esc(r.message)}</span>`; toast(r.message || "Confirmed"); refresh(true);
 }
 async function robChange(rid){
   const t = S.todos.find(x => x.kind==="rob" && x.rid===rid), e = robEdit[rid];
   const changes = t.domains.map((d,i) => ({domain:d.domain, judgment:e.j[i]})).filter((c,i) => c.judgment !== t.domains[i].judgment);
-  const r = await api("/api/answer", {todo_id:"rob:"+rid, option:"change", text:e.text||"", extra:{changes}});
+  const r = await runOp("rob.edit_domains", {rid, changes, note: e.text || ""}, `Risk of bias of ${rid}`);
+  if (!r) return;
   msg("robm-"+rid, r);
   if (r.ok) { delete robEdit[rid]; setTimeout(() => refresh(true), 500); }
 }
 async function robAgent(rid){
   const e = robEdit[rid];
-  const r = await api("/api/answer", {todo_id:"rob:"+rid, option:"fix", text:e.text||"Please re-assess this risk-of-bias draft."});
+  const r = await runOp("rob.recompute", {rid, note: e.text || ""}, `Ask the agent to re-assess ${rid}`);
+  if (!r) return;
   msg("robm-"+rid, r);
   if (r.ok) { delete robEdit[rid]; setTimeout(() => refresh(true), 800); }
 }
@@ -720,7 +690,7 @@ function ruledList(){
   return `<div class="grp" id="g-ruled">${grpHead("Excluded automatically", R.length, `No action needed. These were excluded by publication-type rules before any LLM call. "Restore" sends a record back to your eligibility table.`)}
     <div class="card" style="overflow:hidden"><div style="margin-top:-1px">${body}</div></div></div>`;
 }
-async function restoreRule(rid){ const r = await api("/api/bulk", {kind:"restore_rule", ids:[rid]}); toast(r.ok ? "Restored to the eligibility table" : (r.message||r.error), !r.ok); refresh(true); }
+async function restoreRule(rid){ await runOp("screen.restore_rule_exclusion", {rids:[rid]}, `Restore ${rid} (undo the rule exclusion)`); }
 
 /* generic card for the few remaining items (protocol, proposals, flags, out-of-date outputs) */
 function card(t){
@@ -736,18 +706,23 @@ function card(t){
     <div class="card-f"><button class="btn primary" ${a.option?"":"disabled"} onclick="submitTodo('${t.id}')">Submit</button>
       ${a.option ? "" : `<span class="hint">Choose an answer first</span>`}<span id="m-${esc(t.id)}" class="msg"></span></div></div>`;
 }
+/* a To-do answer is an operation: the server says which (/api/resolve), runOp makes it */
+async function answerOp(id, option, text, extra){
+  const o = await api("/api/resolve", {todo_id:id, option, text: text || "", extra: extra || {}});
+  if (!o.ok) { toast(o.message || "Unknown answer", true); return o; }
+  return (await runOp(o.name, o.args, (S.todos.find(t => t.id === id) || {}).title || o.name)) || {ok: false, message: "cancelled"};
+}
 async function answerNow(id, opt){
-  const r = await api("/api/answer", {todo_id:id, option:opt});
+  const r = await answerOp(id, opt);
   const m = document.getElementById("m-"+id); if (m) msg(m, r);
-  setTimeout(() => refresh(true), 400);
 }
 function pick(id, v){ answers[id].option = v; renderTodo(); }
 async function submitTodo(id){
   const a = answers[id];
-  const r = await api("/api/answer", {todo_id:id, option:a.option, text:a.text, extra:a.extra});
+  const r = await answerOp(id, a.option, a.text, a.extra);
   const m = document.getElementById("m-"+id);
   if (m) msg(m, r);
-  if (r.ok) { toast(r.message || "Saved"); delete answers[id]; setTimeout(() => refresh(true), 400); }
+  if (r.ok) delete answers[id];
 }
 
 /* ---------------- run ---------------- */
@@ -762,7 +737,7 @@ async function loadModels(){
   if (st.extra_budget) runOpts.extra_budget = st.extra_budget;
   if (st.max_records && M.benchmark) runOpts.max_records = st.max_records;
   SM.edit = Object.fromEntries((M.stages || []).map(r => [r.stage, Object.keys(r.set).length ? {...r.set} : null])); SM.dirty = false;
-  renderRun();
+  if (tab === "settings") renderSettings();
 }
 function modelOptions(sel, role){
   const api = M.api.filter(m => !m.roles || m.roles.includes(role) || role==="agent");
@@ -792,44 +767,6 @@ function runWarn(){
   const a = runOpts;
   el.innerHTML = (a.action==="run" && a.until!=="protocol" && S && S.steps[0].status==="needs you") ? `<div class="callout warn">${ic("warn")}<div>The protocol is not approved yet. You can still run, but screening follows the current criteria.
      <button class="link" onclick="goTodoGroup('protocol')">Review the protocol</button></div></div>` : "";
-}
-function renderRun(){
-  if (!M || !runOpts.agent) { $("#v-run").innerHTML = `<div class="card"><div class="empty"><span class="spin" style="display:inline-block;margin-bottom:8px"></span><br>Loading models…</div></div>`; return; }
-  const a = runOpts;
-  const WHAT = [["run","Continue the review","Run the pipeline up to a stage you choose. Finished work is kept and cached calls are free."],
-    ["pdfs","Process added PDFs","Screen and extract the full texts you placed in the folder."],
-    ["sync","Update outputs after my decisions","Extract and assess newly included studies; revise only the affected statements."]]
-    .concat(M.benchmark ? [["eval","Evaluation","Run a benchmark suite. Each evaluation is its own run with fresh calls, cost and report."]] : []);
-  const what = WHAT.map(([v,l,d]) => `<button class="optcard ${a.action===v?"on":""}" onclick="runOpts.action='${v}';renderRun()"><span class="rd"></span><span><b>${l}</b><span class="d">${d}</span></span></button>`).join("");
-  $("#v-run").innerHTML = `<div id="runwarn"></div>
-  <div class="rungrid"><div>
-    <div class="card"><div class="card-h"><h2>What to run</h2></div><div class="card-b"><div class="optcards">${what}</div>
-      ${a.action==="run" || a.action==="eval" ? `<div class="form" style="margin-top:18px">
-      ${a.action==="run" ? `<label>Up to stage</label><div><select onchange="runOpts.until=this.value;estimate();runWarn()">${STAGES.map(([v,l],i)=>`<option value="${v}" ${a.until===v?"selected":""}>${i+1}. ${l}</option>`).join("")}</select></div>
-         ${M.benchmark ? `<label>Max records to screen</label><div><input type="number" min="1" placeholder="all" value="${esc(a.max_records)}" oninput="runOpts.max_records=this.value;estimate()" style="width:120px">
-           <div class="hint">Blank = all records. A sample keeps every known answer (benchmark only).</div></div>` : ""}` : ""}
-      ${a.action==="eval" ? `<label>Suite</label><div><select onchange="runOpts.suite=this.value;estimate()">${["all","e2e","screening","stagewise","grounding","synthesis","claim1","claim2","judge"].map(s=>`<option ${a.suite===s?"selected":""}>${s}</option>`).join("")}</select>
-           <div class="hint">Each evaluation is its own run in eval/runs/ (fresh model calls, own cost and report).</div></div>
-         <label>Claim-2 cases per type</label><div><input type="number" min="1" placeholder="from config" value="${esc(a.n_cases)}" oninput="runOpts.n_cases=this.value" style="width:120px"></div>` : ""}
-      </div>` : ""}</div></div>
-    ${STAGE_JOB(a.action) ? stageCard() : ""}
-    <div class="card"><div class="card-h"><h2>${STAGE_JOB(a.action) ? "Budget" : "Model and budget"}</h2></div><div class="card-b"><div class="form">
-      ${STAGE_JOB(a.action) ? "" : `<label>Agent model</label><div><select style="width:100%" onchange="runOpts.agent={...JSON.parse(this.value),effort:runOpts.agent.effort};renderRun()">${modelOptions(a.agent,"agent")}</select>
-        <div class="hint">${esc(noteFor(a.agent))}</div></div>
-      <label>Reasoning effort</label><div><div class="seg">${[["low","Low · cheaper, recommended"],["default","Model default"]].map(([v,l])=>`<button class="${(a.agent.effort||"low")===v?"on":""}" onclick="runOpts.agent.effort='${v}';renderRun()">${l}</button>`).join("")}</div></div>
-      `}${a.action==="eval" ? `<label>Judge model</label><div><select style="width:100%" onchange="runOpts.judge={...JSON.parse(this.value),effort:'low'};estimate()">${modelOptions(a.judge,"judge")}</select>
-         <div class="hint">Prefer a judge from a different model family than the agent.</div></div>` : ""}
-      <label>Spending cap for this job</label><div><div class="field" style="max-width:180px"><span class="mut">$</span><input type="number" min="0" step="0.5" value="${esc(a.extra_budget)}" oninput="runOpts.extra_budget=this.value"></div>
-        <div class="hint">The job stops cleanly when it is reached; finished work is kept.</div></div>
-      ${STAGE_JOB(a.action) ? "" : `<label></label><div class="row"><button class="btn" onclick="testModel()">${ic("bot","sm")} Test model</button><span id="testres" class="small mut">One tiny call, well under $0.001.</span></div>`}
-    </div></div></div>
-  </div>
-  <aside><div class="card"><div class="card-h"><h2>Estimated cost</h2></div><div class="card-b" id="est"><span class="mut">Estimating…</span></div>
-    <div class="card-f" style="flex-direction:column;align-items:stretch"><button class="btn primary lg block" id="runbtn" onclick="startRun()">${ic("play","sm")} Run</button>
-      <button class="btn block danger" id="stopbtn" onclick="stopRun()" ${S && S.job.current ? "" : "disabled"}>${ic("stop","sm")} Stop the running job</button><div id="runmsg" class="small" style="text-align:center"></div></div></div></aside>
-  </div>
-  <div class="card"><div class="card-h"><h2>Job log</h2><div id="jobhead" class="card-act"></div></div><div class="card-b" id="jobbox"></div></div>`;
-  runWarn(); estimate(); renderJob();
 }
 /* models per stage (stage_models in the run file) */
 const STAGE_JOB = act => ["run","pdfs","sync"].includes(act);
@@ -863,7 +800,7 @@ function smSet(stage, what, v){
   if (what === "model") { if (v) { const o = JSON.parse(v); e.model = o.model; e.provider = o.provider; } else { delete e.model; delete e.provider; } }
   else { if (v === "") delete e.reasoning_effort; else e.reasoning_effort = v === "default" ? null : v; }
   SM.edit[stage] = Object.keys(e).length ? e : null; SM.dirty = true;
-  renderRun();
+  if (tab === "settings") renderSettings();
 }
 async function saveStageModels(){
   const r = await api("/api/stage_models", {stages: SM.edit});
@@ -928,35 +865,15 @@ function renderJob(){
 }
 
 /* ---------------- full texts ---------------- */
-function renderPdfs(fromPoll){
-  const ft = S.todos.find(t => t.kind === "fulltexts");
-  if (fromPoll && unchanged("pdfs", [ft, S.fulltext.new_files])) return;
-  if (!fromPoll) unchanged("pdfs", [ft, S.fulltext.new_files]);
-  const open = [...document.querySelectorAll("#v-pdfs details[data-k]")].map(d => [d.dataset.k, d.open]);
-  const n = (S.fulltext.new_files||[]).length;
-  $("#v-pdfs").innerHTML = ft ? pdfPanel(ft, false)
-    : `<div class="card"><div class="empty"><div class="ei">${ic("check")}</div><b>No full texts are needed right now</b>
-       ${n ? `<div style="margin-top:12px"><button class="btn primary" onclick="processPdfs(this)">${ic("play","sm")} Process ${n} added file${n>1?"s":""}</button><div class="msg pdfmsg"></div></div>` : `You can still drop PDFs named <code>&lt;PMID&gt;.pdf</code> in <code>${esc(S.fulltext.dir)}</code>.`}</div></div>`;
-  open.forEach(([k, o]) => { const d = document.querySelector(`#v-pdfs details[data-k="${CSS.escape(k)}"]`); if (d) d.open = o; });
-}
 async function redraftRob(btn){
-  const e = await api("/api/estimate", {action:"reassess_rob"});
-  const n = ((e.rows||[]).find(r => r.stage === "rob") || {}).calls;
-  if (!confirm(`Redraft ${n != null ? n + " " : ""}risk-of-bias assessments? Estimated cost about $${Number(e.total_usd||0).toFixed(2)}. Drafts you confirmed are kept.`)) return;
-  const r = await api("/api/run", {action:"reassess_rob", extra_budget: runOpts.extra_budget});
-  const m = btn.parentElement.querySelector(".robrd");
-  if (m) m.innerHTML = r.id ? `<span class="saved">${ic("check","sm")} Started; progress is in Run and Activity</span>` : `<span class="err">${esc(r.error)}</span>`;
-  toast(r.id ? "Redrafting the risk-of-bias assessments" : (r.error || "Failed"), !r.id);
-  setTimeout(() => refresh(true), 800);
+  const r = await runOp("rob.redraft_all", {}, "Redraft every risk-of-bias assessment (those you confirmed are kept)");
+  const m = r && btn.parentElement.querySelector(".robrd");
+  if (m) m.innerHTML = r.ok ? `<span class="saved">${ic("check","sm")} Started; progress is in Activity</span>` : `<span class="err">${esc(r.message)}</span>`;
 }
 async function processPdfs(btn){
-  await ensureModels();
-  const st = M.settings || {};
-  const r = await api("/api/run", {action:"pdfs", agent: runOpts.agent || st.agent, extra_budget: runOpts.extra_budget});
-  const m = btn && btn.parentElement.querySelector(".pdfmsg");
-  if (m) m.innerHTML = r.id ? `<span class="saved">${ic("check","sm")} Started; progress is in Run and Activity</span>` : `<span class="err">${esc(r.error)}</span>`;
-  toast(r.id ? "Processing added PDFs" : (r.error || "Failed"), !r.id);
-  setTimeout(() => refresh(true), 800);
+  const r = await runOp("retrieve.process_added_files", {}, "Process the files added to the full-text folder");
+  const m = r && btn && btn.parentElement.querySelector(".pdfmsg");
+  if (m) m.innerHTML = r.ok ? `<span class="saved">${ic("check","sm")} Started; progress is in Activity</span>` : `<span class="err">${esc(r.message)}</span>`;
 }
 
 /* ---------------- shared: model picker for agent jobs ---------------- */
@@ -1028,7 +945,8 @@ function renderStudies(){
 }
 async function reviewComment(send){
   const t = $("#revc").value.trim(); if (!t) return;
-  const r = await api("/api/comment", {target:"review", text:t, send, agent: send ? ST.agent : null});
+  const r = await runOp("comment", {target:"review", text:t, send}, send ? "Send to the agent" : "Save the comment", send && ST.agent ? {agent: ST.agent} : null);
+  if (!r) return;
   msg("revcm", r); if (r.ok) { $("#revc").value = ""; ST.revc = ""; }
 }
 async function openStudy(rid, keepEdit){
@@ -1234,15 +1152,17 @@ async function doRerun(){
 }
 async function studyComment(send){
   const t = $("#ctext").value.trim(); if (!t) return;
-  const r = await api("/api/comment", {target:$("#ctarget").value, text:t, send, agent: send ? (ST.rr.agent || defaultAgent()) : null});
-  msg("cmsg", r); if (r.ok) { toast(r.message || "Saved"); ST.rcomment = ""; setTimeout(() => openStudy(ST.d.rid, true), 400); }
+  const ag = send ? (ST.rr.agent || defaultAgent()) : null;
+  const r = await runOp("comment", {target:$("#ctarget").value, text:t, send}, send ? "Send to the agent" : "Save the comment", ag ? {agent: ag} : null);
+  if (!r) return;
+  msg("cmsg", r); if (r.ok) { ST.rcomment = ""; setTimeout(() => openStudy(ST.d.rid, true), 300); }
 }
 async function resolveComment(id){ const r = await runOp("comment.resolve", {id}, "Resolve the comment"); if (r && tab==="studies" && ST.rid) openStudy(ST.rid, true); else if (r) loadActivity(); }
 async function decideCs(id, opt, b){
   b.disabled = true;
-  const r = await api("/api/answer", {todo_id:"cs:"+id, option:opt});
-  toast(r.ok ? (r.message || (opt === "accept" ? "Accepted" : "Rejected")) : (r.message || r.error || "Failed"), !r.ok);
-  setTimeout(() => { if (tab==="studies" && ST.rid) openStudy(ST.rid, true); else loadActivity(); refresh(true); }, 400);
+  const r = await runOp(opt === "accept" ? "proposal.accept" : "proposal.reject", {changeset: id}, (opt === "accept" ? "Accept" : "Reject") + ` proposal ${id}`);
+  if (!r) { b.disabled = false; return; }
+  setTimeout(() => { if (tab==="studies" && ST.rid) openStudy(ST.rid, true); else loadActivity(); }, 300);
 }
 async function copyStudy(b){ const t = await (await fetch(U(`/export/study/${ST.d.rid}.md`))).text(); copyText(t, b); }
 

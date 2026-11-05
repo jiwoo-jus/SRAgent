@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "job.propagate:propagate (applied)"
+   "job.edit.update_dependents:update_dependents (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -20,12 +20,14 @@
  },
  "result": {
   "job": {
-   "action": "propagate",
-   "rid": "G01",
-   "target": "ext:G01",
-   "text": ""
+   "action": "op",
+   "args": {
+    "node": "ext:G01",
+    "note": ""
+   },
+   "op": "edit.update_dependents"
   },
-  "message": "the agent will propose updates to the dependent outputs",
+  "message": "edit.update_dependents queued",
   "ok": true
  },
  "review": {

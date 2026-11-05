@@ -20,7 +20,9 @@
  },
  "result": {
   "job": {
-   "action": "pdfs"
+   "action": "op",
+   "args": {},
+   "op": "retrieve.process_added_files"
   },
   "message": "marked 1 as not obtainable",
   "ok": true

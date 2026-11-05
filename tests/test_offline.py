@@ -307,7 +307,7 @@ def test_ui_app_state_and_estimate(tmp_path):
     assert "job_agent" not in yaml.safe_load(app._write_job_config(later).read_text())
     job = yaml.safe_load(app._write_job_config({"action": "run", "agent": {"provider": "local", "model": "auto"}}).read_text())
     assert "job_agent" not in job and "agent" not in (job.get("roles") or {})   # pipeline jobs follow stage_models
-    r = app.answer({"todo_id": "protocol", "option": "approve"})
+    r = app.op({"name": "protocol.approve", "args": {}})
     assert r["ok"]
 
 
@@ -1591,13 +1591,13 @@ def test_a_protocol_revision_from_the_page_does_not_hold_the_interface(tmp_path)
     app = App(str(cfgp))
     calls = len((ctx.run_dir / "usage.jsonl").read_text().splitlines())
     with app.lock:                                       # the worker cannot start the job while the lock is held
-        r = app.protocol_change({"op": "revise", "instruction": "widen I2"})
+        r = app.op({"name": "protocol.revise", "args": {"instruction": "widen I2"}})
         assert r["ok"] and r["job"]["op"] == "protocol.revise" and r["job"]["args"] == {"instruction": "widen I2"}
         assert app._cmd(r["job"], cfgp)[3:5] == ["op", "protocol.revise"]
         app.queue.clear()
     assert len((ctx.run_dir / "usage.jsonl").read_text().splitlines()) == calls     # no model call in the request
     assert "todos" in app.state()
-    assert app.protocol_change({"op": "revise", "instruction": ""})["ok"] is False
+    assert app.op({"name": "nope"})["ok"] is False
 
 def test_protocol_changed_with_the_review_team(tmp_path):
     """Before approval the team can ask the agent for a change in plain words (one call, applied, approval asked

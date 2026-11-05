@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "job.sync:sync (applied)"
+   "job.update_all:update_all (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -16,9 +16,11 @@
  },
  "result": {
   "job": {
-   "action": "sync"
+   "action": "op",
+   "args": {},
+   "op": "update_all"
   },
-  "message": "updating dependent outputs",
+  "message": "update_all queued",
   "ok": true
  },
  "review": {

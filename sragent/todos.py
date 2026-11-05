@@ -403,7 +403,11 @@ def to_operation(answer: dict) -> tuple[str, dict] | None:
         return "eligibility.decide", {"rid": rid, "decision": opt, "criterion": extra.get("criterion"), "note": text}
     if tid == "fulltexts":
         ids = [x.strip() for x in (extra.get("unavailable") or "").replace(";", ",").split(",") if x.strip()]
-        return ("retrieve.declare_unobtainable", {"rids": ids}) if ids else None
+        if ids:
+            return "retrieve.declare_unobtainable", {"rids": ids}
+        return ("retrieve.process_added_files", {}) if opt == "process" else None
+    if tid == "sync" and opt == "sync":
+        return "update_all", {}
     if tid.startswith("flag:"):
         node, fid = tid[5:].rsplit(":", 1)        # node ids contain a colon themselves (syn:S4)
         return "flag.answer", {"node": node, "flag": fid, "option": opt, "text": text}
@@ -413,7 +417,8 @@ def to_operation(answer: dict) -> tuple[str, dict] | None:
         node = tid[len("edited:"):]
         if ":" in node.split(":", 1)[1]:          # an id from before phase 2d: edited:<node>:<flag id>
             node = node.rsplit(":", 1)[0]
-        return ("edit.dependents_fine", {"node": node, "note": text}) if opt == "ok" else None
+        return ("edit.dependents_fine", {"node": node, "note": text}) if opt == "ok" else \
+            ("edit.update_dependents", {"node": node, "note": text}) if opt == "update" else None
     if tid.startswith("disagree:"):
         node, fid = tid[len("disagree:"):].rsplit(":", 1)
         return "feedback.disagreement", {"node": node, "flag": fid, "option": opt, "text": text}
@@ -426,6 +431,8 @@ def to_operation(answer: dict) -> tuple[str, dict] | None:
             if ch is None:
                 ch = [{"domain": extra.get("domain"), "judgment": extra.get("judgment")}]
             return "rob.edit_domains", {"rid": rid, "changes": ch, "note": text}
+        if opt == "fix":   # the same operation as the study page's re-run (03 I06)
+            return "rob.recompute", {"rid": rid, "note": text}
         return None
     if tid.startswith("cs:"):
         cid = tid.split(":", 1)[1]
@@ -433,42 +440,25 @@ def to_operation(answer: dict) -> tuple[str, dict] | None:
     return None
 
 
-def _job_of(answer: dict) -> tuple[dict, str] | None:
-    """Answers that start a job (model calls run as jobs, never in the web request)."""
-    tid, opt = answer["todo_id"], answer.get("option")
-    text = (answer.get("text") or "").strip()
-    if tid == "fulltexts" and opt == "process":
-        return {"action": "pdfs"}, "processing added files"
-    if tid == "sync" and opt == "sync":
-        return {"action": "sync"}, "updating dependent outputs"
-    if tid.startswith("edited:") and opt == "update":
-        node = tid[len("edited:"):]
-        if ":" in node.split(":", 1)[1]:
-            node = node.rsplit(":", 1)[0]
-        return ({"action": "propagate", "target": node, "text": text, "rid": node.split(":", 1)[1]},
-                "the agent will propose updates to the dependent outputs")
-    if tid.startswith("rob:") and opt == "fix":   # the same operation as the study page's re-run (03 I06)
-        return ({"action": "op", "op": "rob.recompute", "args": {"rid": tid.split(":", 1)[1], "note": text}},
-                "the agent will propose a re-assessment")
-    return None
-
-
 def apply(ctx: Ctx, answer: dict) -> dict:
-    """Apply one To-do answer {todo_id, option, text, extra}: the operation it stands for (sragent/ops), or the job it
-    starts. Returns {"ok", "message", "job"?}."""
+    """Apply one To-do answer {todo_id, option, text, extra}: the operation it stands for (sragent/ops); a model
+    operation is not run here but returned as the job that runs it. Returns {"ok", "message", "job"?}."""
     from . import ops
-    job = _job_of(answer)
     op = to_operation(answer)
-    if op is None and job is None:
+    if op is None:
         return {"ok": False, "message": f"unknown to-do answer {answer.get('todo_id')} -> {answer.get('option')}"}
-    res = ops.run(ctx, *op) if op else {"ok": True, "message": job[1]}
-    if job and res.get("ok"):
-        if op is None:      # a job requested from the To-do list: logged like an operation request
-            from .ops import _log_decision
-            _log_decision(ctx, f"job.{job[0]['action']}", {"target": job[0].get("target") or answer["todo_id"],
-                                                           "note": answer.get("text") or ""}, res)
-        res = {**res, "message": res.get("message") if op else job[1], "job": job[0]}
-    return {"ok": res.get("ok", False), "message": res.get("message", ""), "job": res.get("job")}
+    name, args = op
+    if ops.get(name).kind == "llm":
+        from .ops import _log_decision
+        res = {"ok": True, "message": f"{name} queued", "job": ops.submit(name, args)}
+        _log_decision(ctx, f"job.{name}", {"target": args.get("node") or args.get("rid") or answer["todo_id"],
+                                           "note": answer.get("text") or ""}, res)
+        return res
+    res = ops.run(ctx, name, args)
+    job = res.get("job")
+    if res.get("ok") and answer["todo_id"] == "fulltexts" and answer.get("option") == "process":
+        job = ops.submit("retrieve.process_added_files", {})   # declared the missing ones; now read the added files
+    return {"ok": res.get("ok", False), "message": res.get("message", ""), "job": job}
 
 
 def bulk(ctx: Ctx, kind: str, ids: list[str], note: str = "", items: list[dict] | None = None) -> int:

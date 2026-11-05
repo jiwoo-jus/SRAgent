@@ -607,7 +607,7 @@ def test_derived_notes_are_never_stored_as_flags():
 REGISTERED_AS = {"propagate_edit": "edit.update_dependents", "eligibility.overturn": "eligibility.decide",
                  "eligibility.rederive": "screen.rederive",
                  "synthesis.update": "update_all", "synthesis.resolve_flag": "flag.answer", "search.draft_strategy": "search.suggest_variants"}
-NOT_IN_04 = {"edit.dependents_fine", "feedback.clarify", "feedback.disagreement", "comment.resolve", "flag.answer",
+NOT_IN_04 = {"edit.dependents_fine", "eligibility.decide_many", "feedback.clarify", "feedback.disagreement", "comment.resolve", "flag.answer",
              "screen.run", "retrieve.run", "eligibility.run", "extract.run", "rob.run", "search.run", "synthesis.write",
              "protocol.draft", "report.render", "eligibility.decide", "update_all",
              "screen.rerun_all", "eligibility.rerun_all", "extract.rerun_all", "rob.rerun_all", "synthesis.rerun_all"}
@@ -733,6 +733,35 @@ def test_clear_keeps_what_people_decided_and_the_next_run_redoes_the_rest(tmp_pa
     assert not graph.stale(st, ["rob"])
     s = ops.run(ctx, "synthesis.clear", {})
     assert s["ok"] and s["count"] == 3                                           # no statement was edited by a person
+
+
+REMOVED_ENDPOINTS = ("/api/answer", "/api/bulk", "/api/edit", "/api/protocol", "/api/search_strategy", "/api/rerun",
+                     "/api/propagate", "/api/comment", "/api/comment_resolve")
+
+
+def test_every_change_from_the_page_is_an_operation():
+    """The page changes a review only through /api/op (with /api/preview first); the older request shapes are gone
+    from the page scripts and from the server (04 §5.3)."""
+    root = Path(__file__).resolve().parents[1] / "sragent" / "ui"
+    page = "".join(p.read_text() for p in (root / "static").rglob("*.js")) + (root / "static" / "index.html").read_text()
+    server = (root / "server.py").read_text()
+    for ep in REMOVED_ENDPOINTS:
+        assert f'"{ep}"' not in page, f"the page still calls {ep}"
+        assert f'path == "{ep}"' not in server and f'"{ep}",' not in server, f"the server still serves {ep}"
+    assert '"/api/op"' in page and '"/api/preview"' in page
+
+
+def test_a_todo_answer_names_its_operation():
+    """/api/resolve: every To-do answer stands for one operation (model ones run as jobs)."""
+    from sragent import todos
+    cases = {("elig:G03", "include"): "eligibility.decide", ("elig:G03", "pdf"): "retrieve.request",
+             ("protocol", "approve"): "protocol.approve", ("protocol", "edited"): "protocol.import_file",
+             ("rob:G01", "confirm"): "rob.confirm", ("rob:G01", "fix"): "rob.recompute", ("cs:FB1", "accept"): "proposal.accept",
+             ("fulltexts", "process"): "retrieve.process_added_files", ("sync", "sync"): "update_all",
+             ("edited:ext:G01", "update"): "edit.update_dependents", ("edited:ext:G01", "ok"): "edit.dependents_fine",
+             ("flag:syn:S1:F3", "ok"): "flag.answer", ("elig:G03", "later"): "snooze"}
+    for (tid, opt), name in cases.items():
+        assert todos.to_operation({"todo_id": tid, "option": opt})[0] == name, (tid, opt)
 
 
 def test_every_operation_is_accounted_for():

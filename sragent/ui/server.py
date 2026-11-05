@@ -495,21 +495,7 @@ class App:
                                                      "returncode", "target")} | {"log": tail}
         return out
 
-    # ------------------------------------------------------------ answers
-    def answer(self, ans: dict) -> dict:
-        from .. import todos
-        with self.lock:
-            if self.job is not None:
-                self.pending_answers.append(ans)
-                todos.log_answer(self.ctx(), ans, "queued")
-                return {"ok": True, "queued": True,
-                        "message": "Saved. A job is running, so this is applied as soon as it finishes."}
-            res = todos.apply(self.ctx(), ans)
-            self.saved()
-        if res.get("job"):
-            self.submit({**self._last_budget(), **res["job"]})
-        return res
-
+    # ------------------------------------------------------------ changes queued while the folder is busy
     def _drain_answers(self):
         """Apply the changes queued while the folder was busy (called with self.lock held)."""
         from .. import lease, todos
@@ -537,28 +523,9 @@ class App:
             self.queue.append({**self._last_budget(), **j, "id": uuid.uuid4().hex[:8], "status": "queued"})
 
     def _apply_op(self, ctx, op: dict) -> dict:
-        """Every change the interface makes goes through an operation (sragent/ops); the older request shapes
-        (answer, bulk, edit, comment) are translated here until the interface sends /api/op only (phase 4)."""
-        from .. import actions, ops, todos
-        kind = op.get("_op", "answer")
-        if kind == "op":
-            return ops.run(ctx, op["name"], op.get("args") or {})
-        if kind == "edit":
-            return actions.edit(ctx, op["edit"])
-        if kind == "bulk":
-            items = op.get("items") or op.get("ids") or []
-            n = todos.bulk(ctx, op["kind"], op.get("ids", []), op.get("text", ""), op.get("items"))
-            return {"ok": n > 0 or not items, "message": f"{n} of {len(items)} saved" if n < len(items) else f"{n} saved"}
-        if kind == "resolve_comment":
-            return ops.run(ctx, "comment.resolve", {"id": op["id"], "note": op.get("note", "")})
-        if kind == "comment":
-            r = ops.run(ctx, "comment", {"target": op["target"], "text": op["text"], "send": op.get("send", False)})
-            if r.get("ok") and op.get("job_id"):
-                r["comment"]["job_id"] = op["job_id"]
-                ctx.save()
-            r.pop("job", None)          # the interface has queued the feedback job itself
-            return r
-        return todos.apply(ctx, op)
+        """Every change the interface makes is an operation (sragent/ops)."""
+        from .. import ops
+        return ops.run(ctx, op["name"], op.get("args") or {})
 
     def stage(self, key: str) -> dict:
         """GET /api/stage?key=: one stage page (stagepage.py)."""
@@ -595,7 +562,19 @@ class App:
         if o.kind == "read":
             with self.lock:
                 return ops.run(self.ctx(), o.name, args)
-        return self.mutate({"_op": "op", "name": o.name, "args": args, "todo_id": f"op:{o.name}"})
+        r = self.mutate({"_op": "op", "name": o.name, "args": args, "todo_id": f"op:{o.name}"})
+        if r.get("ok") and r.get("job") and not r.get("queued"):   # e.g. feedback on a flag: the agent's part is a job
+            spec = self.submit({**r["job"], **({"agent": b["agent"]} if b.get("agent") else {})})
+            r = {**r, "job": spec}
+        return r
+
+    def save_settings(self, b: dict) -> dict:
+        """The spending cap of the next jobs (ui_settings.json; the run file keeps the review's own settings)."""
+        s = self._settings()
+        if b.get("extra_budget") not in (None, ""):
+            s["extra_budget"] = float(b["extra_budget"])
+        (self.run_dir / "ui_settings.json").write_text(json.dumps(s, indent=1))
+        return {"ok": True, "message": "saved"}
 
     def mutate(self, op: dict) -> dict:
         """Edits that change the store: applied now, or queued while a job is writing the store."""
@@ -688,63 +667,6 @@ class App:
         return {"ok": True, "message": f"saved to {lib.rel(target)}" + (f"; {n} output(s) to bring up to date (Out-of-date outputs)" if n else ""),
                 "pending": pc}
 
-    def protocol_change(self, b: dict) -> dict:
-        """The protocol card: 'Ask the agent' (protocol.revise, a job) or 'Edit criteria' (protocol.edit_criteria)."""
-        op = b.get("op")
-        if op == "revise":
-            ins = (b.get("instruction") or "").strip()
-            if not ins:
-                return {"ok": False, "message": "say what to change"}
-            r = self.op({"name": "protocol.revise", "args": {"instruction": ins}})
-            return {**r, "message": "The agent is revising the protocol; the card updates when it is done." if r.get("ok") else r.get("message")}
-        if op == "edit":
-            return self.op({"name": "protocol.edit_criteria", "args": {"criteria": b.get("criteria") or [], "note": b.get("note") or ""}})
-        return {"ok": False, "message": f"unknown op {op}"}
-
-    def search_strategy(self, b: dict) -> dict:
-        """The search strategy card: suggest / refine (model jobs), count (a read), confirm / clear (your choice)."""
-        q, ins = (b.get("query") or "").strip(), (b.get("instruction") or "").strip()
-        name, args = {"suggest": ("search.suggest_variants", {}),
-                      "refine": ("search.refine", {"query": q, "instruction": ins}),
-                      "count": ("search.count", {"query": q}),
-                      "confirm": ("search.confirm_strategy", {"query": q, "note": b.get("note") or ""}),
-                      "clear": ("search.clear_strategy", {})}.get(b.get("op"), (None, None))
-        if not name:
-            return {"ok": False, "message": f"unknown op {b.get('op')}"}
-        if name == "search.refine" and not (q and ins):
-            return {"ok": False, "message": "a query and a request are needed"}
-        if name == "search.count":   # writes the draft: applied like any change (queued while the folder is busy)
-            return self.mutate({"_op": "op", "name": name, "args": args, "todo_id": f"op:{name}"})
-        r = self.op({"name": name, "args": args})
-        if r.get("ok") and r.get("job"):
-            r["message"] = "The agent is working on the search strategy; the card updates when it is done."
-        return r
-
-    def comment(self, b: dict) -> dict:
-        """Save a comment; with send=True also ask the agent (a feedback job, model from b['agent'])."""
-        from .. import actions
-        text = (b.get("text") or "").strip()
-        if not text:
-            return {"ok": False, "message": "empty comment"}
-        target = b.get("target") or "review"
-        job_id = None
-        if b.get("send") and self.human_mode() == "agent_only":
-            return {"ok": False, "message": "Agent-only mode: comments can be saved, but people may not send feedback "
-                                            "to the agent (only requested full texts can be supplied)."}
-        if b.get("send"):
-            ft = actions.feedback_target(self.ctx().store, target)
-            spec = self.submit({"action": "feedback", "target": ft, "text": text,
-                                "rid": ft.split(":", 1)[1] if ft and ":" in ft else "",
-                                **({"agent": b["agent"]} if b.get("agent") else {}),
-                                **({"extra_budget": b["extra_budget"]} if b.get("extra_budget") else {})})
-            job_id = spec["id"]
-        r = self.mutate({"_op": "comment", "target": target, "text": text, "send": bool(b.get("send")), "job_id": job_id})
-        if job_id:
-            r["message"] = ("Sent to the agent (job " + job_id + "). It checks the comment against the source and proposes "
-                            "a revision in the To-do list; progress is in Activity.")
-        return r
-
-    # ------------------------------------------------------------ models per stage
     def stage_rows(self) -> list[dict]:
         """One row per stage: what the run file sets, the model it resolves to, and whether it is fixed."""
         from .. import config_lock
@@ -1193,41 +1115,18 @@ def make_handler(ws: Workspace):
                     return self._send(200, app.op(b))
                 if path == "/api/preview":
                     return self._send(200, app.preview(b))
-                if path == "/api/answer":
-                    return self._send(200, app.answer(b))
-                if path == "/api/search_strategy":
-                    return self._send(200, app.search_strategy(b))
-                if path == "/api/protocol":
-                    return self._send(200, app.protocol_change(b))
+                if path == "/api/resolve":       # which operation a To-do answer stands for
+                    from .. import todos
+                    op = todos.to_operation(b)
+                    return self._send(200, {"ok": True, "name": op[0], "args": op[1]} if op else
+                                      {"ok": False, "message": f"unknown answer {b.get('todo_id')} -> {b.get('option')}"})
                 if path == "/api/data_items":
                     r = app.data_items(b, ws.lib)
                     if r.get("ok"):
                         ws.changed()
                     return self._send(200, r)
-                if path == "/api/bulk":
-                    return self._send(200, app.mutate({"_op": "bulk", **b}))
-                if path == "/api/edit":
-                    return self._send(200, app.mutate({"_op": "edit", "edit": b}))
-                if path == "/api/comment":
-                    return self._send(200, app.comment(b))
-                if path == "/api/comment_resolve":
-                    return self._send(200, app.mutate({"_op": "resolve_comment", **b}))
-                if path in ("/api/rerun", "/api/propagate") and app.human_mode() == "agent_only":
-                    return self._send(200, {"ok": False, "message": "Agent-only mode: re-runs and updates requested by a "
-                                                                    "person are human interventions and are not allowed."})
-                if path == "/api/rerun":
-                    if b.get("step") not in ("screen", "extract", "rob") or not b.get("rid"):
-                        return self._send(200, {"ok": False, "message": "choose a study and a step"})
-                    spec = app.submit({"action": "rerun", "rid": b["rid"], "step": b["step"], "note": b.get("note", ""),
-                                       "propagate": b.get("propagate", True),
-                                       **({"agent": b["agent"]} if b.get("agent") else {}),
-                                       **({"extra_budget": b["extra_budget"]} if b.get("extra_budget") else {})})
-                    return self._send(200, {"ok": True, "job": spec["id"], "message":
-                                            f"queued (job {spec['id']}); the result appears in the To-do list for approval"})
-                if path == "/api/propagate":
-                    spec = app.submit({"action": "propagate", "target": b["node"], "text": b.get("note", ""),
-                                       **({"agent": b["agent"]} if b.get("agent") else {})})
-                    return self._send(200, {"ok": True, "job": spec["id"], "message": f"queued (job {spec['id']})"})
+                if path == "/api/settings":
+                    return self._send(200, app.save_settings(b))
                 if path == "/api/cancel":
                     return self._send(200, {"ok": app.cancel(b.get("id", ""))})
                 if path == "/api/test_model":

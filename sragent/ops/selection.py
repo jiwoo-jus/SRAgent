@@ -158,6 +158,21 @@ def decide(ctx, rid: str, decision: str, criterion: str | None = None, note: str
     return {"message": msg}
 
 
+@operation("eligibility.decide_many", "eligibility", "human", reach=True, log=False)
+def decide_many(ctx, items: list[dict]) -> dict:
+    """Several eligibility decisions saved at once (the eligibility table): each is an eligibility.decide, logged as such."""
+    done, refused = 0, []
+    for it in items or []:
+        r = decide(ctx, rid=it["rid"], decision=it.get("decision") or it.get("option"), criterion=it.get("criterion"),
+                   note=it.get("note") or it.get("text") or "")
+        if r.get("ok"):
+            done += 1
+        else:
+            refused.append(f"{it['rid']}: {r.get('message')}")
+    return {"ok": done > 0 or not items, "count": done,
+            "message": f"{done} of {len(items or [])} saved" + (f"; refused: {'; '.join(refused)}" if refused else "")}
+
+
 @operation("eligibility.recompute", "eligibility", "llm", reach=True)
 def eligibility_recompute(ctx, rid: str, note: str = "", propagate: bool = True, fresh: bool = True) -> dict:
     """Screen one study again on its full text (a proposal; it replaces a person's decision only if accepted)."""
