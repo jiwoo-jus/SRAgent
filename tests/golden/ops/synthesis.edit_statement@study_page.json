@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "edit:manual_edit (applied)"
+   "synthesis.edit_statement:edit_statement (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -12,7 +12,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:manual_edit:syn"
+   "human_judgment:synthesis.edit_statement"
   ],
   "state_nodes": []
  },
@@ -100,7 +100,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:manual_edit:syn": 1,
+   "human_judgment:synthesis.edit_statement": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

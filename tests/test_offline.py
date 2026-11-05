@@ -975,19 +975,23 @@ def test_removed_criteria_are_retired_and_protocol_edits_are_recorded(tmp_path):
     yaml.safe_dump(p, open(ctx.run_dir / "protocol.yaml", "w"), sort_keys=False)
     r = planning.sync_criteria(st, p, actor="user", reason="test")
     assert r["retired"] == ["I3"] and r["added"] == ["E9"] and st.get("crit:I3")["status"] == "retired"
-    # the next run notices the edited file: recorded as a person's judgment
-    planning.plan(ctx)
+    # protocol.yaml is an export: the next run does not apply a hand edit, it stops and asks for the import
+    assert set(planning.file_differs(ctx)) >= {"I3", "E9"}
+    pipeline.run(ctx)
+    assert "edited by hand" in (ctx.run_dir / "run.log").read_text().splitlines()[-1]
+    from sragent import ops
+    r = ops.run(ctx, "protocol.import_file", {"note": "dropped I3"})
+    assert r["ok"] and planning.file_differs(ctx) is None
     ev = provenance.events(ctx.run_dir)
-    assert any(e["action"] == "protocol_edited" and e.get("changed", {}).get("removed") == ["I3"] for e in ev)
-    # in the agent-only condition an edited protocol.yaml is refused
+    assert any(e["action"] == "protocol.import_file" and e["category"] == "human_judgment" for e in ev)
+    # in the agent-only condition the import is refused (a person's judgment)
     (tmp_path / "ao").mkdir()
     ao = make_ctx(tmp_path / "ao", extra_cfg={"pipeline": {"human_mode": "agent_only", "fulltext_unclear": "include"}})
     pipeline.run(ao, until="protocol")
     p2 = yaml.safe_load(open(ao.run_dir / "protocol.yaml")); p2["criteria"].pop()
     yaml.safe_dump(p2, open(ao.run_dir / "protocol.yaml", "w"), sort_keys=False)
-    import pytest
-    with pytest.raises(provenance.NotAllowed):
-        planning.plan(ao)
+    r2 = ops.run(ao, "protocol.import_file")
+    assert not r2["ok"] and "agent-only" in r2["message"]
 
 
 def test_any_of_criteria_are_alternatives():
@@ -1040,7 +1044,8 @@ def test_an_answer_after_a_criterion_change_keeps_the_reassessment_pending(tmp_p
     p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
     p["criteria"].append({"id": "E1", "type": "exclusion", "text": "studies only in children", "stage": "title_abstract"})
     yaml.safe_dump(p, open(ctx.run_dir / "protocol.yaml", "w"), sort_keys=False)
-    planning.plan(ctx)                                                   # the protocol changes first ...
+    from sragent import ops
+    ops.run(ctx, "protocol.import_file")                                # the protocol changes first ...
     assert todos.apply(ctx, {"todo_id": "elig:1002", "option": "include", "text": "PK table"})["ok"]   # ... then the answer
     by = {i["node"]: i for i in engine.plan(ctx)["items"]}
     assert by["elig:1002"]["action"] == "recompute" and by["elig:1002"]["criteria"] == ["E1"]
@@ -1062,7 +1067,8 @@ def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
     p["criteria"].append({"id": "E1", "type": "exclusion", "text": "studies only in children", "stage": "title_abstract"})
     yaml.safe_dump(p, open(ctx.run_dir / "protocol.yaml", "w"), sort_keys=False)
     n_calls = sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines())
-    planning.plan(ctx)
+    from sragent import ops
+    ops.run(ctx, "protocol.import_file")       # the hand-edited file, imported
     plan = engine.plan(ctx)
     assert sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines()) == n_calls   # planning made no model call
     by = {i["node"]: i for i in plan["items"]}
@@ -1568,9 +1574,8 @@ def test_search_strategy_is_chosen_with_the_review_team(tmp_path, monkeypatch):
 
 
 def test_a_protocol_revision_from_the_page_does_not_hold_the_interface(tmp_path):
-    """The model call behind 'Ask the agent' (protocol) runs without the app lock: the interface keeps answering while
-    the model works, no job starts meanwhile, and the revision is applied when the call returns."""
-    import threading
+    """'Ask the agent' on the protocol card is the operation protocol.revise, run as a job: no model call in the web
+    request, the interface keeps answering, and the job runs `sragent op protocol.revise`."""
     import yaml
     from sragent import pipeline
     from sragent.ui.server import App
@@ -1584,31 +1589,15 @@ def test_a_protocol_revision_from_the_page_does_not_hold_the_interface(tmp_path)
     (tmp_path / "models.yaml").write_text((ROOT / "configs/models.yaml").read_text())
     (tmp_path / "local_endpoints.yaml").write_text(yaml.safe_dump({"endpoints": []}))
     app = App(str(cfgp))
-    started, release = threading.Event(), threading.Event()
-
-    def slow(messages, mode):
-        if "Revise this review protocol" in messages[-1]["content"]:
-            started.set()
-            release.wait(10)
-        return mock_fn(messages, mode)
-
-    hub = app.ctx().hub
-    hub.mock_fn, hub.cache_read = slow, False
-    hub._clients.clear()
-    out = {}
-    t = threading.Thread(target=lambda: out.update(app.protocol_change({"op": "revise", "instruction": "widen I2"})))
-    t.start()
-    assert started.wait(10)
-    poll = threading.Thread(target=lambda: out.update(state=app.state()))
-    poll.start()
-    poll.join(5)
-    assert not poll.is_alive() and "todos" in out["state"]                      # answered while the model works
-    assert app.busy and app.protocol_change({"op": "revise", "instruction": "again"})["ok"] is False
-    release.set()
-    t.join(10)
-    assert out["ok"] and out["applied"] and not app.busy
-    assert "widened as asked" in app.ctx().store.get("protocol")["data"]["criteria"][1]["text"]
-
+    calls = len((ctx.run_dir / "usage.jsonl").read_text().splitlines())
+    with app.lock:                                       # the worker cannot start the job while the lock is held
+        r = app.protocol_change({"op": "revise", "instruction": "widen I2"})
+        assert r["ok"] and r["job"]["op"] == "protocol.revise" and r["job"]["args"] == {"instruction": "widen I2"}
+        assert app._cmd(r["job"], cfgp)[3:5] == ["op", "protocol.revise"]
+        app.queue.clear()
+    assert len((ctx.run_dir / "usage.jsonl").read_text().splitlines()) == calls     # no model call in the request
+    assert "todos" in app.state()
+    assert app.protocol_change({"op": "revise", "instruction": ""})["ok"] is False
 
 def test_protocol_changed_with_the_review_team(tmp_path):
     """Before approval the team can ask the agent for a change in plain words (one call, applied, approval asked

@@ -38,9 +38,7 @@ def add_comment(ctx: Ctx, target: str, text: str, send: bool = False) -> dict:
          "send_to_agent": bool(send), "status": "open"}
     cl.append(c)
     st._log("comment", c["target"], "user", text.strip()[:500], None, c)
-    ctx.save()
-    provenance.record(ctx, "human_judgment" if send else "annotation", "feedback" if send else "comment",
-                      target=c["target"], rid=study_of(c["target"].replace("study:", "rec:")), note=text[:300])
+    ctx.save()          # recorded in provenance by the operation (ops/review.py: comment)
     return c
 
 
@@ -83,126 +81,24 @@ def _dependents(st, node_id: str) -> list[str]:
 
 
 def edit(ctx: Ctx, op: dict) -> dict:
-    """op = {kind: screen|ext|rob|syn, rid|node, note, ...}. Returns {"ok", "message"}."""
-    from . import provenance
-    from .stages import report
-    try:
-        provenance.require_judgment_allowed(ctx, f"manual edit ({op.get('kind')})")
-    except provenance.NotAllowed as e:
-        return {"ok": False, "message": str(e)}
-    st = ctx.store
-    kind, note = op["kind"], (op.get("note") or "").strip()
-    sfx = f" Note: {note}" if note else ""
+    """The study page's edit {kind: screen|ext|rob|syn, rid|node, note, ...}: the operation it stands for (sragent/ops).
+    Returns {"ok", "message"}."""
+    from . import ops
+    kind, note = op.get("kind"), (op.get("note") or "").strip()
     if kind == "screen":
-        rid = op["rid"]
-        from .selection import view
-        dec = op["decision"]
-        if dec not in ("include", "exclude", "awaiting"):
-            return {"ok": False, "message": f"unknown decision {dec}"}
-        if dec == "include" and (st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext":
-            return {"ok": False, "message": f"Final inclusion needs a full-text review; supply {rid}.pdf first."}
-        from .stages.screening import person_decides
-        before = (view(st, rid) or {}).get("decision")
-        n = person_decides(st, rid, dec, [op.get("criterion") or "human"] if dec == "exclude" else [],
-                           {"decision": dec, "note": note, "reason": op.get("criterion"), "ts": time.time()},
-                           f"manual eligibility decision: {before} -> {dec}.{sfx}")
-        for f in n["flags"]:
-            if f["status"] == "open" and f.get("source") in ("screening", None, "feedback") and "pending review" not in f["text"]:
-                st.resolve_flag(n["id"], f["id"], f"human decided: {dec}", actor="user")
-        msg = f"{rid}: {before} → {dec}"
-        if before != dec and st.by_type("extraction"):
-            msg += ". Extraction, risk of bias and synthesis follow via 'Update outputs' in the To-do list."
-    elif kind == "ext":
-        rid = op["rid"]
-        n = st.get(f"ext:{rid}")
-        kinds = {f["name"]: f.get("kind") for f in ctx.topic.get("extraction_fields", [])}
-        d = copy.deepcopy(n["data"])
-        changed = []
-        for name, val in (op.get("fields") or {}).items():
-            item = d["fields"].setdefault(name, {"value": "NR"})
-            val = str(val).strip()
-            if val == item.get("value"):
-                continue
-            item["edited"] = {"by": "user", "before": item.get("value"), "note": note, "ts": time.time()}
-            item["value"] = val
-            if kinds.get(name) in ("drug", "disease") and val.upper() != "NR":
-                try:
-                    from .stages.extraction import known_terms, validate_field_terms
-                    item["terms"] = validate_field_terms(val, kinds[name], None, known_terms(ctx))
-                except Exception:   # offline: keep the value, drop stale validation
-                    item.pop("terms", None)
-            changed.append(name)
-        if not changed:
-            return {"ok": True, "message": "nothing changed"}
-        v0 = n["version"]
-        st.annotate(n["id"], d, evidence=n["evidence"], actor="user", reason=f"manual edit of {', '.join(changed)}.{sfx}")
-        msg = f"saved {', '.join(changed)} (v{v0 + 1})"
-    elif kind == "rob":
-        rid = op["rid"]
-        n = st.get(f"rob:{rid}")
-        d = copy.deepcopy(n["data"])
-        changed = []
-        by = {x.get("domain"): x for x in d["domains"]}
-        for ch in op.get("changes") or []:
-            x = by.get(ch.get("domain"))
-            if not x:
-                continue
-            j = ch.get("judgment") or x.get("judgment")
-            r = ch.get("rationale")
-            if j == x.get("judgment") and (r is None or r == x.get("rationale")):
-                continue
-            if j not in JUDGMENTS:
-                return {"ok": False, "message": f"unknown judgment {j}"}
-            x.setdefault("judgment_agent", x.get("judgment"))
-            x["judgment"] = j
-            if r is not None and r != x.get("rationale"):
-                x["rationale_agent"] = x.get("rationale_agent") or x.get("rationale")
-                x["rationale"] = r
-            x["human_note"] = note
-            changed.append(f"{x['domain']}={j}")
-        if op.get("overall"):
-            d["overall"] = op["overall"]
-        elif changed:
-            d["overall"] = max((x.get("judgment") for x in d["domains"]), key=lambda j: _ORDER.get(j, 1))
-        if op.get("confirm", True):
-            d["human_confirmed"] = {"ts": time.time(), "note": (("changed " + ", ".join(changed) + ". ") if changed else "") + note}
-        if not changed and not op.get("confirm", True):
-            return {"ok": True, "message": "nothing changed"}
-        st.annotate(n["id"], d, evidence=n["evidence"], actor="user",
-                    reason=(f"manual risk-of-bias edit: {', '.join(changed)}." if changed else "risk of bias confirmed by human.") + sfx)
-        msg = (f"{len(changed)} domain(s) changed, overall {d['overall']}" if changed else "confirmed")
-    elif kind == "syn":
-        from .stages import synthesis
-        nid = op["node"]
-        n = st.get(nid)
-        d = copy.deepcopy(n["data"])
-        text = (op.get("text") or d["text"]).strip()
-        cites = op.get("cites", d["cites"])
-        if isinstance(cites, str):
-            cites = [c.strip() for c in cites.replace(";", ",").split(",") if c.strip()]
-        cites, fixes = synthesis.reconcile_citations(st, text, cites)
-        d.update({"text": text, "cites": cites, "scope": op.get("scope", d.get("scope", ""))})
-        d.pop("verification", None)
-        d["edited"] = {"by": "user", "before": n["data"]["text"], "note": note, "ts": time.time()}
-        if fixes:
-            d["citation_fixes"] = fixes
-        st.annotate(nid, d, ntype="synthesis", depends_on=synthesis.statement_deps(st, cites), actor="user",
-                    reason=f"manual edit of the statement.{sfx}")
-        for f in st.get(nid)["flags"]:
-            if f["status"] == "open" and f.get("source") == "synthesis_verify":
-                st.resolve_flag(nid, f["id"], "statement edited by human", actor="user")
-        msg = "statement saved" + (f" ({'; '.join(fixes)})" if fixes else "")
-    else:
-        return {"ok": False, "message": f"unknown edit kind {kind}"}
-    ctx.save()
-    if st.by_type("synthesis"):
-        report.write_reports(ctx)
-    with open(ctx.run_dir / "human_decisions.jsonl", "a") as f:
-        f.write(json.dumps({"todo_id": f"edit:{kind}:{op.get('rid') or op.get('node')}", "option": "manual_edit",
-                            "edit": op, "status": "applied", "ts": time.time()}) + "\n")
-    provenance.record(ctx, "human_judgment", f"manual_edit:{kind}", rid=op.get("rid") or study_of(op.get("node") or ""),
-                      target=op.get("node") or f"{kind}:{op.get('rid')}", note=note[:300])
-    return {"ok": True, "message": msg}
+        return ops.run(ctx, "eligibility.decide", {"rid": op["rid"], "decision": op.get("decision"),
+                                                   "criterion": op.get("criterion"), "note": note})
+    if kind == "ext":
+        return ops.run(ctx, "extract.edit_values", {"rid": op["rid"], "fields": op.get("fields") or {}, "note": note})
+    if kind == "rob":
+        if not op.get("changes") and op.get("confirm", True):
+            return ops.run(ctx, "rob.confirm", {"rids": [op["rid"]], "note": note})
+        return ops.run(ctx, "rob.edit_domains", {"rid": op["rid"], "changes": op.get("changes") or [], "note": note,
+                                                 "overall": op.get("overall")})
+    if kind == "syn":
+        return ops.run(ctx, "synthesis.edit_statement", {"node": op["node"], "text": op.get("text"), "cites": op.get("cites"),
+                                                         "scope": op.get("scope"), "note": note})
+    return {"ok": False, "message": f"unknown edit kind {kind}"}
 
 
 # ------------------------------------------------------------------ re-run / propagate (proposals)

@@ -142,6 +142,12 @@ def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
         if key == "search" and _waiting_for_search(ctx):
             return
         stage["run"](ctx, state)
+        if key == "protocol" and planning.file_differs(ctx):
+            ctx.log(f"[pipeline] protocol.yaml was edited by hand ({', '.join(planning.file_differs(ctx))}): import it "
+                    "(sragent op protocol.import_file, or Import on the protocol card) or discard the edit "
+                    "(sragent op protocol.export_file), then run again.")
+            ctx.save()
+            return
         if key == "protocol" and (stop_after_plan or until == "protocol"):
             ctx.log(f"[pipeline] protocol written to {ctx.run_dir / 'protocol.yaml'} — review/edit it, then run again.")
             return

@@ -1,6 +1,8 @@
 {
  "effects": {
-  "decisions_log": [],
+  "decisions_log": [
+   "comment:comment (applied)"
+  ],
   "flags_closed": [],
   "flags_opened": [],
   "meta_changed": [
@@ -17,10 +19,14 @@
   "state_nodes": []
  },
  "result": {
-  "send_to_agent": false,
-  "status": "open",
-  "target": "study:G01",
-  "text": "check the dosing"
+  "comment": {
+   "send_to_agent": false,
+   "status": "open",
+   "target": "study:G01",
+   "text": "check the dosing"
+  },
+  "message": "comment C1 saved",
+  "ok": true
  },
  "review": {
   "criteria": {

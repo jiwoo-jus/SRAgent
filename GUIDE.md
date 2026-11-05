@@ -350,7 +350,8 @@ Commands that work on one review take `--config` (`ui` optionally). `--budget` a
 | Command | What it does |
 |---|---|
 | `sragent run --config C [--until STAGE] [--plan-only] [--fresh]` | Runs the pipeline. Resumable: finished work is skipped. `--plan-only` stops after writing `protocol.yaml` for you to edit. |
-| `sragent rescreen --config C` | After editing `protocol.yaml`, re-derives every eligibility decision from the stored criterion assessments. **No LLM calls.** |
+| `sragent rescreen --config C` | After editing `protocol.yaml` by hand, imports it (the operation `protocol.import_file`) and re-derives every eligibility decision from the stored criterion assessments. **No LLM calls.** A run does not apply a hand edit by itself: it stops and asks for the import. |
+| `sragent op --list` / `sragent op NAME --config C --args JSON` | Lists / runs one operation: every change to a review is an operation (`sragent/ops`), whether it comes from the web interface, the To-do list or the command line, so it behaves and is recorded the same way (`human_decisions.jsonl`, `provenance.jsonl`, under the operation's name). The other commands that change a review are names for operations. One process writes a run folder at a time (`.lease`); the web interface queues a change made while a command or a job holds it. |
 | `sragent revalidate-terms --config C` | Re-runs DB term validation on stored extractions. No LLM calls. |
 | `sragent ui [--config C] [--configs DIR] [--port 8765] [--no-browser]` | Opens the web interface (7.1); without `--config` it starts on the Configs page. |
 | `sragent accept-config --config C --reason "..." [--yes]` | Continues a review whose fixed settings were edited after it started; the change and the reason are recorded in `provenance.jsonl`, the report and every evaluation of the run. |

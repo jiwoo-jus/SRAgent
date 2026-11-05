@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "protocol:approve (applied)"
+   "protocol.approve:approve (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -12,7 +12,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:protocol:approve"
+   "human_judgment:protocol.approve"
   ],
   "state_nodes": [
    "approval:protocol"
@@ -67,7 +67,7 @@
    "screened": 0
   },
   "provenance": {
-   "human_judgment:protocol:approve": 1
+   "human_judgment:protocol.approve": 1
   },
   "records": {},
   "rob": {},

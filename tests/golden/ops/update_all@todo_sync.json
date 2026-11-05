@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "sync:sync (applied)"
+   "job.sync:sync (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],

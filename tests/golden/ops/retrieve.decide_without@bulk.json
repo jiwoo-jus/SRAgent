@@ -1,6 +1,8 @@
 {
  "effects": {
-  "decisions_log": [],
+  "decisions_log": [
+   "retrieve.decide_without:decide_without (applied)"
+  ],
   "flags_closed": [],
   "flags_opened": [],
   "meta_changed": [],
@@ -10,7 +12,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:decide_without_fulltext"
+   "human_judgment:retrieve.decide_without"
   ],
   "state_nodes": []
  },
@@ -98,7 +100,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:decide_without_fulltext": 1,
+   "human_judgment:retrieve.decide_without": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

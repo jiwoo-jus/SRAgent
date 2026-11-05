@@ -2,14 +2,10 @@
  "effects": {
   "decisions_log": [],
   "flags_closed": [],
-  "flags_opened": [
-   "rob:G01 [feedback]"
-  ],
-  "meta_changed": [
-   "flag_seq"
-  ],
+  "flags_opened": [],
+  "meta_changed": [],
   "model_calls": {
-   "feedback_verify": 1
+   "rob": 1
   },
   "notes_appeared": [],
   "notes_cleared": [],
@@ -17,30 +13,20 @@
   "proposals": [
    {
     "changes": [],
-    "kind": null,
+    "kind": "rerun",
     "status": "no_change",
-    "verdict": "supported"
+    "verdict": "rerun"
    }
   ],
-  "provenance": [],
+  "provenance": [
+   "human_judgment:rerun_request:rob"
+  ],
   "state_nodes": []
  },
  "result": {
-  "changes": [],
-  "cost_usd_uncached": 0.0,
-  "evidence": [],
-  "evidence_quote": "",
-  "explanation": "mock",
-  "feedback": "re-check attrition",
-  "flag_id": "F1",
-  "mode": {
-   "propagate": true,
-   "verify": true
-  },
-  "pmid": null,
-  "status": "no_change",
-  "target": "rob:G01",
-  "verdict": "supported"
+  "message": "proposal <proposal>: 0 output(s) would change.",
+  "ok": true,
+  "status": "no_change"
  },
  "review": {
   "criteria": {
@@ -101,9 +87,7 @@
    "G01",
    "G02"
   ],
-  "open_flags": {
-   "rob:G01": 1
-  },
+  "open_flags": {},
   "prisma": {
    "awaiting_classification": 0,
    "awaiting_fulltext_review": 0,
@@ -124,6 +108,7 @@
    "screened": 7
   },
   "provenance": {
+   "human_judgment:rerun_request:rob": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

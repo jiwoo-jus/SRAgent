@@ -381,233 +381,113 @@ def _short_change(c: dict) -> str:
 
 # ------------------------------------------------------------------ answers
 def log_answer(ctx: Ctx, answer: dict, status: str):
+    """A line in human_decisions.jsonl for an answer that is not an operation (kept for answers queued during a job)."""
     with open(ctx.run_dir / "human_decisions.jsonl", "a") as f:
         f.write(json.dumps({**answer, "status": status, "ts": time.time()}) + "\n")
 
 
-def _category(tid: str, opt: str | None) -> str | None:
-    """Provenance category of an answer: PDF supply is kept apart from human judgment."""
-    if opt == "later":
-        return None
-    if tid == "fulltexts":
-        return "pdf_provision"
-    if tid == "sync":
-        return None          # starts the agent; no human judgment about content
-    return "human_judgment"
-
-
-def apply(ctx: Ctx, answer: dict) -> dict:
-    """Apply one answer {todo_id, option, text, extra}. Returns {"ok", "message", "job"?}."""
-    from . import feedback, provenance
-    st = ctx.store
+def to_operation(answer: dict) -> tuple[str, dict] | None:
+    """The operation a To-do answer {todo_id, option, text, extra} stands for (sragent/ops), with its arguments;
+    None for an answer that only starts a job."""
     tid, opt = answer["todo_id"], answer.get("option")
     text = (answer.get("text") or "").strip()
     extra = answer.get("extra") or {}
-    msg, job = "saved", None
-    cat = _category(tid, opt)
-    if cat == "human_judgment":
-        try:
-            provenance.require_judgment_allowed(ctx, f"{tid} -> {opt}")
-        except provenance.NotAllowed as e:
-            return {"ok": False, "message": str(e)}
-
     if opt == "later":
-        st.meta.setdefault("snoozed", [])
-        if tid not in st.meta["snoozed"]:
-            st.meta["snoozed"].append(tid)
-        msg = "snoozed"
-    elif tid == "protocol":
-        if opt == "approve":
-            state.approve(st, text)
-            msg = "protocol approved"
-        elif opt == "edited":
-            import yaml
-            from .stages import screening
-            from .stages.planning import sync_criteria
-            protocol = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
-            st.annotate("protocol", protocol, actor="user", reason="protocol edited by user")
-            sync_criteria(st, protocol, actor="user", reason="protocol edited")
-            r = screening.rescreen_rule_only(ctx, protocol)
-            msg = f"protocol re-applied: {r['changed']} decisions changed"
-    elif tid.startswith("elig:"):
+        return "snooze", {"item": tid}
+    if tid == "protocol":
+        return {"approve": ("protocol.approve", {"note": text}), "edited": ("protocol.import_file", {"note": text})}.get(opt)
+    if tid.startswith("elig:"):
         rid = tid.split(":", 1)[1]
-        if opt == "include" and (st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext":
-            return {"ok": False, "message": f"{rid} cannot be included without a full-text review; supply {rid}.pdf first."}
-        if opt in ("include", "exclude"):
-            from .stages.screening import person_decides
-            n = person_decides(st, rid, opt, [extra.get("criterion") or "human"] if opt == "exclude" else [],
-                               {"decision": opt, "note": text, "reason": extra.get("criterion"), "ts": time.time()},
-                               f"human eligibility decision: {opt}" + (f" ({text})" if text else ""))
-            for f in n["flags"]:
-                if f["status"] == "open":
-                    st.resolve_flag(n["id"], f["id"], f"human decided: {opt}", actor="user")
-            msg = f"{rid} {opt}d" + ("; extraction and synthesis can be updated from the to-do list" if opt == "include" else "")
-        elif opt == "pdf":
-            state.set_pdf_request(st, rid, wanted=True)
-            msg = f"waiting for {rid}.pdf in {fulltext.fulltext_dir(ctx)}"
-    elif tid == "fulltexts":
+        if opt == "pdf":
+            return "retrieve.request", {"rid": rid, "note": text}
+        return "eligibility.decide", {"rid": rid, "decision": opt, "criterion": extra.get("criterion"), "note": text}
+    if tid == "fulltexts":
         ids = [x.strip() for x in (extra.get("unavailable") or "").replace(";", ",").split(",") if x.strip()]
-        for rid in ids:
-            if st.get(f"rec:{rid}"):
-                state.set_pdf_request(st, rid, wanted=False, unavailable=True)
-        if opt == "process":
-            job = {"action": "pdfs"}
-            msg = "processing added files"
-        else:
-            msg = f"marked {len(ids)} as not obtainable" if ids else "saved"
-    elif tid.startswith("flag:"):
-        # node ids contain a colon themselves (e.g. syn:S4), so split from the right
-        node_id, fid = tid[5:].rsplit(":", 1)
-        n = st.get(node_id)
-        flag = next((f for f in n["flags"] if f["id"] == fid), None)
-        if opt == "ok":
-            st.resolve_flag(node_id, fid, f"human: fine as is. {text}".strip(), actor="user")
-            msg = "flag closed"
-        elif opt == "fix":
-            fb = text or f"Please check and fix: {flag['text'] if flag else ''}"
-            if flag and text:
-                fb = f"{text} (context: {flag['text'][:300]})"
-            st.resolve_flag(node_id, fid, "sent to the agent as feedback", actor="user")
-            job = {"action": "feedback", "target": node_id, "text": fb}
-            msg = "the agent will propose a revision; it appears here for your approval"
-    elif tid.startswith("clarify:"):
-        cid = tid.split(":", 1)[1]
-        p = ctx.run_dir / "feedback" / f"{cid}.json"
-        cs = json.loads(p.read_text())
-        cs["status"] = "clarified" if opt == "answer" else "withdrawn"
-        cs["clarification_answer"] = text
-        p.write_text(json.dumps(cs, indent=1, default=str))
-        if opt == "answer":
-            job = {"action": "feedback", "target": cs.get("target"), "text": f"{cs['feedback']}\nClarification: {text}"}
-            msg = "sent to the agent with your clarification"
-        else:
-            msg = "feedback withdrawn"
-    elif tid.startswith("edited:"):
-        from .attention import edit_state
-        node_id = tid[len("edited:"):]
-        if not st.get(node_id):                      # an id from before phase 2d: edited:<node>:<flag id>
-            node_id = node_id.rsplit(":", 1)[0]
-        n = st.get(node_id)
-        e = edit_state(st, n) or {"dependents": [], "from_version": None}
-        if opt == "ok":   # the person says the outputs that use the edit are fine: they are current with it
-            for cid in e["dependents"]:
-                st.touch(cid)
-            msg = "closed"
-        elif opt == "update":
-            job = {"action": "propagate", "target": node_id, "from_version": e["from_version"],
-                   "text": text, "rid": node_id.split(":", 1)[1]}
-            msg = "the agent will propose updates to the dependent outputs"
-    elif tid.startswith("disagree:"):
-        node_id, fid = tid[len("disagree:"):].rsplit(":", 1)
-        n = st.get(node_id)
-        flag = next((f for f in n["flags"] if f["id"] == fid), None)
-        if opt == "agree":
-            st.resolve_flag(node_id, fid, f"human agreed with the agent. {text}".strip(), actor="user")
-            msg = "closed"
-        elif opt == "insist":
-            orig = flag["text"].split("-> agent:", 1)[0].split(":", 1)[-1].strip() if flag else ""
-            st.resolve_flag(node_id, fid, "human insisted; re-sent without the evidence check", actor="user")
-            job = {"action": "feedback", "target": node_id, "text": (orig + (" " + text if text else "")).strip(),
-                   "no_verify": True}
-            msg = "the agent will propose your change for approval"
-    elif tid.startswith("rob:"):
+        return ("retrieve.declare_unobtainable", {"rids": ids}) if ids else None
+    if tid.startswith("flag:"):
+        node, fid = tid[5:].rsplit(":", 1)        # node ids contain a colon themselves (syn:S4)
+        return "flag.answer", {"node": node, "flag": fid, "option": opt, "text": text}
+    if tid.startswith("clarify:"):
+        return "feedback.clarify", {"changeset": tid.split(":", 1)[1], "option": opt, "text": text}
+    if tid.startswith("edited:"):
+        node = tid[len("edited:"):]
+        if ":" in node.split(":", 1)[1]:          # an id from before phase 2d: edited:<node>:<flag id>
+            node = node.rsplit(":", 1)[0]
+        return ("edit.dependents_fine", {"node": node, "note": text}) if opt == "ok" else None
+    if tid.startswith("disagree:"):
+        node, fid = tid[len("disagree:"):].rsplit(":", 1)
+        return "feedback.disagreement", {"node": node, "flag": fid, "option": opt, "text": text}
+    if tid.startswith("rob:"):
         rid = tid.split(":", 1)[1]
-        n = st.get(f"rob:{rid}")
-        d = json.loads(json.dumps(n["data"]))
         if opt == "confirm":
-            d["human_confirmed"] = {"ts": time.time(), "note": text}
-            st.annotate(n["id"], d, evidence=n["evidence"], actor="user", reason="risk of bias confirmed by human")
-            msg = "confirmed"
-        elif opt == "change" and extra.get("changes") is not None:
-            from . import actions
-            r = actions.edit(ctx, {"kind": "rob", "rid": rid, "changes": extra["changes"], "note": text})
-            log_answer(ctx, answer, "applied")
-            return {"ok": r["ok"], "message": r["message"]}
-        elif opt == "change":
-            dom, judg = extra.get("domain"), extra.get("judgment")
-            for x in d["domains"]:
-                if x.get("domain") == dom:
-                    x["judgment_agent"] = x.get("judgment")
-                    x["judgment"] = judg
-                    x["human_note"] = text
-            order = {"low": 0, "unclear": 1, "some_concerns": 2, "high": 3}
-            d["overall"] = max((x.get("judgment") for x in d["domains"]), key=lambda j: order.get(j, 1))
-            d["human_confirmed"] = {"ts": time.time(), "note": f"changed {dom} to {judg}. {text}".strip()}
-            st.annotate(n["id"], d, evidence=n["evidence"], actor="user", reason=f"human changed {dom} to {judg}")
-            msg = f"{dom} set to {judg}"
-        elif opt == "fix":
-            job = {"action": "feedback", "target": n["id"], "text": text or "Please re-assess this risk-of-bias draft."}
-            msg = "the agent will propose a re-assessment"
-    elif tid.startswith("cs:"):
+            return "rob.confirm", {"rids": [rid], "note": text}
+        if opt == "change":
+            ch = extra.get("changes")
+            if ch is None:
+                ch = [{"domain": extra.get("domain"), "judgment": extra.get("judgment")}]
+            return "rob.edit_domains", {"rid": rid, "changes": ch, "note": text}
+        return None
+    if tid.startswith("cs:"):
         cid = tid.split(":", 1)[1]
-        if opt == "accept":
-            try:
-                feedback.accept(ctx, cid)
-            except feedback.StaleProposal as e:
-                log_answer(ctx, answer, "refused_stale")
-                return {"ok": False, "message": str(e)}
-            from .stages import report
-            report.write_reports(ctx)
-            msg = "changes applied, report regenerated"
-        else:
-            feedback.reject(ctx, cid, text)
-            msg = "proposal rejected; the original stays"
-    elif tid == "sync":
-        if opt == "sync":
-            job = {"action": "sync"}
-            msg = "updating dependent outputs"
-    else:
-        return {"ok": False, "message": f"unknown to-do {tid}"}
-    ctx.save()
-    log_answer(ctx, answer, "applied")
-    if cat == "pdf_provision":
-        ids = [x.strip() for x in (extra.get("unavailable") or "").replace(";", ",").split(",") if x.strip()]
-        for rid in ids:
-            provenance.record(ctx, "pdf_provision", "not_obtainable", rid=rid)
-    elif cat == "human_judgment":
-        provenance.record(ctx, "human_judgment", f"{tid.split(':', 1)[0]}:{opt}", target=tid,
-                          rid=tid.split(":")[-1] if tid.startswith(("elig:", "rob:")) else None, note=text[:300])
-    return {"ok": True, "message": msg, "job": job}
+        return ("proposal.accept", {"changeset": cid, "note": text}) if opt == "accept" else ("proposal.reject", {"changeset": cid, "note": text})
+    return None
+
+
+def _job_of(answer: dict) -> tuple[dict, str] | None:
+    """Answers that start a job (model calls run as jobs, never in the web request)."""
+    tid, opt = answer["todo_id"], answer.get("option")
+    text = (answer.get("text") or "").strip()
+    if tid == "fulltexts" and opt == "process":
+        return {"action": "pdfs"}, "processing added files"
+    if tid == "sync" and opt == "sync":
+        return {"action": "sync"}, "updating dependent outputs"
+    if tid.startswith("edited:") and opt == "update":
+        node = tid[len("edited:"):]
+        if ":" in node.split(":", 1)[1]:
+            node = node.rsplit(":", 1)[0]
+        return ({"action": "propagate", "target": node, "text": text, "rid": node.split(":", 1)[1]},
+                "the agent will propose updates to the dependent outputs")
+    if tid.startswith("rob:") and opt == "fix":   # the same operation as the study page's re-run (03 I06)
+        return ({"action": "op", "op": "rob.recompute", "args": {"rid": tid.split(":", 1)[1], "note": text}},
+                "the agent will propose a re-assessment")
+    return None
+
+
+def apply(ctx: Ctx, answer: dict) -> dict:
+    """Apply one To-do answer {todo_id, option, text, extra}: the operation it stands for (sragent/ops), or the job it
+    starts. Returns {"ok", "message", "job"?}."""
+    from . import ops
+    job = _job_of(answer)
+    op = to_operation(answer)
+    if op is None and job is None:
+        return {"ok": False, "message": f"unknown to-do answer {answer.get('todo_id')} -> {answer.get('option')}"}
+    res = ops.run(ctx, *op) if op else {"ok": True, "message": job[1]}
+    if job and res.get("ok"):
+        if op is None:      # a job requested from the To-do list: logged like an operation request
+            from .ops import _log_decision
+            _log_decision(ctx, f"job.{job[0]['action']}", {"target": job[0].get("target") or answer["todo_id"],
+                                                           "note": answer.get("text") or ""}, res)
+        res = {**res, "message": res.get("message") if op else job[1], "job": job[0]}
+    return {"ok": res.get("ok", False), "message": res.get("message", ""), "job": res.get("job")}
 
 
 def bulk(ctx: Ctx, kind: str, ids: list[str], note: str = "", items: list[dict] | None = None) -> int:
-    from . import provenance
-    if kind != "pdf_unavailable":
-        provenance.require_judgment_allowed(ctx, kind)
-    n = 0
+    """Several answers at once; returns how many were applied (a refused one is not counted)."""
+    from . import ops
     if kind == "eligibility":
-        for it in items or []:
-            apply(ctx, {"todo_id": f"elig:{it['rid']}", "option": it["option"], "text": it.get("text", ""),
-                        "extra": {"criterion": it.get("criterion")}})
-            n += 1
+        return sum(1 for it in items or [] if apply(ctx, {"todo_id": f"elig:{it['rid']}", "option": it["option"],
+                                                          "text": it.get("text", ""),
+                                                          "extra": {"criterion": it.get("criterion")}})["ok"])
     if kind == "restore_rule":
-        from . import rules
-        for rid in ids:
-            rules.restore(ctx, rid, note)
-            log_answer(ctx, {"todo_id": f"rule:{rid}", "option": "restore", "text": note}, "applied")
-            provenance.record(ctx, "human_judgment", "restore_rule_exclusion", rid=rid, note=note)
-            n += 1
-        ctx.save()
+        return ops.run(ctx, "screen.restore_rule_exclusion", {"rids": ids, "note": note}).get("count", 0)
     if kind == "pdf_unavailable":
-        st = ctx.store
-        for rid in ids:
-            state.set_pdf_request(st, rid, wanted=False, unavailable=True)
-            log_answer(ctx, {"todo_id": f"pdf:{rid}", "option": "unavailable"}, "applied")
-            provenance.record(ctx, "pdf_provision", "not_obtainable", rid=rid)
-            n += 1
-        ctx.save()
+        return ops.run(ctx, "retrieve.declare_unobtainable", {"rids": ids, "note": note}).get("count", 0)
     if kind == "pdf_unwant":
-        for rid in ids:
-            state.set_pdf_request(ctx.store, rid, wanted=False)
-            provenance.record(ctx, "human_judgment", "decide_without_fulltext", rid=rid)
-            n += 1
-        ctx.save()
+        return ops.run(ctx, "retrieve.decide_without", {"rids": ids, "note": note}).get("count", 0)
     if kind == "rob_confirm":
-        for tid in ids:
-            if tid.startswith("rob:"):
-                apply(ctx, {"todo_id": tid, "option": "confirm", "text": note or "bulk confirm"})
-                n += 1
-    return n
+        return ops.run(ctx, "rob.confirm", {"rids": [t.split(":", 1)[1] for t in ids if t.startswith("rob:")],
+                                            "note": note or "bulk confirm"}).get("count", 0)
+    raise ValueError(f"unknown bulk kind {kind}")
 
 
 def rule_exclusions(ctx: Ctx) -> list[dict]:

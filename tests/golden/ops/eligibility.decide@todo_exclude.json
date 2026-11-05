@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "elig:exclude (applied)"
+   "eligibility.decide:exclude (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -14,13 +14,13 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:elig:exclude"
+   "human_judgment:eligibility.decide"
   ],
   "state_nodes": []
  },
  "result": {
   "job": null,
-  "message": "G03 excluded",
+  "message": "G03: awaiting \u2192 exclude. Extraction, risk of bias and synthesis follow with 'Update outputs'.",
   "ok": true
  },
  "review": {
@@ -104,7 +104,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:elig:exclude": 1,
+   "human_judgment:eligibility.decide": 1,
    "pdf_provision:supplied": 4
   },
   "records": {

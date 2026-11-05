@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "pdf:unavailable (applied)"
+   "retrieve.declare_unobtainable:declare_unobtainable (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -12,7 +12,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "pdf_provision:not_obtainable"
+   "pdf_provision:retrieve.declare_unobtainable"
   ],
   "state_nodes": [
    "pdf:G03"
@@ -102,7 +102,7 @@
    "screened": 7
   },
   "provenance": {
-   "pdf_provision:not_obtainable": 1,
+   "pdf_provision:retrieve.declare_unobtainable": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

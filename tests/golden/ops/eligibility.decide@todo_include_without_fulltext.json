@@ -1,6 +1,8 @@
 {
  "effects": {
-  "decisions_log": [],
+  "decisions_log": [
+   "eligibility.decide:include (refused)"
+  ],
   "flags_closed": [],
   "flags_opened": [],
   "meta_changed": [],
@@ -13,6 +15,7 @@
   "state_nodes": []
  },
  "result": {
+  "job": null,
   "message": "G03 cannot be included without a full-text review; supply G03.pdf first.",
   "ok": false
  },

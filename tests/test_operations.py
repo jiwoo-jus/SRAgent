@@ -67,11 +67,13 @@ def _snapshot(ctx) -> dict:
 def _normal(v, tmp):
     """Results without paths, ids that change per run, or timestamps."""
     if isinstance(v, dict):
-        return {k: _normal(x, tmp) for k, x in v.items() if k not in ("ts", "id", "created", "seconds", "cost_usd", "updated")}
+        return {k: _normal(x, tmp) for k, x in v.items()
+                if k not in ("ts", "id", "created", "seconds", "cost_usd", "updated", "changeset")}
     if isinstance(v, (list, tuple)):
         return [_normal(x, tmp) for x in v]
     if isinstance(v, str):
-        return v.replace(str(tmp), "<tmp>")
+        import re
+        return re.sub(r"\b(RR|FB|UP)\d+\b", "<proposal>", v.replace(str(tmp), "<tmp>"))
     return v
 
 
@@ -163,16 +165,16 @@ class _flag_then:
 
 
 def _protocol_revise(c):
-    from sragent.stages import planning
-    with c.at("plan"):
-        return planning.revise_protocol(c, "widen I2")
+    from sragent import ops
+    return ops.run(c, "protocol.revise", {"instruction": "widen I2"})
 
 
 def _protocol_edit_criteria(c):
-    from sragent.stages import planning
-    return planning.edit_criteria(c, [{"id": "I1", "text": "about emicizumab (edited)", "type": "inclusion", "stage": "title_abstract"},
-                                      {"id": "E9", "text": "Study is a conference abstract.", "type": "exclusion", "stage": "title_abstract"}],
-                                  note="by hand")
+    from sragent import ops
+    return ops.run(c, "protocol.edit_criteria", {
+        "criteria": [{"id": "I1", "text": "about emicizumab (edited)", "type": "inclusion", "stage": "title_abstract"},
+                     {"id": "E9", "text": "Study is a conference abstract.", "type": "exclusion", "stage": "title_abstract"}],
+        "note": "by hand"})
 
 
 
@@ -293,7 +295,8 @@ SCENARIOS = {
     "rob.edit_domains@study_page": ("rob.edit_domains", "reviewed", _edit(kind="rob", rid="G01", changes=[{"domain": "missing_data", "judgment": "high"}], note="dropouts")),
     "rob.recompute@rerun": ("rob.recompute", "reviewed", _rerun("G01", "rob", "look at attrition")),
     "rob.recompute@todo_fix": ("rob.recompute", "reviewed", _todo("rob:G01", "fix", "re-check attrition")),
-    "rob.recompute@todo_fix_job": ("rob.recompute", "reviewed", _feedback("re-check attrition", "rob:G01")),
+    "rob.recompute@todo_fix_job": ("rob.recompute", "reviewed", lambda c: __import__("sragent.ops", fromlist=["x"]).run(
+        c, "rob.recompute", {"rid": "G01", "note": "re-check attrition"})),
     "rob.verify@cli": ("rob.verify", "reviewed", _fn("sragent.stages.rob.verify_existing")),
     "rob.redraft_all@cli": ("rob.redraft_all", "reviewed", _fn("sragent.stages.rob.reassess_all")),
     # synthesis
@@ -343,10 +346,12 @@ def _special(name, ctx, monkeypatch):
         d = ctx.store.get("syn:S1")["data"]
         return _edit(kind="syn", node="syn:S1", text=d["text"] + " (adults only)", cites=d["cites"], note="scope")
     if name == "comment":
-        return lambda c: actions.add_comment(c, "study:G01", "check the dosing")
+        from sragent import ops
+        return lambda c: ops.run(c, "comment", {"target": "study:G01", "text": "check the dosing"})
     if name == "comment_resolve":
-        cid = actions.add_comment(ctx, "study:G01", "check the dosing")["id"]
-        return lambda c: actions.resolve_comment(c, cid, "done")
+        from sragent import ops
+        cid = ops.run(ctx, "comment", {"target": "study:G01", "text": "check the dosing"})["comment"]["id"]
+        return lambda c: ops.run(c, "comment.resolve", {"id": cid, "note": "done"})
     if name in ("proposal_accept_todo", "proposal_reject_todo"):
         cs = feedback.handle_feedback(ctx, "Population of G02 is wrong", target="ext:G02", auto_accept=False)
         accept = name.endswith("accept_todo")
@@ -391,7 +396,7 @@ OPS = {
     # protocol
     "protocol.approve": "ops", "protocol.edit_criteria": "ops", "protocol.import_file": "ops",
     "protocol.draft": "ops", "protocol.revise": "ops",
-    "protocol.export_file": "new: phase 2 (today a side effect of every protocol write)",
+    "protocol.export_file": "op: no scenario (writes protocol.yaml)",
     # search
     "search.confirm_strategy": "ops", "search.clear_strategy": "ops",
     "search.draft_strategy": "ops:search.suggest_variants@page (the agent's own query V0 is drafted there)",
@@ -598,6 +603,98 @@ def test_derived_notes_are_never_stored_as_flags():
     assert not hits, hits
 
 
+# names of 04 §4 that the registry spells differently, and registered operations that 04 §4 did not list
+REGISTERED_AS = {"propagate_edit": "edit.update_dependents", "eligibility.overturn": "eligibility.decide",
+                 "eligibility.rederive": "screen.rederive",
+                 "synthesis.update": "update_all", "synthesis.resolve_flag": "flag.answer", "search.draft_strategy": "search.suggest_variants"}
+NOT_IN_04 = {"edit.dependents_fine", "feedback.clarify", "feedback.disagreement", "comment.resolve", "flag.answer",
+             "screen.run", "retrieve.run", "eligibility.run", "extract.run", "rob.run", "search.run", "synthesis.write",
+             "protocol.draft", "report.render", "eligibility.decide", "update_all"}
+
+
+def test_the_operations_are_the_registry():
+    """Every operation of 04 §4 that exists today is registered (sragent/ops), and every registered operation is
+    in 04 §4 or listed here as an addition."""
+    from sragent import ops
+    ops._load()
+    existing = {k for k, how in OPS.items() if not how.startswith(("new", "gap"))} - {"settings.change"}
+    missing = {k for k in existing if REGISTERED_AS.get(k, k) not in ops.REGISTRY}
+    assert not missing, f"in 04 §4 and covered, but not registered: {sorted(missing)}"
+    known = {REGISTERED_AS.get(k, k) for k in OPS} | NOT_IN_04
+    extra = set(ops.REGISTRY) - known
+    assert not extra, f"registered but in neither 04 §4 nor NOT_IN_04: {sorted(extra)}"
+    for o in ops.listing():
+        assert o["summary"], f"{o['name']} has no description"
+
+
+def test_api_op_applies_or_queues_and_the_cli_runs_operations(tmp_path, monkeypatch, capsys):
+    """POST /api/op: a person's operation is applied now; a model operation becomes a job that runs `sragent op` in a
+    subprocess (never a model call in the web request). `sragent op` lists and runs operations."""
+    import yaml
+    from sragent import cli, state
+    from sragent.ui.server import App
+    from test_golden import golden_mock
+    ctx = reviewed(tmp_path)
+    cfgp = tmp_path / "ui.yaml"
+    cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_")}
+    cfg["models_file"] = str(Path(__file__).resolve().parents[1] / "configs/models.yaml")
+    cfg["local"] = {**cfg["local"], "endpoints_file": str(tmp_path / "eps.yaml")}
+    (tmp_path / "eps.yaml").write_text(yaml.safe_dump({"endpoints": []}))
+    cfgp.write_text(yaml.safe_dump(cfg))
+    app = App(str(cfgp))
+    app.ctx().hub.mock_fn = golden_mock
+    r = app.op({"name": "protocol.approve", "args": {"note": "fine"}})
+    assert r["ok"] and state.approval(app.ctx().store)
+    assert app.op({"name": "nope"})["ok"] is False
+    with app.lock:                                   # the worker cannot take the job while the lock is held
+        q = app.op({"name": "rob.verify", "args": {"rids": ["G01"]}})
+        assert q["ok"] and q["job"]["action"] == "op" and q["job"]["op"] == "rob.verify"
+        cmd = app._cmd(q["job"], cfgp)
+        assert cmd[3:5] == ["op", "rob.verify"] and '"rids": ["G01"]' in cmd[-1]
+        app.queue.clear()
+    assert app.op({"name": "preview", "args": {"node": "ext:G01"}})["reach"]       # a read: answered now
+    cli.main(["op", "--list"])
+    out = capsys.readouterr().out
+    assert "eligibility.decide" in out and "rob.edit_domains" in out
+    monkeypatch.setattr(cli, "_ctx", lambda a, **k: ctx)
+    cli.main(["op", "rob.confirm", "--config", "x", "--args", '{"rids": ["G01"], "note": "cli"}'])
+    assert ctx.store.get("rob:G01")["data"]["human_confirmed"]["note"] == "cli"
+
+
+def test_one_writer_per_run_folder(tmp_path):
+    """While another process holds the run folder (a command, a job), a change made in the interface is queued, not
+    applied under it; it is applied at the next poll once the folder is free (sragent/lease.py)."""
+    import subprocess
+    import sys as _sys
+    import time as _time
+    import yaml
+    from sragent import lease, state
+    from sragent.ui.server import App
+    ctx = reviewed(tmp_path)
+    cfgp = tmp_path / "ui.yaml"
+    cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_")}
+    cfg["models_file"] = str(Path(__file__).resolve().parents[1] / "configs/models.yaml")
+    cfg["local"] = {**cfg["local"], "endpoints_file": str(tmp_path / "eps.yaml")}
+    (tmp_path / "eps.yaml").write_text(yaml.safe_dump({"endpoints": []}))
+    cfgp.write_text(yaml.safe_dump(cfg))
+    app = App(str(cfgp))
+    root = str(Path(__file__).resolve().parents[1])
+    holder = subprocess.Popen([_sys.executable, "-c", f"import sys, time; sys.path.insert(0, {root!r}); from sragent import lease; "
+                               f"lease.acquire({str(ctx.run_dir)!r}); print('held', flush=True); time.sleep(3)"],
+                              stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"
+    assert not lease.try_acquire(ctx.run_dir) and "pid" in lease.holder(ctx.run_dir)
+    r = app.op({"name": "protocol.approve", "args": {"note": "while busy"}})
+    assert r["ok"] and r.get("queued") and not state.approval(app.ctx().store)      # queued, not applied under the holder
+    holder.wait(10)
+    for _ in range(20):
+        app.state()
+        if state.approval(app.ctx().store):
+            break
+        _time.sleep(0.2)
+    assert state.approval(app.ctx().store)["note"] == "while busy" and not app.pending_answers
+
+
 def test_every_operation_is_accounted_for():
     import test_golden
     import test_offline
@@ -607,7 +704,7 @@ def test_every_operation_is_accounted_for():
     assert set(by_op) <= set(OPS), f"scenarios for operations not in 04 §4: {sorted(set(by_op) - set(OPS))}"
     for op, how in OPS.items():
         kind = how.split(":", 1)[0]
-        assert kind in ("ops", "golden", "offline", "new", "gap"), (op, how)
+        assert kind in ("ops", "op", "golden", "offline", "new", "gap"), (op, how)
         if how == "ops":
             assert by_op.get(op), f"{op}: marked 'ops' but no scenario"
         elif kind == "ops":

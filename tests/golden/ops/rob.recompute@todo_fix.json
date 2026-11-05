@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "rob:fix (applied)"
+   "job.op:op (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -11,16 +11,17 @@
   "notes_cleared": [],
   "out_of_date": [],
   "proposals": [],
-  "provenance": [
-   "human_judgment:rob:fix"
-  ],
+  "provenance": [],
   "state_nodes": []
  },
  "result": {
   "job": {
-   "action": "feedback",
-   "target": "rob:G01",
-   "text": "re-check attrition"
+   "action": "op",
+   "args": {
+    "note": "re-check attrition",
+    "rid": "G01"
+   },
+   "op": "rob.recompute"
   },
   "message": "the agent will propose a re-assessment",
   "ok": true
@@ -105,7 +106,6 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:rob:fix": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

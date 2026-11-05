@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "edit:manual_edit (applied)"
+   "eligibility.decide:exclude (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -16,14 +16,14 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:manual_edit:screen"
+   "human_judgment:eligibility.decide"
   ],
   "state_nodes": [
    "cohort"
   ]
  },
  "result": {
-  "message": "G02: include \u2192 exclude. Extraction, risk of bias and synthesis follow via 'Update outputs' in the To-do list.",
+  "message": "G02: include \u2192 exclude. Extraction, risk of bias and synthesis follow with 'Update outputs'.",
   "ok": true
  },
  "review": {
@@ -105,7 +105,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:manual_edit:screen": 1,
+   "human_judgment:eligibility.decide": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

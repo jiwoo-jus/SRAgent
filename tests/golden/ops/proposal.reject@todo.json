@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "cs:reject (applied)"
+   "proposal.reject:reject (applied)"
   ],
   "flags_closed": [
    "ext:G02 [feedback]"
@@ -14,7 +14,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:cs:reject"
+   "human_judgment:proposal.reject"
   ],
   "state_nodes": []
  },
@@ -103,7 +103,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:cs:reject": 1,
+   "human_judgment:proposal.reject": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

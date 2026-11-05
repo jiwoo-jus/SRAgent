@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "flag:fix (applied)"
+   "flag.answer:fix (applied)"
   ],
   "flags_closed": [
    "syn:S1 [check]"
@@ -14,7 +14,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:flag:fix"
+   "human_judgment:flag.answer"
   ],
   "state_nodes": []
  },
@@ -107,7 +107,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:flag:fix": 1,
+   "human_judgment:flag.answer": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

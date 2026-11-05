@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "elig:include (applied)"
+   "eligibility.decide:include (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -17,7 +17,7 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:elig:include"
+   "human_judgment:eligibility.decide"
   ],
   "state_nodes": [
    "cohort"
@@ -108,7 +108,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:elig:include": 1,
+   "human_judgment:eligibility.decide": 1,
    "pdf_provision:supplied": 4
   },
   "records": {

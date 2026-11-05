@@ -85,7 +85,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:protocol:edited": 1,
+   "human_judgment:protocol.import_file": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

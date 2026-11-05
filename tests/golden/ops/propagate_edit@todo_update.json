@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "edited:update (applied)"
+   "job.propagate:propagate (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -15,15 +15,12 @@
    "syn:S3 revise"
   ],
   "proposals": [],
-  "provenance": [
-   "human_judgment:edited:update"
-  ],
+  "provenance": [],
   "state_nodes": []
  },
  "result": {
   "job": {
    "action": "propagate",
-   "from_version": 1,
    "rid": "G01",
    "target": "ext:G01",
    "text": ""
@@ -113,8 +110,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:edited:update": 1,
-   "human_judgment:manual_edit:ext": 1,
+   "human_judgment:extract.edit_values": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

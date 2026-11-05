@@ -114,9 +114,15 @@ class App:
         ra = state.rules_applied(ctx.store) or {}
         if ra.get("rules") == want and ra.get("version") == rules.RULES_VERSION:
             return
-        changes = rules.apply(ctx)
-        ctx.save()
-        self.saved()
+        from .. import lease
+        if not lease.try_acquire(self.run_dir):    # a job or a command is writing the review: next time
+            return
+        try:
+            changes = rules.apply(ctx)
+            ctx.save()
+            self.saved()
+        finally:
+            lease.release(self.run_dir)
         ctx.log(f"[rules] applied {want}: {len(changes)} records excluded by rules")
 
     def saved(self):
@@ -376,6 +382,8 @@ class App:
             if spec.get("from_version") is not None:
                 c += ["--from-version", str(spec["from_version"])]
             return c + (["--note", spec["text"]] if spec.get("text") else [])
+        if a == "op":
+            return base + ["op", spec["op"], "--config", str(cfgp), "--args", json.dumps(spec.get("args") or {})]
         if a == "eval":
             c = base + ["eval", "--config", str(cfgp), "--suite", spec.get("suite", "all")]
             if spec.get("n_cases"):
@@ -503,9 +511,17 @@ class App:
         return res
 
     def _drain_answers(self):
-        from .. import todos
-        if not self.pending_answers:
+        """Apply the changes queued while the folder was busy (called with self.lock held)."""
+        from .. import lease, todos
+        if not self.pending_answers or self.job is not None or not lease.try_acquire(self.run_dir):
             return
+        try:
+            self._drain_held()
+        finally:
+            lease.release(self.run_dir)
+
+    def _drain_held(self):
+        from .. import todos
         ctx = self.ctx()
         jobs = []
         for ans in self.pending_answers:
@@ -521,33 +537,62 @@ class App:
             self.queue.append({**self._last_budget(), **j, "id": uuid.uuid4().hex[:8], "status": "queued"})
 
     def _apply_op(self, ctx, op: dict) -> dict:
-        from .. import actions, todos
+        """Every change the interface makes goes through an operation (sragent/ops); the older request shapes
+        (answer, bulk, edit, comment) are translated here until the interface sends /api/op only (phase 4)."""
+        from .. import actions, ops, todos
         kind = op.get("_op", "answer")
+        if kind == "op":
+            return ops.run(ctx, op["name"], op.get("args") or {})
         if kind == "edit":
             return actions.edit(ctx, op["edit"])
         if kind == "bulk":
+            items = op.get("items") or op.get("ids") or []
             n = todos.bulk(ctx, op["kind"], op.get("ids", []), op.get("text", ""), op.get("items"))
-            return {"ok": True, "message": f"{n} saved"}
+            return {"ok": n > 0 or not items, "message": f"{n} of {len(items)} saved" if n < len(items) else f"{n} saved"}
         if kind == "resolve_comment":
-            return {"ok": bool(actions.resolve_comment(ctx, op["id"], op.get("note", ""))), "message": "resolved"}
+            return ops.run(ctx, "comment.resolve", {"id": op["id"], "note": op.get("note", "")})
         if kind == "comment":
-            c = actions.add_comment(ctx, op["target"], op["text"], op.get("send", False))
-            if op.get("job_id"):
-                c["job_id"] = op["job_id"]
+            r = ops.run(ctx, "comment", {"target": op["target"], "text": op["text"], "send": op.get("send", False)})
+            if r.get("ok") and op.get("job_id"):
+                r["comment"]["job_id"] = op["job_id"]
                 ctx.save()
-            return {"ok": True, "message": f"comment {c['id']} saved", "comment": c}
+            r.pop("job", None)          # the interface has queued the feedback job itself
+            return r
         return todos.apply(ctx, op)
+
+    def op(self, b: dict) -> dict:
+        """POST /api/op {name, args}: a model operation becomes a job (no model call in a web request); any other is
+        applied now (queued while a job writes the review); a read is answered now."""
+        from .. import ops
+        try:
+            o = ops.get(b.get("name") or "")
+        except KeyError as e:
+            return {"ok": False, "message": str(e)}
+        args = b.get("args") or {}
+        if o.kind == "llm":
+            spec = self.submit({**ops.submit(o.name, args), "label": f"{o.name} {json.dumps(args)[:60]}",
+                                **({"agent": b["agent"]} if b.get("agent") else {})})
+            return {"ok": True, "job": spec, "message": f"{o.name} queued as job {spec['id']}"}
+        if o.kind == "read":
+            with self.lock:
+                return ops.run(self.ctx(), o.name, args)
+        return self.mutate({"_op": "op", "name": o.name, "args": args, "todo_id": f"op:{o.name}"})
 
     def mutate(self, op: dict) -> dict:
         """Edits that change the store: applied now, or queued while a job is writing the store."""
         from .. import todos
+        from .. import lease
         with self.lock:
-            if self.job is not None:
+            if self.job is not None or not lease.try_acquire(self.run_dir):   # a job or a command holds the folder
                 self.pending_answers.append({**op, "todo_id": op.get("todo_id", f"op:{op.get('_op')}")})
                 todos.log_answer(self.ctx(), {**op, "todo_id": op.get("todo_id", f"op:{op.get('_op')}")}, "queued")
-                return {"ok": True, "queued": True, "message": "Saved. A job is running, so this is applied as soon as it finishes."}
-            r = self._apply_op(self.ctx(), op)
-            self.saved()
+                return {"ok": True, "queued": True, "message": "Saved. The review is being written by a job or a command, "
+                                                               "so this is applied as soon as it is free."}
+            try:
+                r = self._apply_op(self.ctx(), op)
+                self.saved()
+            finally:
+                lease.release(self.run_dir)
             return r
 
     def data_items(self, b: dict, lib: Library) -> dict:
@@ -624,154 +669,37 @@ class App:
         return {"ok": True, "message": f"saved to {lib.rel(target)}" + (f"; {n} output(s) to bring up to date (Out-of-date outputs)" if n else ""),
                 "pending": pc}
 
-    def _model_call(self, label: str, check, work, finish, watch: tuple = ()) -> dict:
-        """A model call asked from a page. `check(ctx)` runs under the lock (an error message or None); `work(sandbox)`
-        runs WITHOUT it, on a copy of the store, so every poll and decision keeps answering and no job starts meanwhile;
-        `finish(ctx, sandbox, result)` applies the result under the lock, unless what the work wrote (or the `watch`
-        nodes) changed in the meantime."""
-        import dataclasses
-        with self.lock:
-            if self.job is not None:
-                return {"ok": False, "message": f"A job is running; {label} when it has finished."}
-            if self.busy:
-                return {"ok": False, "message": f"The agent is already working ({self.busy}); try again in a moment."}
-            ctx = self.ctx()
-            err = check(ctx)
-            if err:
-                return {"ok": False, "message": err}
-            self.busy = label
-            base = ctx.store.clone()
-            sb = dataclasses.replace(ctx, store=ctx.store.clone())
-        try:
-            res = work(sb)
-        except Exception as e:
-            with self.lock:
-                self.busy = None
-            return {"ok": False, "message": str(e)[:300]}
-        with self.lock:
-            self.busy = None
-            live = self.ctx()
-            d = sb.store.diff(base)
-            nodes = set(d["new"]) | set(d["changed"]) | set(watch)
-            if any((live.store.get(n) or {}).get("version") != (base.get(n) or {}).get("version") for n in nodes) or \
-                    any(live.store.meta.get(k) != base.meta.get(k) for k in d["meta"]):
-                return {"ok": False, "message": "The review changed while the agent was working; please ask again."}
-            try:
-                r = finish(live, sb, res)
-            except Exception as e:
-                return {"ok": False, "message": str(e)[:300]}
-            live.save()
-            self.saved()
-            return r
-
     def protocol_change(self, b: dict) -> dict:
-        """The protocol changed with the review team: revise (the agent applies a change asked in plain words, one call
-        to the plan stage's model) or edit (a person's edits to the criteria, no model call). Approval is asked again."""
-        from ..stages import planning
+        """The protocol card: 'Ask the agent' (protocol.revise, a job) or 'Edit criteria' (protocol.edit_criteria)."""
         op = b.get("op")
         if op == "revise":
             ins = (b.get("instruction") or "").strip()
             if not ins:
                 return {"ok": False, "message": "say what to change"}
-
-            def draft(sb):
-                with sb.at("protocol"):
-                    return planning.draft_revision(sb, ins)
-
-            def apply(live, sb, dr):
-                r = planning.apply_revision(live, ins, dr)
-                return {"ok": True, **r, "message": ("protocol revised; approve it again" if r.get("applied")
-                                                      else "nothing changed: " + (r.get("explanation") or ""))}
-            return self._model_call("change the protocol", lambda c: None if c.store.get("protocol") else
-                                    "Draft the protocol first (Run: up to stage 1).", draft, apply, watch=("protocol",))
-        with self.lock:
-            if self.job is not None:
-                return {"ok": False, "message": "A job is running; change the protocol when it has finished."}
-            if self.busy:
-                return {"ok": False, "message": f"The agent is already working ({self.busy}); try again in a moment."}
-            ctx = self.ctx()
-            if not ctx.store.get("protocol"):
-                return {"ok": False, "message": "Draft the protocol first (Run: up to stage 1)."}
-            try:
-                if op == "edit":
-                    r = planning.edit_criteria(ctx, b.get("criteria") or [], note=b.get("note") or "")
-                    r = {"ok": True, **r, "message": "criteria saved; approve the protocol" if r.get("applied") else "nothing changed"}
-                else:
-                    return {"ok": False, "message": f"unknown op {op}"}
-            except Exception as e:
-                return {"ok": False, "message": str(e)[:300]}
-            ctx.save()
-            self.saved()
-            return r
+            r = self.op({"name": "protocol.revise", "args": {"instruction": ins}})
+            return {**r, "message": "The agent is revising the protocol; the card updates when it is done." if r.get("ok") else r.get("message")}
+        if op == "edit":
+            return self.op({"name": "protocol.edit_criteria", "args": {"criteria": b.get("criteria") or [], "note": b.get("note") or ""}})
+        return {"ok": False, "message": f"unknown op {op}"}
 
     def search_strategy(self, b: dict) -> dict:
-        """The search strategy chosen with the review team: suggest (the agent's query + alternatives with PubMed counts),
-        refine (a change asked in plain words), count (any query), confirm (the query the search will run), clear."""
-        from ..stages import search
-        op = b.get("op")
-
-        def ready(c):
-            if c.store.get("search") is not None:
-                return "The search has already run; a new query needs a fresh run folder."
-            return None if (c.store.get("protocol") or {}).get("data") else "Draft the protocol first (Run: up to stage 1)."
-
-        def keep(live, sb, r):   # the work wrote only the strategy notes: take them over
-            state.save_strategy(live.store, state.strategy(sb.store), reason="search strategy (from the page)")
-            return r
-        if op == "suggest":
-            def work(sb):
-                with sb.at("search"):
-                    m = search.suggest_queries(sb, sb.store.get("protocol")["data"])
-                return {"ok": True, "variants": m["variants"], "message": f"{len(m['variants']) - 1} alternatives proposed"}
-            return self._model_call("choose the search strategy", ready, work, keep, watch=("protocol",))
-        if op == "refine":
-            q, ins = (b.get("query") or "").strip(), (b.get("instruction") or "").strip()
-            if not q or not ins:
-                return {"ok": False, "message": "a query and a request are needed"}
-
-            def work(sb):
-                with sb.at("search"):
-                    return {"ok": True, **search.refine_query(sb, sb.store.get("protocol")["data"], q, ins)}
-            return self._model_call("choose the search strategy", ready, work, keep, watch=("protocol",))
-        with self.lock:
-            if self.job is not None:
-                return {"ok": False, "message": "A job is running; choose the search strategy when it has finished."}
-            if self.busy:
-                return {"ok": False, "message": f"The agent is already working ({self.busy}); try again in a moment."}
-            ctx = self.ctx()
-            st = ctx.store
-            if st.get("search") is not None:
-                return {"ok": False, "message": "The search has already run; a new query needs a fresh run folder."}
-            protocol = (st.get("protocol") or {}).get("data")
-            if not protocol:
-                return {"ok": False, "message": "Draft the protocol first (Run: up to stage 1)."}
-            try:
-                if op == "count":
-                    q = (b.get("query") or "").strip()
-                    if not q:
-                        return {"ok": False, "message": "write a query first"}
-                    r = {"ok": True, "query": q, **search.count(ctx, q)}
-                    m = state.strategy(st)
-                    m["draft"] = {"query": q, "count": r.get("count")}
-                    state.save_strategy(st, m, actor="user", reason="query counted")
-                elif op == "confirm":
-                    q = (b.get("query") or "").strip()
-                    if not q:
-                        return {"ok": False, "message": "choose or write a query first"}
-                    c = search.confirm_query(ctx, q, note=b.get("note") or "")
-                    r = {"ok": True, "confirmed": c, "message": f"query confirmed ({c.get('count')} hits); run the search when ready"}
-                elif op == "clear":
-                    m = state.strategy(st)
-                    m["confirmed"] = None
-                    state.save_strategy(st, m, actor="user", reason="confirmation removed")
-                    r = {"ok": True, "message": "confirmation removed"}
-                else:
-                    return {"ok": False, "message": f"unknown op {op}"}
-            except Exception as e:
-                return {"ok": False, "message": str(e)[:300]}
-            ctx.save()
-            self.saved()
-            return r
+        """The search strategy card: suggest / refine (model jobs), count (a read), confirm / clear (your choice)."""
+        q, ins = (b.get("query") or "").strip(), (b.get("instruction") or "").strip()
+        name, args = {"suggest": ("search.suggest_variants", {}),
+                      "refine": ("search.refine", {"query": q, "instruction": ins}),
+                      "count": ("search.count", {"query": q}),
+                      "confirm": ("search.confirm_strategy", {"query": q, "note": b.get("note") or ""}),
+                      "clear": ("search.clear_strategy", {})}.get(b.get("op"), (None, None))
+        if not name:
+            return {"ok": False, "message": f"unknown op {b.get('op')}"}
+        if name == "search.refine" and not (q and ins):
+            return {"ok": False, "message": "a query and a request are needed"}
+        if name == "search.count":   # writes the draft: applied like any change (queued while the folder is busy)
+            return self.mutate({"_op": "op", "name": name, "args": args, "todo_id": f"op:{name}"})
+        r = self.op({"name": name, "args": args})
+        if r.get("ok") and r.get("job"):
+            r["message"] = "The agent is working on the search strategy; the card updates when it is done."
+        return r
 
     def comment(self, b: dict) -> dict:
         """Save a comment; with send=True also ask the agent (a feedback job, model from b['agent'])."""
@@ -920,6 +848,8 @@ class App:
         from .. import todos
         from ..stages.fulltext import fulltext_dir, needed_pdfs, new_local_files
         from .steps import steps
+        with self.lock:
+            self._drain_answers()      # changes queued while a command (outside the interface) held the folder
         ctx = self.ctx()
         tlist = todos.build(ctx) if ctx.store.get("protocol") else []
         if self.job is not None and self.job.get("action") in ("sync", "pdfs"):
@@ -1225,6 +1155,8 @@ def make_handler(ws: Workspace):
                 if path == "/api/stop":
                     app.stop()
                     return self._send(200, {"ok": True})
+                if path == "/api/op":
+                    return self._send(200, app.op(b))
                 if path == "/api/answer":
                     return self._send(200, app.answer(b))
                 if path == "/api/search_strategy":

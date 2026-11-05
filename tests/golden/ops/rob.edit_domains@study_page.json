@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "edit:manual_edit (applied)"
+   "rob.edit_domains:edit_domains (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -17,7 +17,7 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:manual_edit:rob"
+   "human_judgment:rob.edit_domains"
   ],
   "state_nodes": []
  },
@@ -107,7 +107,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:manual_edit:rob": 1,
+   "human_judgment:rob.edit_domains": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

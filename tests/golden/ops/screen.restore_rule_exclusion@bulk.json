@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "rule:restore (applied)"
+   "screen.restore_rule_exclusion:restore_rule_exclusion (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -12,7 +12,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:restore_rule_exclusion"
+   "human_judgment:screen.restore_rule_exclusion"
   ],
   "state_nodes": []
  },
@@ -100,7 +100,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:restore_rule_exclusion": 1,
+   "human_judgment:screen.restore_rule_exclusion": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

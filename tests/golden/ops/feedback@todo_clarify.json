@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "clarify:answer (applied)"
+   "feedback.clarify:answer (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -12,7 +12,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:clarify:answer"
+   "human_judgment:feedback.clarify"
   ],
   "state_nodes": []
  },
@@ -105,7 +105,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:clarify:answer": 1,
+   "human_judgment:feedback.clarify": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

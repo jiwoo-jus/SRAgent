@@ -26,7 +26,7 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:protocol_revision_requested"
+   "human_judgment:protocol.revise"
   ],
   "state_nodes": []
  },
@@ -41,7 +41,9 @@
    "removed": []
   },
   "decisions_changed": 0,
-  "explanation": "I2 widened"
+  "explanation": "I2 widened",
+  "message": "protocol revised; approve it again",
+  "ok": true
  },
  "review": {
   "criteria": {
@@ -123,7 +125,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:protocol_revision_requested": 1,
+   "human_judgment:protocol.revise": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

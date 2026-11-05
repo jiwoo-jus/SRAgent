@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "cs:accept (applied)"
+   "proposal.accept:accept (applied)"
   ],
   "flags_closed": [
    "ext:G02 [feedback]"
@@ -14,7 +14,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:cs:accept"
+   "human_judgment:proposal.accept"
   ],
   "state_nodes": []
  },
@@ -103,7 +103,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:cs:accept": 1,
+   "human_judgment:proposal.accept": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

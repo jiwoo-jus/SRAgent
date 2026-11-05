@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "rob:change (applied)"
+   "rob.edit_domains:edit_domains (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -17,13 +17,13 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:rob:change"
+   "human_judgment:rob.edit_domains"
   ],
   "state_nodes": []
  },
  "result": {
   "job": null,
-  "message": "missing_data set to high",
+  "message": "1 domain(s) changed, overall high",
   "ok": true
  },
  "review": {
@@ -108,7 +108,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:rob:change": 1,
+   "human_judgment:rob.edit_domains": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

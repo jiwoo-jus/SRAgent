@@ -1,8 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "rob:confirm (applied)",
-   "rob:confirm (applied)"
+   "rob.confirm:confirm (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -17,8 +16,7 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:rob:confirm",
-   "human_judgment:rob:confirm"
+   "human_judgment:rob.confirm"
   ],
   "state_nodes": []
  },
@@ -106,7 +104,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:rob:confirm": 2,
+   "human_judgment:rob.confirm": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

@@ -20,16 +20,13 @@ def plan(ctx: Ctx) -> dict:
     if given:
         protocol = yaml.safe_load(open(given))
         ctx.log(f"[plan] using protocol from {given}")
+    elif ctx.store.get("protocol"):
+        # the review's protocol is the stored one; protocol.yaml is its export. A hand edit of the file is applied
+        # only by the explicit import (operation protocol.import_file): file_differs() tells the run to stop for it
+        return ctx.store.get("protocol")["data"]
     elif pfile.exists():
         protocol = yaml.safe_load(open(pfile))
-        ctx.log(f"[plan] using existing (possibly human-edited) {pfile}")
-        stored = (ctx.store.get("protocol") or {}).get("data")
-        if stored is not None and _differs(stored, protocol):
-            # an edited protocol.yaml is a person's judgment: recorded, and refused in the agent-only condition
-            from .. import provenance
-            provenance.require_judgment_allowed(ctx, "editing protocol.yaml")
-            provenance.record(ctx, "human_judgment", "protocol_edited", changed=_changed_criteria(stored, protocol))
-            ctx.log("[plan] protocol.yaml was edited by a person; the edit is recorded in provenance.jsonl")
+        ctx.log(f"[plan] protocol from {pfile}")
     else:
         seed = ctx.topic.get("seed_eligibility", "")
         seed_txt = f"SEED ELIGIBILITY TEXT (from the review team; stay faithful to it):\n{seed}" if seed else ""
@@ -54,6 +51,24 @@ def plan(ctx: Ctx) -> dict:
         st.write("protocol", "protocol", protocol, depends_on=deps, reason="planned" if old is None else "protocol updated")
     sync_criteria(st, protocol)
     return protocol
+
+
+def file_differs(ctx: Ctx) -> list[str] | None:
+    """protocol.yaml edited by hand since it was exported: the criteria that differ (None when it matches)."""
+    pfile = ctx.run_dir / "protocol.yaml"
+    stored = (ctx.store.get("protocol") or {}).get("data")
+    if stored is None or not pfile.exists() or ctx.topic.get("protocol_file"):
+        return None
+    on_disk = yaml.safe_load(open(pfile)) or {}
+    if not _differs(stored, on_disk):
+        return None
+    ch = _changed_criteria(stored, on_disk)
+    return sorted(set(ch.get("added", []) + ch.get("removed", []) + ch.get("changed", []))) or ["(other fields)"]
+
+
+def export_file(ctx: Ctx) -> None:
+    with open(ctx.run_dir / "protocol.yaml", "w") as f:
+        yaml.safe_dump(ctx.store.get("protocol")["data"], f, sort_keys=False, allow_unicode=True)
 
 
 def sync_criteria(st, protocol: dict, actor: str = "agent", reason: str = "protocol criterion") -> dict:
@@ -102,8 +117,6 @@ def apply_protocol(ctx: Ctx, protocol: dict, actor: str, reason: str, record: di
     st.annotate("protocol", protocol, actor=actor, reason=reason)
     sync_criteria(st, protocol, actor=actor, reason=reason)
     r = screening.rescreen_rule_only(ctx, protocol) if st.by_type("screen") else {"changed": 0}
-    provenance.record(ctx, "human_judgment", "protocol_edited" if actor == "user" else "protocol_revision_requested",
-                      changed=changed, **(record or {}))
     st.meta.setdefault("protocol_revisions", []).append({"ts": time.strftime("%Y-%m-%d %H:%M"), "actor": actor,
                                                          "reason": reason, "changed": changed, **(record or {})})
     # a changed protocol is approved again: its approval node (state.approval) no longer matches its version

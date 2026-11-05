@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "edited:ok (applied)"
+   "edit.dependents_fine:dependents_fine (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -14,13 +14,13 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:edited:ok"
+   "human_judgment:edit.dependents_fine"
   ],
   "state_nodes": []
  },
  "result": {
   "job": null,
-  "message": "closed",
+  "message": "3 output(s) marked current",
   "ok": true
  },
  "review": {
@@ -103,8 +103,8 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:edited:ok": 1,
-   "human_judgment:manual_edit:ext": 1,
+   "human_judgment:edit.dependents_fine": 1,
+   "human_judgment:extract.edit_values": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

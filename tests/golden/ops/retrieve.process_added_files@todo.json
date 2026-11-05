@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "fulltexts:process (applied)"
+   "job.pdfs:pdfs (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],

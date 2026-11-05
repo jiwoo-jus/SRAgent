@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "elig:later (applied)"
+   "snooze:snooze (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -13,7 +13,9 @@
   "notes_cleared": [],
   "out_of_date": [],
   "proposals": [],
-  "provenance": [],
+  "provenance": [
+   "annotation:snooze"
+  ],
   "state_nodes": []
  },
  "result": {
@@ -103,6 +105,7 @@
    "screened": 7
   },
   "provenance": {
+   "annotation:snooze": 1,
    "pdf_provision:supplied": 4
   },
   "records": {

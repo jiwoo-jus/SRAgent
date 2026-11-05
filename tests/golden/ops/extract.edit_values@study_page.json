@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "edit:manual_edit (applied)"
+   "extract.edit_values:edit_values (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -18,7 +18,7 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:manual_edit:ext"
+   "human_judgment:extract.edit_values"
   ],
   "state_nodes": []
  },
@@ -108,7 +108,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:manual_edit:ext": 1,
+   "human_judgment:extract.edit_values": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

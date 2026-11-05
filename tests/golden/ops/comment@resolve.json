@@ -1,6 +1,8 @@
 {
  "effects": {
-  "decisions_log": [],
+  "decisions_log": [
+   "comment.resolve:resolve (applied)"
+  ],
   "flags_closed": [],
   "flags_opened": [],
   "meta_changed": [
@@ -11,15 +13,14 @@
   "notes_cleared": [],
   "out_of_date": [],
   "proposals": [],
-  "provenance": [],
+  "provenance": [
+   "annotation:comment.resolve"
+  ],
   "state_nodes": []
  },
  "result": {
-  "resolution": "done",
-  "send_to_agent": false,
-  "status": "resolved",
-  "target": "study:G01",
-  "text": "check the dosing"
+  "message": "resolved",
+  "ok": true
  },
  "review": {
   "criteria": {
@@ -102,6 +103,7 @@
   },
   "provenance": {
    "annotation:comment": 1,
+   "annotation:comment.resolve": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

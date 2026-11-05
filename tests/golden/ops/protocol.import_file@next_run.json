@@ -7,33 +7,14 @@
   "model_calls": {},
   "notes_appeared": [],
   "notes_cleared": [],
-  "out_of_date": [
-   "elig:G01 recompute",
-   "elig:G02 recompute",
-   "elig:G06 recompute",
-   "screen:G01 current",
-   "screen:G02 current",
-   "screen:G03 recompute",
-   "screen:G04 recompute",
-   "screen:G05 recompute",
-   "screen:G06 current",
-   "screen:G07 rederive",
-   "search kept"
-  ],
+  "out_of_date": [],
   "proposals": [],
-  "provenance": [
-   "human_judgment:protocol_edited"
-  ],
+  "provenance": [],
   "state_nodes": []
  },
  "result": null,
  "review": {
   "criteria": {
-   "E1": {
-    "stage": "title_abstract",
-    "text": "studies only in children",
-    "type": "exclusion"
-   },
    "I1": {
     "stage": "title_abstract",
     "text": "about emicizumab",
@@ -112,7 +93,6 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:protocol_edited": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

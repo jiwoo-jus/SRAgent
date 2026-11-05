@@ -95,7 +95,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:manual_edit:ext": 1,
+   "human_judgment:extract.edit_values": 1,
    "human_judgment:propagate_request": 1,
    "pdf_provision:supplied": 3
   },

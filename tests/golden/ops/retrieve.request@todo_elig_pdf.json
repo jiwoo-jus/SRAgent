@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "elig:pdf (applied)"
+   "retrieve.request:request (applied)"
   ],
   "flags_closed": [],
   "flags_opened": [],
@@ -12,7 +12,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:elig:pdf"
+   "human_judgment:retrieve.request"
   ],
   "state_nodes": [
    "pdf:G03"
@@ -105,7 +105,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:elig:pdf": 1,
+   "human_judgment:retrieve.request": 1,
    "pdf_provision:supplied": 4
   },
   "records": {

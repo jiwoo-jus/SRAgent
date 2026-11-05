@@ -26,13 +26,18 @@ from .config import load_config
 from .context import Ctx
 
 
-def _ctx(args, fresh=False, check_config=True):
+def _ctx(args, fresh=False, check_config=True, write=True):
+    """The review of a command. A command that may change it holds the run folder's lease for its whole life
+    (sragent/lease.py): one writer at a time, also against the web interface and its jobs."""
     over = {}
     if getattr(args, "budget", None) is not None:
         over["budget_usd"] = args.budget
     if getattr(args, "run_dir", None):
         over["run_dir"] = args.run_dir
     cfg = load_config(args.config, over)
+    if write:
+        from . import lease
+        lease.acquire(cfg["run_dir"])
     return Ctx.create(cfg, fresh=fresh, check_config=check_config)
 
 
@@ -67,17 +72,8 @@ def cmd_run(args):
 
 
 def cmd_rescreen(args):
-    from .stages import screening
-    import yaml
-    from . import provenance
-    from .stages.planning import sync_criteria
-    ctx = _ctx(args)
-    provenance.require_judgment_allowed(ctx, "re-applying an edited protocol")
-    protocol = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
-    provenance.record(ctx, "human_judgment", "protocol_edited")
-    ctx.store.annotate("protocol", protocol, actor="user", reason="protocol edited by user")
-    print(sync_criteria(ctx.store, protocol, actor="user", reason="protocol edited"))
-    print(screening.rescreen_rule_only(ctx, protocol))
+    """Apply a hand-edited protocol.yaml (operation protocol.import_file)."""
+    _op(args, "protocol.import_file", {})
 
 
 def cmd_ui(args):
@@ -86,7 +82,6 @@ def cmd_ui(args):
 
 
 def cmd_pdfs(args):
-    from . import sync
     from .stages.fulltext import fulltext_dir, write_needed_pdfs
     ctx = _ctx(args)
     if args.list:
@@ -94,19 +89,15 @@ def cmd_pdfs(args):
         print(f"Put PDFs in {fulltext_dir(ctx)} named <rid>.pdf. Wanted files: {p}")
         print(p.read_text())
         return
-    print(json.dumps(sync.process_pdfs(ctx), indent=1))
+    _op(args, "retrieve.process_added_files", {}, ctx)
 
 
 def cmd_sync(args):
-    from . import sync
-    ctx = _ctx(args)
-    print(json.dumps(sync.sync_dependents(ctx), indent=1))
+    _op(args, "update_all", {})
 
 
 def cmd_revalidate(args):
-    from .stages import extraction
-    ctx = _ctx(args)
-    print(extraction.revalidate_terms(ctx))
+    _op(args, "extract.revalidate_terms", {})
 
 
 def cmd_runs(args):
@@ -140,7 +131,7 @@ def cmd_runs(args):
 
 def cmd_status(args):
     from .stages.report import prisma
-    ctx = _ctx(args)
+    ctx = _ctx(args, write=False)
     st = ctx.store
     print("PRISMA:", json.dumps(prisma(ctx)) if st.get("protocol") else "no review yet")
     types = {}
@@ -166,63 +157,27 @@ def cmd_status(args):
 
 
 def cmd_feedback(args):
-    from . import feedback, provenance
-    from .stages import report
-    ctx = _ctx(args)
-    provenance.require_judgment_allowed(ctx, "feedback")
-    provenance.record(ctx, "human_judgment", "feedback", target=args.target, note=args.text[:300])
-    cs = feedback.handle_feedback(ctx, args.text, target=args.target, pmid=args.pmid,
-                                  verify=not args.no_verify, propagate=not args.local_edit,
-                                  auto_accept=args.accept)
-    print(f"change set {cs['id']}: verdict={cs['verdict']} status={cs['status']} changes={len(cs['changes'])}")
-    print("explanation:", cs.get("explanation", ""))
-    for c in cs["changes"]:
-        print(f"  - {c['role']}: {c['node']}")
-    if cs["status"] == "accepted":
-        report.write_reports(ctx)
-    elif cs["status"] == "proposed":
-        print(f"Review the proposal in {ctx.run_dir}/feedback/{cs['id']}.json, then: sragent accept --config {args.config} --id {cs['id']}")
+    r = _op(args, "feedback", {"text": args.text, "target": args.target, "pmid": args.pmid, "verify": not args.no_verify,
+                               "propagate": not args.local_edit, "auto_accept": args.accept})
+    if r.get("status") == "proposed":
+        print(f"Review the proposal, then: sragent op proposal.accept --config {args.config} --args '{{\"changeset\": \"{r['changeset']}\"}}'")
 
 
 def cmd_rerun(args):
-    from . import actions
-    ctx = _ctx(args)
-    cs = actions.rerun(ctx, args.rid, args.step, note=args.note or "", propagate=not args.no_propagate,
-                       fresh=not args.cached)
-    print(f"change set {cs['id']}: status={cs['status']} changes={len(cs['changes'])} cost=${cs['cost_usd']}")
-    for c in cs["changes"]:
-        print(f"  - {c['role']}: {c['node']}")
-    if cs["status"] == "proposed":
-        print(f"Review it in the UI To-do list, or: sragent accept --config {args.config} --id {cs['id']}")
+    name = {"screen": "screen.recompute", "extract": "extract.recompute", "rob": "rob.recompute"}[args.step]
+    _op(args, name, {"rid": args.rid, "note": args.note or "", "propagate": not args.no_propagate, "fresh": not args.cached})
 
 
 def cmd_propagate(args):
-    from . import actions
-    ctx = _ctx(args)
-    cs = actions.propagate_from(ctx, args.node, args.from_version, note=args.note or "")
-    print(f"change set {cs['id']}: status={cs['status']} changes={len(cs['changes'])} cost=${cs['cost_usd']}")
-    for c in cs["changes"]:
-        print(f"  - {c['role']}: {c['node']}")
+    _op(args, "edit.update_dependents", {"node": args.node, "from_version": args.from_version, "note": args.note or ""})
 
 
 def cmd_accept(args):
-    from . import feedback, provenance
-    from .stages import report
-    ctx = _ctx(args)
-    provenance.require_judgment_allowed(ctx, "accept a proposal")
-    provenance.record(ctx, "human_judgment", "cs:accept", target=args.id)
-    cs = feedback.accept(ctx, args.id)
-    report.write_reports(ctx)
-    print(f"accepted {cs['id']} ({len(cs['changes'])} changes); report regenerated")
+    _op(args, "proposal.accept", {"changeset": args.id})
 
 
 def cmd_reject(args):
-    from . import feedback, provenance
-    ctx = _ctx(args)
-    provenance.require_judgment_allowed(ctx, "reject a proposal")
-    provenance.record(ctx, "human_judgment", "cs:reject", target=args.id)
-    feedback.reject(ctx, args.id, args.note or "")
-    print("rejected", args.id)
+    _op(args, "proposal.reject", {"changeset": args.id, "note": args.note or ""})
 
 
 def cmd_eval(args):
@@ -241,25 +196,22 @@ def cmd_eval_audit(args):
 
 
 def cmd_verify_screening(args):
-    from .stages.screening import verify_existing
-    ctx = _ctx(args)
-    protocol = ctx.store.get("protocol")["data"]
-    print(json.dumps(verify_existing(ctx, protocol, mode=args.mode, only=args.rids or None), indent=1))
+    if args.mode == "all":
+        _op(args, "screen.verify", {"rids": args.rids or None})
+    else:
+        _op(args, "eligibility.verify", {"rids": args.rids or None, "mode": args.mode})
 
 
 def cmd_verify_rob(args):
-    from .stages.rob import verify_existing
-    print(json.dumps(verify_existing(_ctx(args), only=args.rids or None), indent=1))
+    _op(args, "rob.verify", {"rids": args.rids or None})
 
 
 def cmd_reassess_rob(args):
-    from .stages.rob import reassess_all
-    print(json.dumps(reassess_all(_ctx(args), only=args.rids or None), indent=1))
+    _op(args, "rob.redraft_all", {"rids": args.rids or None})
 
 
 def cmd_fetch_files(args):
-    from .stages.fulltext import backfill_fetched_files
-    print(json.dumps(backfill_fetched_files(_ctx(args)), indent=1))
+    _op(args, "retrieve.fetch", {})
 
 
 def cmd_eval_summary(args):
@@ -281,6 +233,33 @@ def cmd_data(args):
     from .sources import http, synergy
     http.init_cache(".cache")
     synergy.load(args.synergy, f"data/{args.synergy.lower()}_records.jsonl")
+
+
+def _op(args, name: str, a: dict, ctx=None) -> dict:
+    """Run one operation for a command and print its result (the commands below are names for operations)."""
+    from . import ops
+    res = ops.run(ctx or _ctx(args), name, a)
+    print(json.dumps(res, indent=1, default=str))
+    if not res.get("ok"):
+        raise SystemExit(1)
+    return res
+
+
+def cmd_op(args):
+    """sragent op --list | sragent op NAME --config C [--args JSON]: one operation (sragent/ops)."""
+    from . import ops
+    if args.list or not args.name:
+        for o in ops.listing():
+            print(f"{o['stage']:12s} {o['name']:34s} {o['kind']:13s} {', '.join(o['params'])}")
+            print(f"{'':12s} {o['summary']}")
+        return
+    if not args.config:
+        raise SystemExit("--config is required to run an operation")
+    ctx = _ctx(args)
+    res = ops.run(ctx, args.name, json.loads(args.args or "{}"))
+    print(json.dumps(res, indent=1, default=str))
+    if not res.get("ok"):
+        raise SystemExit(1)
 
 
 def main(argv=None):
@@ -388,6 +367,14 @@ def main(argv=None):
     p.set_defaults(fn=cmd_eval_summary)
 
     p = sub.add_parser("data"); p.add_argument("--synergy", required=True); p.set_defaults(fn=cmd_data)
+    p = sub.add_parser("op", help="run one operation (sragent op --list shows them)")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--config")
+    p.add_argument("--args", default="{}", help="the operation's arguments as JSON")
+    p.add_argument("--budget", type=float, default=None)
+    p.add_argument("--run-dir", default=None)
+    p.set_defaults(fn=cmd_op)
 
     p = sub.add_parser("local-endpoints", help="inspect or atomically update live local model endpoints")
     p.add_argument("--config", required=True)

@@ -1,7 +1,7 @@
 {
  "effects": {
   "decisions_log": [
-   "disagree:insist (applied)"
+   "feedback.disagreement:insist (applied)"
   ],
   "flags_closed": [
    "ext:G01 [feedback]"
@@ -14,7 +14,7 @@
   "out_of_date": [],
   "proposals": [],
   "provenance": [
-   "human_judgment:disagree:insist"
+   "human_judgment:feedback.disagreement"
   ],
   "state_nodes": []
  },
@@ -108,7 +108,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:disagree:insist": 1,
+   "human_judgment:feedback.disagreement": 1,
    "pdf_provision:supplied": 3
   },
   "records": {

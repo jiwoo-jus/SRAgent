@@ -1,6 +1,8 @@
 {
  "effects": {
-  "decisions_log": [],
+  "decisions_log": [
+   "protocol.edit_criteria:edit_criteria (applied)"
+  ],
   "flags_closed": [],
   "flags_opened": [],
   "meta_changed": [
@@ -24,7 +26,7 @@
   ],
   "proposals": [],
   "provenance": [
-   "human_judgment:protocol_edited"
+   "human_judgment:protocol.edit_criteria"
   ],
   "state_nodes": []
  },
@@ -40,7 +42,9 @@
    "question": false,
    "removed": []
   },
-  "decisions_changed": 0
+  "decisions_changed": 0,
+  "message": "criteria saved; approve the protocol",
+  "ok": true
  },
  "review": {
   "criteria": {
@@ -127,7 +131,7 @@
    "screened": 7
   },
   "provenance": {
-   "human_judgment:protocol_edited": 1,
+   "human_judgment:protocol.edit_criteria": 1,
    "pdf_provision:supplied": 3
   },
   "records": {
