@@ -1,0 +1,65 @@
+{
+ "effects": {
+  "decisions_log": [],
+  "flags_closed": [],
+  "flags_opened": [],
+  "meta_changed": [
+   "config_lock"
+  ],
+  "model_calls": {
+   "plan": 1
+  },
+  "out_of_date": [],
+  "proposals": [],
+  "provenance": []
+ },
+ "result": null,
+ "review": {
+  "criteria": {
+   "I1": {
+    "stage": "title_abstract",
+    "text": "about emicizumab",
+    "type": "inclusion"
+   },
+   "I2": {
+    "stage": "title_abstract",
+    "text": "human data",
+    "type": "inclusion"
+   },
+   "I3": {
+    "stage": "title_abstract",
+    "text": "PK data",
+    "type": "inclusion"
+   },
+   "P1": {
+    "stage": "full_text",
+    "text": "full text in English",
+    "type": "practical"
+   }
+  },
+  "extraction": {},
+  "included": [],
+  "open_flags": {},
+  "prisma": {
+   "awaiting_classification": 0,
+   "awaiting_fulltext_review": 0,
+   "duplicates": null,
+   "excluded_by_rules": 0,
+   "excluded_fulltext": 0,
+   "excluded_fulltext_reasons": {},
+   "excluded_title_abstract": 0,
+   "fulltext_assessed": 0,
+   "identified": null,
+   "included": 0,
+   "included_by_rule": 0,
+   "reports_not_retrieved": 0,
+   "reports_sought": 0,
+   "reports_unreadable": 0,
+   "screened": 0
+  },
+  "provenance": {},
+  "records": {},
+  "rob": {},
+  "synthesis": {}
+ }
+}

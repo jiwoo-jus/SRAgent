@@ -209,7 +209,7 @@ CLI subcommand (`sragent op eligibility.decide --rid … --decision include`), a
 | rob | `confirm(rids)`, `edit_domains(rid, changes)` | `run`, `recompute(rid, model?, note?)`, `verify(rids)`, `redraft_all` | `clear` |
 | synthesis | `edit_statement(sid, …)`, `resolve_flag(flag, ok|fix)` | `write`, `update` (engine on this stage), `revise(sid, instruction)` | `clear` |
 | report | – | – | `render`, `export` |
-| cross-stage | `comment(target, send?)`, `proposal.accept/reject`, `propagate_edit(node)`, `settings.change(…)`, `models.set(stage, role, model)` | `feedback(text, target?)`, `update_all` (engine over everything) | `preview(node)`, `stop`, `cancel(job)` |
+| cross-stage | `comment(target, send?)`, `snooze(item)`, `proposal.accept/reject`, `propagate_edit(node)`, `settings.change(…)`, `models.set(stage, role, model)` | `feedback(text, target?)`, `update_all` (engine over everything) | `preview(node)`, `stop`, `cancel(job)` |
 
 This table replaces: four protocol-edit paths, three RoB re-assessment paths, two eligibility paths
 with different vocabularies, two PDF paths, the `/api/answer` + `/api/bulk` + `/api/edit` trio,
@@ -377,6 +377,8 @@ None of these change the human-in-the-loop contract: proposals, pinned decisions
 | 4 · UI | stage page template + ten pages; "Needs you" index; study page built from stage row components; dependency preview everywhere; Settings page; remove Run / To-do / Full texts pages | the stage × control matrix (02 §3) has no empty cell | medium (the one-file front end becomes a small set of modules) |
 | 5 · Models | `models.<stage>.<role>`; `model_for`; cost and cache keyed by (stage, role); locks per cell; estimate from the registry; blind verifier option | 05 §1 is one function; the Activity usage view is by stage × role | low |
 | 6 · Agentic | tool-using feedback agent; evidence locator; planning sessions; plan narrator; stage audits | each behind a setting, default on for real reviews | medium (cost; measure with the benchmark before switching the default) |
+
+Phase 0 status (2026-11-05): `tests/test_operations.py` pins 63 entry points under the operation each will become (snapshots in `tests/golden/ops/`: result, decision log, provenance, flags opened/closed, proposals, model calls by tag, what is out of date afterwards); `test_every_operation_is_accounted_for` checks that every operation of §4 is covered, marked new, or marked as a gap (snowball run, model settings, stop/cancel).
 
 Order matters: 1 before everything (names), 2 before 4 (the preview needs the graph), 3 before 4
 (pages call operations), 5 can run in parallel with 4, 6 last.

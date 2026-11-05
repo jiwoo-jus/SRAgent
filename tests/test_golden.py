@@ -182,7 +182,7 @@ def check(name: str, data: dict):
     if UPDATE or not p.exists():
         if not UPDATE:
             pytest.fail(f"no golden file {p.name}; create it with SRAGENT_UPDATE_GOLDEN=1 and review it")
-        GOLDEN.mkdir(exist_ok=True)
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
         return
     want = json.loads(p.read_text())
