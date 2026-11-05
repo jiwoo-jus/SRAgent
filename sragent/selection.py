@@ -45,6 +45,8 @@ def decision_node(st, rid: str):
     """The node that holds the study's current eligibility decision (None: not screened)."""
     el = _active(st, elig_id(rid))
     sc = st.get(screen_id(rid))
+    if sc is not None and sc["status"] != "active":
+        sc = None              # cleared (retired): not screened at title/abstract any more
     if el and (sc is None or sc["data"].get("decision") in OPEN_AT_TA or human_decided(el["data"])):
         return el
     return sc

@@ -8,10 +8,12 @@ from . import operation
 
 
 @operation("synthesis.write", "synthesis", "llm")
-def write(ctx) -> dict:
+def write(ctx, fresh: bool = False) -> dict:
     """Write the synthesis (or bring an existing one up to date) and the report."""
     from .. import pipeline
-    pipeline.run(ctx, until="report")
+    from .stage import fresh_answers
+    with fresh_answers(ctx, fresh):
+        pipeline.run(ctx, until="report")
     return {"message": "synthesis and report written"}
 
 

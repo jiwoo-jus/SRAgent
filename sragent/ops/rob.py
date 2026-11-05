@@ -11,10 +11,12 @@ _ORDER = {"low": 0, "unclear": 1, "some_concerns": 2, "high": 3}
 
 
 @operation("rob.run", "rob", "llm")
-def run(ctx) -> dict:
+def run(ctx, fresh: bool = False) -> dict:
     """Draft the risk of bias of every included study not assessed yet."""
     from .. import pipeline
-    pipeline.run(ctx, until="rob")
+    from .stage import fresh_answers
+    with fresh_answers(ctx, fresh):
+        pipeline.run(ctx, until="rob")
     return {"message": "risk of bias drafted"}
 
 

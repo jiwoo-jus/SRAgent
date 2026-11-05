@@ -362,7 +362,8 @@ def source_changed(st, node_id: str) -> bool:
 
 def extract_all(ctx: Ctx, only: list[str] | None = None) -> int:
     st = ctx.store
-    rids = only or [rid for rid in st.included_ids() if st.get(f"ext:{rid}") is None or source_changed(st, f"ext:{rid}")]
+    rids = only or [rid for rid in st.included_ids() if (st.get(f"ext:{rid}") or {}).get("status") != "active"
+                    or source_changed(st, f"ext:{rid}")]                 # not extracted, cleared, or the text changed
     ctx.log(f"[extract] extracting {len(rids)} studies")
     ctx.map(lambda r: extract_one(ctx, r), rids)
     ctx.save()

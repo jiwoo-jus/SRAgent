@@ -8,10 +8,12 @@ from . import operation
 
 
 @operation("extract.run", "extract", "llm")
-def run(ctx) -> dict:
+def run(ctx, fresh: bool = False) -> dict:
     """Extract every included study not extracted yet (and the stages before, if needed)."""
     from .. import pipeline
-    pipeline.run(ctx, until="extract")
+    from .stage import fresh_answers
+    with fresh_answers(ctx, fresh):
+        pipeline.run(ctx, until="extract")
     return {"message": "extraction done"}
 
 

@@ -436,8 +436,8 @@ def screen_all(ctx: Ctx, protocol: dict) -> dict:
     ruled = rules.apply(ctx, protocol)   # obvious exclusions first: no LLM call, no human time
     if ruled:
         ctx.log(f"[screen] {len(ruled)} records excluded by screening rules (publication type / off-topic)")
-    todo = [n["id"].split(":", 1)[1] for n in st.by_type("record")
-            if st.get(f"screen:{n['id'].split(':', 1)[1]}") is None]
+    todo = [n["id"].split(":", 1)[1] for n in st.by_type("record")      # not screened, or cleared (inactive)
+            if (st.get(f"screen:{n['id'].split(':', 1)[1]}") or {}).get("status") != "active"]
     ctx.log(f"[screen] title/abstract screening {len(todo)} records")
     ctx.map(lambda rid: screen_one(ctx, protocol, rid, "title_abstract"), todo)
     ctx.save()

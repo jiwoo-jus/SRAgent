@@ -124,4 +124,46 @@ def listing() -> list[dict]:
 
 def _load() -> None:
     """Import the operation modules (they register themselves)."""
-    from . import protocol, search, selection, extract, rob, synthesis, review  # noqa: F401
+    from . import protocol, search, selection, extract, rob, synthesis, review, stage  # noqa: F401
+
+
+def preview(ctx, name: str, args: dict | None = None) -> dict:
+    """What an operation would do, before it runs (04 §5.2): a person's or deterministic operation is applied to a copy
+    of the review in a scratch folder (nothing logged, no model call) and compared with the review as it is: the
+    outputs it changes, what becomes out of date (and what a person's decision keeps), and the estimated cost of
+    bringing it up to date. A model operation is not run: its reach is that of the output it recomputes."""
+    import dataclasses
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from .. import engine
+    op = get(name)
+    args = dict(args or {})
+    st = ctx.store
+    base = {(i["node"], i["action"]) for i in engine.plan(ctx)["items"]}
+    if op.kind == "llm" and not name.endswith(".rerun_all"):
+        rid = args.get("rid")
+        node = args.get("node") or ({"extract": f"ext:{rid}", "rob": f"rob:{rid}"}.get(op.stage) or
+                                    (f"elig:{rid}" if st.get(f"elig:{rid}") else f"screen:{rid}") if rid else None)
+        pv = engine.preview(ctx, node) if node else {"items": [], "summary": {}, "cost": {}, "reach": {}, "lines": []}
+        return {"op": name, "kind": op.kind, "runs_as_job": True, "changes": [node] if node else [], **pv}
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        for f in ("protocol.yaml",):
+            if (ctx.run_dir / f).exists():
+                shutil.copy2(ctx.run_dir / f, tmp / f)
+        sb_store = st.clone()
+        sb_store.run_dir = tmp
+        sb = dataclasses.replace(ctx, store=sb_store, run_dir=tmp)
+        fn = get(name.replace(".rerun_all", ".clear")).fn if name.endswith(".rerun_all") else op.fn
+        res = fn(sb, _log=False, **{k: v for k, v in args.items() if not (name.endswith(".rerun_all") and k != "note")})
+        d = sb_store.diff(st)
+        p = engine.plan(sb)
+        new = [i for i in p["items"] if (i["node"], i["action"]) not in base and i["action"] != "render"]
+    by_type: dict[str, list] = {}
+    for i in new:
+        by_type.setdefault(i["type"], []).append(i["node"])
+    return {"op": name, "kind": op.kind, "runs_as_job": op.kind == "llm", "ok": res.get("ok", True), "message": res.get("message", ""),
+            "changes": sorted(set(d["new"]) | set(d["changed"])), "items": new, "summary": engine._summary(new),
+            "cost": engine._cost(ctx, new), "reach": {t: sorted(v) for t, v in by_type.items()},
+            "kept": [i["node"] for i in new if i["action"] == "kept"], "lines": engine.describe({"items": new})[:30]}

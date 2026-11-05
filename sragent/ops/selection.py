@@ -6,17 +6,19 @@ import time
 from . import operation
 
 
-def _pipeline(ctx, until: str) -> dict:
+def _pipeline(ctx, until: str, fresh: bool = False) -> dict:
     from .. import pipeline
-    pipeline.run(ctx, until=until)
-    return {"message": f"ran up to {until}"}
+    from .stage import fresh_answers
+    with fresh_answers(ctx, fresh):
+        pipeline.run(ctx, until=until)
+    return {"message": f"ran up to {until}" + (" (fresh model answers)" if fresh else "")}
 
 
 # ---------------------------------------------------------------- 3 · title/abstract screening
 @operation("screen.run", "screen", "llm")
-def screen_run(ctx) -> dict:
+def screen_run(ctx, fresh: bool = False) -> dict:
     """Screen every record not screened yet on its title and abstract (and the stages before, if needed)."""
-    return _pipeline(ctx, "screen")
+    return _pipeline(ctx, "screen", fresh)
 
 
 @operation("screen.restore_rule_exclusion", "screen", "human", reach=True)
@@ -71,9 +73,9 @@ def screen_verify(ctx, rids: list[str] | None = None) -> dict:
 
 # ---------------------------------------------------------------- 4 · full texts
 @operation("retrieve.run", "retrieve", "llm")
-def retrieve_run(ctx) -> dict:
+def retrieve_run(ctx, fresh: bool = False) -> dict:
     """Get the full text of every forwarded record (your files first, then open-access copies)."""
-    return _pipeline(ctx, "retrieve")
+    return _pipeline(ctx, "retrieve", fresh)
 
 
 @operation("retrieve.request", "retrieve", "human")
@@ -124,9 +126,9 @@ def fetch(ctx) -> dict:
 
 # ---------------------------------------------------------------- 5 · full-text eligibility
 @operation("eligibility.run", "eligibility", "llm")
-def eligibility_run(ctx) -> dict:
+def eligibility_run(ctx, fresh: bool = False) -> dict:
     """Screen every retrieved record on its full text."""
-    return _pipeline(ctx, "eligibility")
+    return _pipeline(ctx, "eligibility", fresh)
 
 
 @operation("eligibility.decide", "eligibility", "human", reach=True)

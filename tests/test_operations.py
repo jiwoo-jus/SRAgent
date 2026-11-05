@@ -404,28 +404,28 @@ OPS = {
     # screen
     "screen.restore_rule_exclusion": "ops", "screen.run": "golden:pipeline", "screen.recompute": "ops",
     "screen.verify": "ops", "screen.rederive": "ops", "screen.apply_rules": "ops",
-    "screen.clear": "new: phase 1-3 (stage clear)",
+    "screen.clear": "offline:test_clear_keeps_what_people_decided_and_the_next_run_redoes_the_rest",
     # retrieve
     "retrieve.declare_unobtainable": "ops", "retrieve.decide_without": "ops", "retrieve.request": "ops",
-    "retrieve.fetch": "ops", "retrieve.process_added_files": "ops", "retrieve.clear": "new: phase 1-3 (stage clear)",
+    "retrieve.fetch": "ops", "retrieve.process_added_files": "ops", "retrieve.clear": "gap: not offered: full texts are files (ops/stage.py NOT_CLEARABLE)",
     # eligibility
     "eligibility.decide": "ops", "eligibility.overturn": "ops", "eligibility.run": "golden:pipeline",
     "eligibility.recompute": "ops", "eligibility.verify": "ops",
     "eligibility.rederive": "ops:screen.rederive@rescreen_rule_only (one function for both stages today)",
-    "eligibility.clear": "new: phase 1-3 (stage clear)",
+    "eligibility.clear": "offline:test_clear_keeps_what_people_decided_and_the_next_run_redoes_the_rest",
     # snowball
     "snowball.run": "gap: needs PubMed citation links; a local citation source comes with phase 3",
-    "snowball.clear": "new: phase 1-3 (stage clear)",
+    "snowball.clear": "gap: not offered: clear screening instead (ops/stage.py NOT_CLEARABLE)",
     # extraction
     "extract.edit_values": "ops", "extract.run": "golden:pipeline", "extract.recompute": "golden:rerun_extraction",
-    "extract.revalidate_terms": "ops", "extract.clear": "new: phase 1-3 (stage clear)",
+    "extract.revalidate_terms": "ops", "extract.clear": "offline:test_clear_keeps_what_people_decided_and_the_next_run_redoes_the_rest",
     # risk of bias
     "rob.confirm": "ops", "rob.edit_domains": "ops", "rob.run": "golden:pipeline", "rob.recompute": "ops",
-    "rob.verify": "ops", "rob.redraft_all": "ops", "rob.clear": "new: phase 1-3 (stage clear)",
+    "rob.verify": "ops", "rob.redraft_all": "ops", "rob.clear": "offline:test_clear_keeps_what_people_decided_and_the_next_run_redoes_the_rest",
     # synthesis
     "synthesis.edit_statement": "ops", "synthesis.resolve_flag": "ops", "synthesis.write": "golden:pipeline",
     "synthesis.update": "golden:person_excludes_then_sync", "synthesis.revise": "ops",
-    "synthesis.clear": "new: phase 1-3 (stage clear)",
+    "synthesis.clear": "offline:test_clear_keeps_what_people_decided_and_the_next_run_redoes_the_rest",
     # report
     "report.render": "ops", "report.export": "new: phase 4 (today the report files are rewritten in place)",
     # cross-stage
@@ -609,7 +609,8 @@ REGISTERED_AS = {"propagate_edit": "edit.update_dependents", "eligibility.overtu
                  "synthesis.update": "update_all", "synthesis.resolve_flag": "flag.answer", "search.draft_strategy": "search.suggest_variants"}
 NOT_IN_04 = {"edit.dependents_fine", "feedback.clarify", "feedback.disagreement", "comment.resolve", "flag.answer",
              "screen.run", "retrieve.run", "eligibility.run", "extract.run", "rob.run", "search.run", "synthesis.write",
-             "protocol.draft", "report.render", "eligibility.decide", "update_all"}
+             "protocol.draft", "report.render", "eligibility.decide", "update_all",
+             "screen.rerun_all", "eligibility.rerun_all", "extract.rerun_all", "rob.rerun_all", "synthesis.rerun_all"}
 
 
 def test_the_operations_are_the_registry():
@@ -695,6 +696,45 @@ def test_one_writer_per_run_folder(tmp_path):
     assert state.approval(app.ctx().store)["note"] == "while busy" and not app.pending_answers
 
 
+def test_every_stage_page_has_the_same_toolbar(tmp_path):
+    """The ten stage pages are built from one template: the same five buttons with the same meaning; a button a stage
+    does not have is disabled with its reason; rows carry the operations a person can apply."""
+    from sragent.stagespec import KEYS
+    from sragent.ui.stagepage import needs_you, stage_page
+    ctx = reviewed(tmp_path, AWAITING)
+    for k in KEYS:
+        p = stage_page(ctx, k)
+        assert [b["key"] for b in p["toolbar"]] == ["run", "rerun_all", "clear", "verify", "stop"], k
+        assert all(b["enabled"] or b["reason"] for b in p["toolbar"]), k
+        for row in p["items"]:
+            assert {"id", "title", "stale", "notes", "actions"} <= set(row), (k, row)
+    elig = stage_page(ctx, "eligibility")
+    assert elig["status"] == "needs you" and any(a["op"] == "eligibility.decide" for r in elig["items"] for a in r["actions"])
+    assert {b["key"]: b["enabled"] for b in stage_page(ctx, "search")["toolbar"]}["clear"] is False
+    assert set(needs_you(ctx)) >= {"protocol", "eligibility"}
+
+
+def test_clear_keeps_what_people_decided_and_the_next_run_redoes_the_rest(tmp_path):
+    """<stage>.clear retires the agent's outputs and keeps a person's; the stage shows them as not done, the next
+    run redoes exactly those; the preview showed the reach first and changed nothing."""
+    from sragent import graph, ops, pipeline
+    ctx = reviewed(tmp_path)
+    st = ctx.store
+    assert ops.run(ctx, "rob.confirm", {"rids": ["G01"], "note": "fine"})["ok"]
+    before = {n["id"]: n["version"] for n in st.nodes.values()}
+    pv = ops.preview(ctx, "rob.clear", {})
+    assert pv["changes"] == ["rob:G02"] and "synthesis" in pv["reach"]
+    assert {n["id"]: n["version"] for n in st.nodes.values()} == before          # the preview changed nothing
+    r = ops.run(ctx, "rob.clear", {"note": "redo"})
+    assert r["ok"] and r["cleared"] == ["rob:G02"] and r["kept"] == ["rob:G01"]
+    assert st.get("rob:G02")["status"] == "retired"
+    pipeline.run(ctx)
+    assert st.get("rob:G02")["status"] == "active" and st.get("rob:G01")["data"]["human_confirmed"]
+    assert not graph.stale(st, ["rob"])
+    s = ops.run(ctx, "synthesis.clear", {})
+    assert s["ok"] and s["count"] == 3                                           # no statement was edited by a person
+
+
 def test_every_operation_is_accounted_for():
     import test_golden
     import test_offline
@@ -712,4 +752,4 @@ def test_every_operation_is_accounted_for():
         elif kind == "golden":
             assert hasattr(test_golden, f"test_golden_{how.split(':', 1)[1]}"), (op, how)
         elif kind == "offline":
-            assert hasattr(test_offline, how.split(":", 1)[1]), (op, how)
+            assert hasattr(test_offline, how.split(":", 1)[1]) or how.split(":", 1)[1] in globals(), (op, how)

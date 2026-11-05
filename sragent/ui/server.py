@@ -560,6 +560,25 @@ class App:
             return r
         return todos.apply(ctx, op)
 
+    def stage(self, key: str) -> dict:
+        """GET /api/stage?key=: one stage page (stagepage.py)."""
+        from .stagepage import stage_page
+        try:
+            with self.lock:
+                j = self.jobs()
+                return stage_page(self.ctx(), key, job=self.job, jobs=j["running"] + j["queued"] + j["done"])
+        except (KeyError, ValueError) as e:
+            return {"ok": False, "message": str(e)}
+
+    def preview(self, b: dict) -> dict:
+        """POST /api/preview {name, args}: what an operation would change and reach, before it runs (ops.preview)."""
+        from .. import ops
+        try:
+            with self.lock:
+                return {"ok": True, **ops.preview(self.ctx(), b.get("name") or "", b.get("args") or {})}
+        except (KeyError, ValueError, TypeError) as e:
+            return {"ok": False, "message": str(e)}
+
     def op(self, b: dict) -> dict:
         """POST /api/op {name, args}: a model operation becomes a job (no model call in a web request); any other is
         applied now (queued while a job writes the review); a read is answered now."""
@@ -1100,6 +1119,12 @@ def make_handler(ws: Workspace):
                 if path == "/api/impact":
                     from .. import engine
                     return self._send(200, engine.preview(app.ctx(), q.get("node", [""])[0]))
+                if path == "/api/stage":
+                    return self._send(200, app.stage(q.get("key", [""])[0]))
+                if path == "/api/needs_you":
+                    with app.lock:
+                        from .stagepage import needs_you
+                        return self._send(200, needs_you(app.ctx()))
                 if path == "/api/job_log":
                     return self._send(200, app.job_log(q.get("id", [""])[0]), "text/plain")
                 if path == "/api/history":
@@ -1157,6 +1182,8 @@ def make_handler(ws: Workspace):
                     return self._send(200, {"ok": True})
                 if path == "/api/op":
                     return self._send(200, app.op(b))
+                if path == "/api/preview":
+                    return self._send(200, app.preview(b))
                 if path == "/api/answer":
                     return self._send(200, app.answer(b))
                 if path == "/api/search_strategy":

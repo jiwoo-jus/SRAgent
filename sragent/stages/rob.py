@@ -179,7 +179,7 @@ def rob_all(ctx: Ctx, only: list[str] | None = None) -> int:
     st = ctx.store
     from .extraction import source_changed
     rids = only or [rid for rid in st.included_ids() if st.get(f"ext:{rid}") and
-                    (st.get(f"rob:{rid}") is None or source_changed(st, f"rob:{rid}"))]
+                    ((st.get(f"rob:{rid}") or {}).get("status") != "active" or source_changed(st, f"rob:{rid}"))]
     ctx.log(f"[rob] assessing {len(rids)} studies")
     ctx.map(lambda r: rob_one(ctx, r), rids)
     ctx.save()
