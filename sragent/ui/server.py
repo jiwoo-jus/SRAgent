@@ -1070,6 +1070,12 @@ def make_handler(ws: Workspace):
             try:
                 if path in ("/", "/index.html"):
                     return self._send(200, (STATIC / "index.html").read_bytes(), "text/html")
+                if path.startswith("/static/"):          # the page's stylesheet and modules
+                    f = (STATIC / path[len("/static/"):]).resolve()
+                    if STATIC.resolve() not in f.parents or not f.is_file():
+                        return self._send(404, {"error": "not found"})
+                    ctype = {".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml"}.get(f.suffix, "application/octet-stream")
+                    return self._send(200, f.read_bytes(), ctype)
                 if path == "/api/configs":
                     return self._send(200, ws.configs(q.get("config", [None])[0]))
                 if path == "/api/config_file":
@@ -1119,6 +1125,9 @@ def make_handler(ws: Workspace):
                 if path == "/api/impact":
                     from .. import engine
                     return self._send(200, engine.preview(app.ctx(), q.get("node", [""])[0]))
+                if path == "/api/ops":
+                    from .. import ops
+                    return self._send(200, {"ops": ops.listing()})
                 if path == "/api/stage":
                     return self._send(200, app.stage(q.get("key", [""])[0]))
                 if path == "/api/needs_you":
