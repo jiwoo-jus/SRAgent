@@ -339,7 +339,7 @@ def _screen(ctx: Ctx, cs: dict, i: dict, protocol: dict, tag: str) -> None:
             d.pop("unclear_by_rule", None)
             if by_rule:
                 d["unclear_by_rule"] = by_rule
-        st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], reason=f"{tag}: decision re-derived ({'; '.join(i['why'])[:160]})")
+        st.write(n["id"], "screen", d, depends_on=n["depends_on"], reason=f"{tag}: decision re-derived ({'; '.join(i['why'])[:160]})")
     after = st.get(i["node"])["data"]
     _record(cs, i["node"], before, after, i["action"], ntype="screen")
     screening.sync_awaiting_flags(ctx)

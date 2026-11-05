@@ -51,7 +51,7 @@ def plan(ctx: Ctx) -> dict:
     old = st.get("protocol")
     if old is None or old["data"] != protocol:
         deps = [d for d in ("cfg:question", "cfg:seed_eligibility") if st.get(d)]
-        st.upsert("protocol", "protocol", protocol, depends_on=deps, reason="planned" if old is None else "protocol updated")
+        st.write("protocol", "protocol", protocol, depends_on=deps, reason="planned" if old is None else "protocol updated")
     sync_criteria(st, protocol)
     return protocol
 
@@ -66,10 +66,10 @@ def sync_criteria(st, protocol: dict, actor: str = "agent", reason: str = "proto
         ids.add(cid)
         old = st.get(cid)
         if old is None:
-            st.upsert(cid, "criterion", c, depends_on=["protocol"], actor=actor, reason=reason)
+            st.write(cid, "criterion", c, depends_on=["protocol"], actor=actor, reason=reason)
             out["added"].append(c["id"])
         elif old["data"] != c or old["status"] != "active":
-            st.upsert(cid, "criterion", c, depends_on=["protocol"], actor=actor, reason=reason)
+            st.write(cid, "criterion", c, depends_on=["protocol"], actor=actor, reason=reason)
             out["changed"].append(c["id"])
         else:
             st.touch(cid)          # unchanged by this protocol edit: current with the new protocol version
@@ -99,7 +99,7 @@ def apply_protocol(ctx: Ctx, protocol: dict, actor: str, reason: str, record: di
     changed = _changed_criteria(old, protocol)
     with open(ctx.run_dir / "protocol.yaml", "w") as f:
         yaml.safe_dump(protocol, f, sort_keys=False, allow_unicode=True)
-    st.upsert("protocol", "protocol", protocol, actor=actor, reason=reason)
+    st.annotate("protocol", protocol, actor=actor, reason=reason)
     sync_criteria(st, protocol, actor=actor, reason=reason)
     r = screening.rescreen_rule_only(ctx, protocol) if st.by_type("screen") else {"changed": 0}
     provenance.record(ctx, "human_judgment", "protocol_edited" if actor == "user" else "protocol_revision_requested",

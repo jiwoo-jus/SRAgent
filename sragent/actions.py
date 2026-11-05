@@ -124,8 +124,8 @@ def edit(ctx: Ctx, op: dict) -> dict:
         if d.get("rule"):
             d["rule_restored"] = {"rule": d.pop("rule"), "note": "manual decision"}
         deps = n["depends_on"] if n else [f"rec:{rid}", "protocol"]
-        st.upsert(f"screen:{rid}", "screen", d, depends_on=deps, actor="user", current=False,
-                  reason=f"manual eligibility decision: {before} -> {dec}.{sfx}")
+        st.annotate(f"screen:{rid}", d, ntype="screen", depends_on=deps, actor="user",
+                    reason=f"manual eligibility decision: {before} -> {dec}.{sfx}")
         for f in st.get(f"screen:{rid}")["flags"]:
             if f["status"] == "open" and f.get("source") in ("screening", None, "feedback") and "pending review" not in f["text"]:
                 st.resolve_flag(f"screen:{rid}", f["id"], f"human decided: {dec}", actor="user")
@@ -155,8 +155,7 @@ def edit(ctx: Ctx, op: dict) -> dict:
         if not changed:
             return {"ok": True, "message": "nothing changed"}
         v0 = n["version"]
-        st.upsert(n["id"], "extraction", d, depends_on=n["depends_on"], evidence=n["evidence"], actor="user",
-                  reason=f"manual edit of {', '.join(changed)}.{sfx}")
+        st.annotate(n["id"], d, evidence=n["evidence"], actor="user", reason=f"manual edit of {', '.join(changed)}.{sfx}")
         _mark_dependents(st, n["id"], v0, "edited " + ", ".join(changed))
         msg = f"saved {', '.join(changed)} (v{v0 + 1})"
     elif kind == "rob":
@@ -191,8 +190,8 @@ def edit(ctx: Ctx, op: dict) -> dict:
         if not changed and not op.get("confirm", True):
             return {"ok": True, "message": "nothing changed"}
         v0 = n["version"]
-        st.upsert(n["id"], "rob", d, depends_on=n["depends_on"], evidence=n["evidence"], actor="user",
-                  reason=(f"manual risk-of-bias edit: {', '.join(changed)}." if changed else "risk of bias confirmed by human.") + sfx)
+        st.annotate(n["id"], d, evidence=n["evidence"], actor="user",
+                    reason=(f"manual risk-of-bias edit: {', '.join(changed)}." if changed else "risk of bias confirmed by human.") + sfx)
         if changed:
             _mark_dependents(st, n["id"], v0, "changed " + ", ".join(changed))
         msg = (f"{len(changed)} domain(s) changed, overall {d['overall']}" if changed else "confirmed")
@@ -211,8 +210,8 @@ def edit(ctx: Ctx, op: dict) -> dict:
         d["edited"] = {"by": "user", "before": n["data"]["text"], "note": note, "ts": time.time()}
         if fixes:
             d["citation_fixes"] = fixes
-        st.upsert(nid, "synthesis", d, depends_on=synthesis.statement_deps(st, cites), actor="user",
-                  reason=f"manual edit of the statement.{sfx}")
+        st.annotate(nid, d, ntype="synthesis", depends_on=synthesis.statement_deps(st, cites), actor="user",
+                    reason=f"manual edit of the statement.{sfx}")
         for f in st.get(nid)["flags"]:
             if f["status"] == "open" and f.get("source") == "synthesis_verify":
                 st.resolve_flag(nid, f["id"], "statement edited by human", actor="user")

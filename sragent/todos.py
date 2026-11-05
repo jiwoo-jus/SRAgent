@@ -427,7 +427,7 @@ def apply(ctx: Ctx, answer: dict) -> dict:
             from .stages import screening
             from .stages.planning import sync_criteria
             protocol = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
-            st.upsert("protocol", "protocol", protocol, actor="user", reason="protocol edited by user")
+            st.annotate("protocol", protocol, actor="user", reason="protocol edited by user")
             sync_criteria(st, protocol, actor="user", reason="protocol edited")
             r = screening.rescreen_rule_only(ctx, protocol)
             msg = f"protocol re-applied: {r['changed']} decisions changed"
@@ -441,8 +441,7 @@ def apply(ctx: Ctx, answer: dict) -> dict:
             d["decision"] = opt
             d["because"] = [extra.get("criterion") or "human"] if opt == "exclude" else []
             d["human_decision"] = {"decision": opt, "note": text, "reason": extra.get("criterion"), "ts": time.time()}
-            st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user", current=False,
-                      reason=f"human eligibility decision: {opt}" + (f" ({text})" if text else ""))
+            st.annotate(n["id"], d, actor="user", reason=f"human eligibility decision: {opt}" + (f" ({text})" if text else ""))
             for f in n["flags"]:
                 if f["status"] == "open":
                     st.resolve_flag(n["id"], f["id"], f"human decided: {opt}", actor="user")
@@ -518,8 +517,7 @@ def apply(ctx: Ctx, answer: dict) -> dict:
         d = json.loads(json.dumps(n["data"]))
         if opt == "confirm":
             d["human_confirmed"] = {"ts": time.time(), "note": text}
-            st.upsert(n["id"], "rob", d, depends_on=n["depends_on"], evidence=n["evidence"], actor="user",
-                      reason="risk of bias confirmed by human")
+            st.annotate(n["id"], d, evidence=n["evidence"], actor="user", reason="risk of bias confirmed by human")
             msg = "confirmed"
         elif opt == "change" and extra.get("changes") is not None:
             from . import actions
@@ -536,8 +534,7 @@ def apply(ctx: Ctx, answer: dict) -> dict:
             order = {"low": 0, "unclear": 1, "some_concerns": 2, "high": 3}
             d["overall"] = max((x.get("judgment") for x in d["domains"]), key=lambda j: order.get(j, 1))
             d["human_confirmed"] = {"ts": time.time(), "note": f"changed {dom} to {judg}. {text}".strip()}
-            st.upsert(n["id"], "rob", d, depends_on=n["depends_on"], evidence=n["evidence"], actor="user",
-                      reason=f"human changed {dom} to {judg}")
+            st.annotate(n["id"], d, evidence=n["evidence"], actor="user", reason=f"human changed {dom} to {judg}")
             msg = f"{dom} set to {judg}"
         elif opt == "fix":
             job = {"action": "feedback", "target": n["id"], "text": text or "Please re-assess this risk-of-bias draft."}

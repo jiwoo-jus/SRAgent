@@ -54,8 +54,7 @@ def inject_extraction(ctx: Ctx, rid: str, rnd: random.Random, used_fields=()) ->
         if new:
             data = copy.deepcopy(n["data"])
             data["fields"][f]["value"] = new
-            ctx.store.upsert(n["id"], "extraction", data, depends_on=n["depends_on"], evidence=n["evidence"],
-                             actor="injector", reason="planted error")
+            ctx.store.annotate(n["id"], data, evidence=n["evidence"], actor="injector", reason="planted error")
             return {"type": "extraction", "node": n["id"], "field": f, "location": f"{n['id']} {f}",
                     "gold": v["value"], "corrupted": new,
                     "description": f"A number in '{f}' of study {rid} was altered and no longer matches the paper."}
@@ -90,7 +89,7 @@ def inject_eligibility(ctx: Ctx, rid: str, structural: bool = True) -> dict | No
     data["decision"], data["because"] = dec, because
     data.pop("unclear_by_rule", None)
     gold = copy.deepcopy(n["data"])
-    st.upsert(n["id"], "screen", data, depends_on=n["depends_on"], actor="injector", reason="planted error")
+    st.annotate(n["id"], data, actor="injector", reason="planted error")
     if structural:
         for kind in ("ext", "rob"):
             if st.get(f"{kind}:{rid}"):
@@ -115,8 +114,7 @@ def inject_rob(ctx: Ctx, rid: str, rnd: random.Random) -> dict | None:
     dom["judgment"] = "high"
     if data.get("overall") in ("low", "some_concerns", "unclear"):
         data["overall"] = "high"
-    ctx.store.upsert(n["id"], "rob", data, depends_on=n["depends_on"], evidence=n["evidence"],
-                     actor="injector", reason="planted error")
+    ctx.store.annotate(n["id"], data, evidence=n["evidence"], actor="injector", reason="planted error")
     return {"type": "risk_of_bias", "node": n["id"], "field": dom.get("domain"),
             "location": f"{n['id']} {dom.get('domain')}", "gold": "low", "corrupted": "high",
             "description": f"Domain '{dom.get('domain')}' of study {rid} judged high risk although the "
@@ -135,7 +133,7 @@ def inject_synthesis(ctx: Ctx, sid: str) -> dict | None:
     gold = data["text"]
     data["text"] = new
     data.pop("verification", None)
-    ctx.store.upsert(sid, "synthesis", data, depends_on=n["depends_on"], actor="injector", reason="planted error")
+    ctx.store.annotate(sid, data, actor="injector", reason="planted error")
     return {"type": "synthesis", "node": sid, "field": "text", "location": sid.split(":", 1)[1],
             "gold": gold, "corrupted": new,
             "description": f"Statement {sid} over-generalised: {out.get('what_changed', '')}"}

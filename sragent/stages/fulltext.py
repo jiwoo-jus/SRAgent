@@ -211,7 +211,7 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
             "local_file": local.name if local else None}
     if kind == "fulltext" and local is None:        # fetched by the agent: kept as files beside the user's PDFs
         keep_fetched_files(ctx, rid, pmcid, text, data)
-    st.upsert(f"ft:{rid}", "fulltext", data, depends_on=[f"rec:{rid}"], reason=f"retrieved ({origin}; {parser or 'abstract'})")
+    st.write(f"ft:{rid}", "fulltext", data, depends_on=[f"rec:{rid}"], reason=f"retrieved ({origin}; {parser or 'abstract'})")
     return data
 
 

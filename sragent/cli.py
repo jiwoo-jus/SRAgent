@@ -75,7 +75,7 @@ def cmd_rescreen(args):
     provenance.require_judgment_allowed(ctx, "re-applying an edited protocol")
     protocol = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
     provenance.record(ctx, "human_judgment", "protocol_edited")
-    ctx.store.upsert("protocol", "protocol", protocol, actor="user", reason="protocol edited by user")
+    ctx.store.annotate("protocol", protocol, actor="user", reason="protocol edited by user")
     print(sync_criteria(ctx.store, protocol, actor="user", reason="protocol edited"))
     print(screening.rescreen_rule_only(ctx, protocol))
 

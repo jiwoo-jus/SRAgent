@@ -100,7 +100,7 @@ def apply(ctx, protocol: dict | None = None) -> list[dict]:
         data.update({"decision": "exclude", "because": [f"rule:{hit[0]}"], "rule": hit[0], "rule_reason": hit[1],
                      "decision_before_rule": before})
         deps = sc["depends_on"] if sc else [f"rec:{rid}", "protocol"]
-        st.upsert(f"screen:{rid}", "screen", data, depends_on=deps, actor="rule",
+        st.write(f"screen:{rid}", "screen", data, depends_on=deps, actor="rule",
                   reason=f"screening rule {hit[0]}: {hit[1]}")
         for f in st.get(f"screen:{rid}")["flags"]:
             if f["status"] == "open":
@@ -126,7 +126,7 @@ def restore(ctx, rid: str, note: str = "") -> None:
     d["decision"] = before if full_text_decided else "forward"
     d["because"] = []
     d["rule_restored"] = {"rule": d.pop("rule", None), "note": note}
-    st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user", reason=f"rule exclusion undone. {note}".strip())
+    st.annotate(n["id"], d, actor="user", reason=f"rule exclusion undone. {note}".strip())
 
 
 def exclude(ctx, rid: str, rule: str, reason: str) -> None:
@@ -139,7 +139,7 @@ def exclude(ctx, rid: str, rule: str, reason: str) -> None:
     before = data.get("decision")
     data.update({"decision": "exclude", "because": [f"rule:{rule}"], "rule": rule, "rule_reason": reason,
                  "decision_before_rule": before})
-    st.upsert(f"screen:{rid}", "screen", data, depends_on=sc["depends_on"] if sc else [f"rec:{rid}", "protocol"],
+    st.write(f"screen:{rid}", "screen", data, depends_on=sc["depends_on"] if sc else [f"rec:{rid}", "protocol"],
               actor="rule", reason=f"screening rule {rule}: {reason}")
     for kind in ("ext", "rob"):
         if st.get(f"{kind}:{rid}") and st.get(f"{kind}:{rid}")["status"] == "active":

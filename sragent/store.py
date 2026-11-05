@@ -73,12 +73,40 @@ class ReviewStore:
         self._flushed = 0                     # changelog entries already on disk (the file is append-only)
 
     # ------------------------------------------------------------ basic ops
+    def write(self, node_id: str, ntype: str, data: dict, *, depends_on: Iterable[str] = (),
+              evidence: list[dict] | None = None, status: str = "active", actor: str = "agent",
+              reason: str = "computed", consumed: dict[str, int] | None = None) -> dict:
+        """A computation from inputs (screening a record, extracting, drafting, writing, applying a rule, a setting):
+        the node is current with the inputs it read. `consumed` gives the versions actually read when they are not
+        the current ones (a node computed in a sandbox and committed later)."""
+        n = self.upsert(node_id, ntype, data, depends_on=depends_on, evidence=evidence, status=status,
+                        actor=actor, reason=reason, current=True)
+        if consumed:
+            n["dep_versions"] = {d: consumed.get(d, v) for d, v in n["dep_versions"].items()}
+        return n
+
+    def annotate(self, node_id: str, data: dict, *, ntype: str | None = None, depends_on: Iterable[str] | None = None,
+                 evidence: list[dict] | None = None, status: str | None = None, actor: str = "agent",
+                 reason: str = "annotated") -> dict:
+        """Not a computation from the inputs: a person's decision, confirmation or edit, a verifier's note, a
+        retrieval status, a planted error. A new version, but the input versions the node last saw are kept, so an
+        input that changed meanwhile still makes it out of date. A node that does not exist yet is created (with
+        `ntype` and `depends_on`), current with what the person saw."""
+        old = self.nodes.get(node_id)
+        if old is None:
+            if not ntype:
+                raise KeyError(f"{node_id}: no such node to annotate (give ntype to create it)")
+            return self.upsert(node_id, ntype, data, depends_on=depends_on or (), evidence=evidence,
+                               status=status or "active", actor=actor, reason=reason)
+        return self.upsert(node_id, old["type"], data, depends_on=old["depends_on"] if depends_on is None else depends_on,
+                           evidence=evidence, status=status or old["status"], actor=actor, reason=reason, current=False)
+
     def upsert(self, node_id: str, ntype: str, data: dict, *, depends_on: Iterable[str] = (),
                evidence: list[dict] | None = None, status: str = "active",
                actor: str = "agent", reason: str = "created", current: bool = True) -> dict:
-        """Create or update a node. current=True (a computation from its inputs): the node is stamped current with
-        every input. current=False (a person's answer, a status or bookkeeping write): the input versions it last
-        saw are kept, so an input that changed meanwhile still makes it out of date."""
+        """The primitive under write() and annotate(); the package uses those two (a test checks it), tests and
+        tools may call this one. current=True: stamped current with every input; current=False: the input versions
+        the node last saw are kept."""
         now = time.time()
         old = self.nodes.get(node_id)
         deps = sorted(set(depends_on))

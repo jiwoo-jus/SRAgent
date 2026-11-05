@@ -38,13 +38,34 @@ TYPES: dict[str, dict] = {
     "search":     {"depends": ["protocol", "cfg:records"], "update": "derive"},
     "record":     {"depends": ["search"], "update": "derive"},
     "fulltext":   {"depends": ["rec:<rid>"], "update": "recompute"},
-    "screen":     {"depends": ["rec:<rid>", "protocol", "crit:*", "ft:<rid> (full text)", "cfg:screening_rules", "cfg:human_mode"],
-                   "update": "assess"},
-    "extraction": {"depends": ["screen:<rid>", "ft:<rid> or rec:<rid>", "field:*", "cfg:question"], "update": "recompute"},
-    "rob":        {"depends": ["ext:<rid>", "ft:<rid> or rec:<rid>", "dom:*", "cfg:rob_tool"], "update": "recompute"},
-    "synthesis":  {"depends": ["ext:<rid>, rob:<rid> of the cited studies", "cfg:question"], "update": "revise"},
-    "report":     {"depends": ["syn:*"], "update": "render"},
+    "screen":     {"depends": ["rec:<rid>", "protocol", "crit:*?", "ft:<rid>?"], "update": "assess"},
+    "extraction": {"depends": ["screen:<rid>", "ft:<rid>|rec:<rid>", "field:*?", "cfg:question"], "update": "recompute"},
+    "rob":        {"depends": ["ext:<rid>", "ft:<rid>|rec:<rid>", "dom:*?", "cfg:rob_tool"], "update": "recompute"},
+    "synthesis":  {"depends": ["ext:*?", "rob:*?", "cfg:question"], "update": "revise"},
+    "report":     {"depends": ["syn:*?"], "update": "render"},
 }
+# How to read "depends": an id is required as written; <rid> is the node's own study; `a|b` is one of them; `x:*` any
+# number of nodes with that prefix (at least one; `x:*?` also none); a trailing `?` makes any edge optional.
+# tests/test_offline.py::test_written_edges_are_the_declared_edges checks every node the pipeline and the operations write.
+
+
+def edge_problems(node: dict) -> list[str]:
+    """How a node's written edges differ from what its type declares (empty when they agree)."""
+    spec = TYPES.get(node["type"])
+    if spec is None:
+        return [f"type {node['type']} is not declared in graph.TYPES"]
+    rid = node["id"].split(":", 1)[1] if ":" in node["id"] else ""
+    deps, used, out = list(node.get("depends_on") or []), set(), []
+    for pat in spec["depends"]:
+        optional = pat.endswith("?")
+        alts = [a.replace("<rid>", rid) for a in pat.rstrip("?").split("|")]
+        hit = [d for d in deps if any(d == a or (a.endswith(":*") and d.startswith(a[:-1])) for a in alts)]
+        if not hit and not optional:
+            out.append(f"missing {pat}")
+        used |= set(hit)
+    out += [f"undeclared {d}" for d in deps if d not in used]
+    return out
+
 
 HUMAN_MARKS = ("human_decision", "human_decision_pending_fulltext", "human_confirmed", "edited")
 
@@ -80,7 +101,7 @@ def sync_settings(store, cfg: dict, actor: str = "config") -> list[str]:
     for nid, data in want.items():
         old = store.get(nid)
         if old is None or old["data"] != data or old["status"] != "active":
-            store.upsert(nid, "setting", data, actor=actor, reason="review setting" if old is None else "review setting changed")
+            store.write(nid, "setting", data, actor=actor, reason="review setting" if old is None else "review setting changed")
             changed.append(nid)
     for n in store.by_type("setting"):
         if n["id"] not in want and n["status"] == "active":

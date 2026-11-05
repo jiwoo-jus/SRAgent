@@ -927,7 +927,7 @@ def write_reports(ctx: Ctx):
     md = report_markdown(ctx)
     (ctx.run_dir / "report.md").write_text(md)
     (ctx.run_dir / "report_evidence.html").write_text(report_html(ctx))
-    ctx.store.upsert("report", "report", {"prisma": prisma(ctx), "chars": len(md)},
+    ctx.store.write("report", "report", {"prisma": prisma(ctx), "chars": len(md)},
                      depends_on=[n["id"] for n in ctx.store.by_type("synthesis", active_only=True)], reason="rendered")
     ctx.save()
     ctx.log(f"[report] wrote {ctx.run_dir / 'report.md'} and report_evidence.html")

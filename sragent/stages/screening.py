@@ -247,7 +247,7 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     deps = [f"rec:{rid}", "protocol"] + [f"crit:{c['id']}" for c in protocol.get("criteria", [])]
     if stage == "full_text":
         deps.append(src_node)
-    st.upsert(f"screen:{rid}", "screen", data, depends_on=deps, evidence=evidence, reason=reason)
+    st.write(f"screen:{rid}", "screen", data, depends_on=deps, evidence=evidence, reason=reason)
     return data
 
 
@@ -296,7 +296,7 @@ def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str
     deps = [x for x in n["depends_on"] if not x.startswith("crit:")] + [f"crit:{c['id']}" for c in protocol.get("criteria", [])]
     if "protocol" not in deps:
         deps.append("protocol")
-    st.upsert(n["id"], "screen", d, depends_on=deps, evidence=evidence,
+    st.write(n["id"], "screen", d, depends_on=deps, evidence=evidence,
               reason=f"re-assessed on criteria {', '.join(crit_ids)} (protocol changed)")
     if hd and agent_dec != hd["decision"] and agent_dec in ("include", "exclude", "forward") and \
             not any(f["status"] == "open" and f["source"] == "reassess" for f in n["flags"]):
@@ -413,8 +413,7 @@ def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: lis
                 d["unclear_by_rule"] = by_rule
             if rec["outcome"] == "decided_by_verifier":
                 d["decided_by"] = "verifier"
-        st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], current=False,
-                  reason=f"second reading by the verifier: {rec['outcome']}")
+        st.annotate(n["id"], d, reason=f"second reading by the verifier: {rec['outcome']}")
         if rec["outcome"] not in ("agreed", "still_undecided") and rid not in st.included_ids():
             for kind in ("ext", "rob"):
                 if st.get(f"{kind}:{rid}") and st.get(f"{kind}:{rid}")["status"] == "active":
@@ -473,8 +472,7 @@ def _mark_retrieval(ctx: Ctx, rid: str, status: str, reason: str):
     if d.get("human_decision", {}).get("decision") == "include":
         d["human_decision_pending_fulltext"] = d.pop("human_decision")
     d.update({"decision": status, "stage": "retrieval", "because": [], "retrieval_note": reason})
-    st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], reason=f"full-text retrieval: {status} ({reason})",
-              current=False)
+    st.annotate(n["id"], d, reason=f"full-text retrieval: {status} ({reason})")
 
 
 def retrieve_one(ctx: Ctx, rid: str, refetch: bool = False) -> tuple[str, bool]:
@@ -617,8 +615,7 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
                 d["unclear_by_rule"] = by_rule
             else:
                 d.pop("unclear_by_rule", None)
-            st.upsert(n["id"], "screen", d, depends_on=n["depends_on"], actor="user", current=False,
-                      reason="protocol revised: decision re-derived from stored assessments")
+            st.annotate(n["id"], d, actor="user", reason="protocol revised: decision re-derived from stored assessments")
             for f in n["flags"]:
                 if f["status"] == "open" and f["source"] in SCREEN_FLAG_SOURCES:
                     st.resolve_flag(n["id"], f["id"], "protocol revised")

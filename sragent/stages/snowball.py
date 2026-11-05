@@ -118,7 +118,7 @@ def snowball(ctx: Ctx, protocol: dict) -> dict:
             if st.get(f"rec:{rec['rid']}"):
                 continue
             rec["found_via"] = how
-            st.upsert(f"rec:{rec['rid']}", "record", rec, depends_on=["search"], reason=f"citation chasing ({how})")
+            st.write(f"rec:{rec['rid']}", "record", rec, depends_on=["search"], reason=f"citation chasing ({how})")
             fv[rec["rid"]] = ["citation"]
             new.append(rec["rid"])
         meta["added"] += new

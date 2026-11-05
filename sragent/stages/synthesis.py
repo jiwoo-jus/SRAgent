@@ -74,7 +74,7 @@ def write_statements(ctx: Ctx, statements: list[dict], reason: str, actor: str =
         old = st.get(sid)
         if old is None or {k: old["data"].get(k) for k in ("id", "text", "cites", "scope")} != \
                 {k: data[k] for k in ("id", "text", "cites", "scope")}:
-            st.upsert(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason=reason, actor=actor)
+            st.write(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason=reason, actor=actor)
             if retire_if_uncited(st, sid, bool(old and old["data"].get("cites"))):
                 keep.discard(sid)
     return keep
@@ -188,7 +188,7 @@ def repair_one(ctx: Ctx, sid: str) -> str:
             "repaired_from": {"text": d["text"], "cites": d["cites"], "check": res}}
     if fixes:
         data["citation_fixes"] = fixes
-    st.upsert(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason="repaired after the self-check")
+    st.write(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason="repaired after the self-check")
     if retire_if_uncited(st, sid, True):
         return "retired"
     again = verify_one(ctx, sid, tag="synthesis_verify_repair")   # still faulted: it stays, with the check's flag open

@@ -146,7 +146,7 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
         src_node = f"ft:{sid}" if st.get(f"ft:{sid}") else f"rec:{sid}"
         fields, evidence = extraction.postprocess(ctx, sid, revised.get("fields", {}), text, src_node)
         data = {**n["data"], "fields": fields}
-        st.upsert(node_id, t, data, depends_on=n["depends_on"], evidence=evidence, reason=reason, actor=actor)
+        st.write(node_id, t, data, depends_on=n["depends_on"], evidence=evidence, reason=reason, actor=actor)
     elif t == "screen":
         sid = study_of(node_id)
         p = st.get("protocol")["data"]
@@ -166,7 +166,7 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
         data.pop("unclear_by_rule", None)
         if by_rule and decision in ("include", "exclude"):
             data["unclear_by_rule"] = by_rule
-        st.upsert(node_id, t, data, depends_on=n["depends_on"], reason=reason, actor=actor)
+        st.write(node_id, t, data, depends_on=n["depends_on"], reason=reason, actor=actor)
     elif t == "rob":
         sid = study_of(node_id)
         text, _ = st.text_of(sid)
@@ -176,7 +176,7 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
             d.pop("quote", None)
             attach(d, cites, text, "", "")
         data = {**n["data"], "domains": doms, "overall": revised.get("overall", n["data"]["overall"])}
-        st.upsert(node_id, t, data, depends_on=n["depends_on"], reason=reason, actor=actor)
+        st.write(node_id, t, data, depends_on=n["depends_on"], reason=reason, actor=actor)
     elif t == "synthesis":
         had_cites = bool(n["data"].get("cites"))
         cites = [str(c).strip("[] ") for c in revised.get("cites", n["data"]["cites"])]
@@ -184,7 +184,7 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
         data = {**n["data"], "text": revised.get("text", n["data"]["text"]), "cites": cites,
                 "scope": revised.get("scope", n["data"].get("scope", ""))}
         data.pop("verification", None)
-        st.upsert(node_id, t, data, depends_on=synthesis.statement_deps(st, cites), reason=reason, actor=actor)
+        st.write(node_id, t, data, depends_on=synthesis.statement_deps(st, cites), reason=reason, actor=actor)
         synthesis.retire_if_uncited(st, node_id, had_cites)
     else:
         raise ValueError(f"cannot revise node type {t}")
@@ -304,8 +304,8 @@ def _confirm_evidence(ctx: Ctx, cs: dict, target: str | None, text: str) -> bool
         item.pop("uncovered", None)
         item["confirmed_by"] = f"the review team (feedback {cs['id']})"
         evidence.append(attach(item, new_ids, full_text, f"{nm}={str(item.get('value', ''))[:80]}", src))
-    st.upsert(target, "extraction", data, depends_on=n["depends_on"], evidence=evidence, actor="user",
-              reason=f"feedback {cs['id']}: the review team pointed to the sentences ({', '.join(ids)}); cited for {', '.join(names)}")
+    st.annotate(target, data, evidence=evidence, actor="user",
+                reason=f"feedback {cs['id']}: the review team pointed to the sentences ({', '.join(ids)}); cited for {', '.join(names)}")
     cs["status"] = "confirmed"
     cs["explanation"] = (f"The value stands. Sentences {', '.join(ids)} are now cited for {', '.join(names)}, as you pointed out. "
                          + (cs.get("explanation") or ""))
@@ -639,7 +639,7 @@ def _add_paper(sb: Ctx, cs: dict, pmid: str | None, text: str, propagate: bool, 
         r = recs[0]
         r["rid"] = synergy.rid_for(r)
         rid = r["rid"]
-        st.upsert(f"rec:{rid}", "record", r, depends_on=["search"], reason=f"feedback {cs['id']}: user-supplied")
+        st.write(f"rec:{rid}", "record", r, depends_on=["search"], reason=f"feedback {cs['id']}: user-supplied")
         cs["changes"].append({"node": f"rec:{rid}", "role": "target", "before": None, "after": r})
     p = st.get("protocol")["data"]
     prev = copy.deepcopy(st.get(f"screen:{rid}")["data"]) if st.get(f"screen:{rid}") else None
@@ -693,8 +693,10 @@ def commit(ctx: Ctx, sandbox, cs: dict, actor: str = "user"):
             ctx.store.put_node(copy.deepcopy(sn), actor=actor, reason=why)
             continue
         if any(live.get(k) != sn.get(k) for k in ("data", "status", "evidence", "depends_on")):
-            ctx.store.upsert(nid, sn["type"], copy.deepcopy(sn["data"]), depends_on=sn["depends_on"],
-                             evidence=copy.deepcopy(sn["evidence"]), status=sn["status"], actor=actor, reason=why)
+            # the input versions the proposal was computed with (an annotation in the sandbox stays one here)
+            ctx.store.write(nid, sn["type"], copy.deepcopy(sn["data"]), depends_on=sn["depends_on"],
+                            evidence=copy.deepcopy(sn["evidence"]), status=sn["status"], actor=actor, reason=why,
+                            consumed=sn.get("dep_versions"))
         have = {(f.get("text"), f.get("source")) for f in live["flags"]}
         for f in sn.get("flags", []):              # flags raised in the sandbox (evidence checks, retirements)
             if (f.get("text"), f.get("source")) not in have:

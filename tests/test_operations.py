@@ -93,8 +93,11 @@ def effects(ctx, before: dict, tmp) -> dict:
 
 
 def run(name: str, ctx, tmp, fn) -> None:
+    from sragent.graph import edge_problems
     before = _snapshot(ctx)
     res = fn(ctx)
+    bad = {n["id"]: p for n in ctx.store.nodes.values() if (p := edge_problems(n))}
+    assert not bad, f"{name}: written edges differ from graph.TYPES: {dict(list(bad.items())[:5])}"
     if isinstance(res, dict) and res.get("changes") and isinstance(res["changes"][0], dict):
         res = cs_view(res)                                  # a change set (proposal or applied)
     check(f"ops/{name}", {"result": _normal(res, tmp), "effects": effects(ctx, before, tmp), "review": view(ctx)})
@@ -430,6 +433,38 @@ KNOWN = {
     "decisions_log of every human entry point": "I19: the logged content depends on the entry point",
     "retrieve.process_added_files@pdfs": "I41 fixed (update_policy); the snapshot is after that fix",
 }
+
+
+def test_the_package_writes_through_write_or_annotate():
+    """store.write (a computation from inputs) or store.annotate (a decision, an edit, a note): never the bare upsert,
+    which would mark a person's decision current with inputs they never saw (03 I61)."""
+    import re
+    root = Path(__file__).resolve().parents[1] / "sragent"
+    calls = [f"{p.relative_to(root)}:{i}" for p in root.rglob("*.py") if p.name != "store.py"
+             for i, line in enumerate(p.read_text().splitlines(), 1) if re.search(r"\.upsert\(", line)]
+    assert not calls, f"bare upsert calls: {calls}"
+
+
+def test_edge_checker_catches_mismatches():
+    from sragent.graph import edge_problems as e
+    assert e({"id": "screen:G1", "type": "screen", "depends_on": ["rec:G1", "protocol", "cfg:x"]}) == ["undeclared cfg:x"]
+    assert e({"id": "ext:G1", "type": "extraction", "depends_on": ["screen:G1", "cfg:question"]}) == ["missing ft:<rid>|rec:<rid>"]
+    assert e({"id": "ext:G1", "type": "extraction", "depends_on": ["screen:G2", "rec:G1", "cfg:question"]}) == \
+        ["missing screen:<rid>", "undeclared screen:G2"]
+    assert e({"id": "x", "type": "nope", "depends_on": []}) == ["type nope is not declared in graph.TYPES"]
+
+
+def test_a_confirmation_does_not_make_an_output_current(tmp_path):
+    """Confirming a risk-of-bias draft whose extraction changed since it was drafted keeps it out of date (kept as
+    confirmed, flagged for the person), instead of marking it current with an extraction it never read."""
+    from sragent import actions, engine, graph, todos
+    ctx = reviewed(tmp_path)
+    actions.edit(ctx, {"kind": "ext", "rid": "G01", "fields": {"sample_size": "14 participants"}, "note": "Table 1"})
+    assert graph.stale_reasons(ctx.store, "rob:G01")
+    assert todos.apply(ctx, {"todo_id": "rob:G01", "option": "confirm", "text": "fine"})["ok"]
+    assert graph.stale_reasons(ctx.store, "rob:G01")                     # still out of date ...
+    item = next(i for i in engine.plan(ctx)["items"] if i["node"] == "rob:G01")
+    assert item["action"] == "keep" and item["pinned"]                   # ... and kept, because a person confirmed it
 
 
 def test_every_operation_is_accounted_for():

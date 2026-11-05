@@ -217,10 +217,10 @@ def search(ctx: Ctx, protocol: dict) -> list[dict]:
             g = gold.load(ctx.run_dir)
             g["benchmark_search_recall"] = bench
             gold.save(ctx.run_dir, g)
-    st.upsert("search", "search", strategy, depends_on=["protocol", "cfg:records"], reason="search executed")
+    st.write("search", "search", strategy, depends_on=["protocol", "cfg:records"], reason="search executed")
     for r in recs:
         rid = r["rid"]
         if st.get(f"rec:{rid}") is None:
-            st.upsert(f"rec:{rid}", "record", r, depends_on=["search"], reason="retrieved")
+            st.write(f"rec:{rid}", "record", r, depends_on=["search"], reason="retrieved")
     ctx.log(f"[search] {len(recs)} unique records after removing {len(dups)} duplicates")
     return recs

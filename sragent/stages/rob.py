@@ -23,8 +23,7 @@ def rob_one(ctx: Ctx, rid: str) -> dict:
         # a person confirmed (or changed) this assessment: it is not drafted again; the source change is noted
         ftn = st.get(f"ft:{rid}")
         d = dict(old["data"], source_version=ftn["version"] if ftn else None)
-        st.upsert(old["id"], "rob", d, depends_on=old["depends_on"], evidence=old["evidence"], current=False,
-                  reason="source changed; the assessment a person confirmed is kept")
+        st.annotate(old["id"], d, evidence=old["evidence"], reason="source changed; the assessment a person confirmed is kept")
         if not any(f["status"] == "open" and f["source"] == "source_changed" for f in old["flags"]):
             st.flag(old["id"], "The full text changed after you confirmed this assessment; it was kept. "
                     "Ask for a re-assessment if the new text should change it.", actor="agent", source="source_changed")
@@ -52,7 +51,7 @@ def rob_one(ctx: Ctx, rid: str) -> dict:
     if data["reasons"] and _verify_wanted(ctx):
         _verify(ctx, rid, data, evidence, text, kind, src_node, ext_brief)
     from ..graph import domain_deps
-    st.upsert(f"rob:{rid}", "rob", data, depends_on=[f"ext:{rid}", src_node] + domain_deps(ctx.cfg), evidence=evidence,
+    st.write(f"rob:{rid}", "rob", data, depends_on=[f"ext:{rid}", src_node] + domain_deps(ctx.cfg), evidence=evidence,
               reason="risk-of-bias draft" + (f"; {data['rob_verify']['outcome'].replace('_', ' ')}" if data.get("rob_verify") else ""))
     return data
 
@@ -170,8 +169,8 @@ def verify_existing(ctx: Ctx, only: list[str] | None = None) -> dict:
         src_node = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
         evidence = json.loads(json.dumps(n.get("evidence") or []))
         _verify(ctx, rid, d, evidence, text, kind, src_node, _ext_brief(st, rid))
-        st.upsert(n["id"], "rob", d, depends_on=n["depends_on"], evidence=evidence,
-                  reason=f"second look by the verifier: {d['rob_verify']['outcome'].replace('_', ' ')}")
+        st.annotate(n["id"], d, evidence=evidence,
+                    reason=f"second look by the verifier: {d['rob_verify']['outcome'].replace('_', ' ')}")
         return d["rob_verify"]["outcome"]
     outcomes = Counter(ctx.map(one, todo))
     ctx.save()

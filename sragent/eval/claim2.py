@@ -120,8 +120,7 @@ def build_A(ctx: Ctx, rnd: random.Random, rid: str) -> dict | None:
     data = copy.deepcopy(c.store.get(f"ext:{rid}")["data"])
     before = copy.deepcopy(data)
     data["fields"][f]["value"] = new_v
-    c.store.upsert(f"ext:{rid}", "extraction", data, depends_on=n["depends_on"], evidence=n["evidence"],
-                   actor="injector", reason="planted error")
+    c.store.annotate(f"ext:{rid}", data, evidence=n["evidence"], actor="injector", reason="planted error")
     _propagate_into_synthesis(c, f"ext:{rid}", before, data, rid)
     label = f.replace("_", " ")
     return {"type": "A_extraction_fix", "rid": rid, "target": f"ext:{rid}", "field": f, "R1": c.store,
