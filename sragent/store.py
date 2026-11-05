@@ -117,6 +117,8 @@ class ReviewStore:
             self.nodes[node_id] = node
             self._index(node_id, [], deps)
             self._log("create", node_id, actor, reason, None, data)
+            if ntype == "screen" and data.get("decision") == "include":
+                self._cohort_changed()
             return node
         same = old["data"] == data and old["status"] == status and (evidence is None or old["evidence"] == evidence)
         if same:   # recomputed with the same result: current with its inputs, but not a new version
@@ -140,6 +142,8 @@ class ReviewStore:
         old["version"] += 1
         old["updated"] = now
         self._log("update", node_id, actor, reason, prev, data)
+        if ntype == "screen" and (prev.get("decision") == "include") != (data.get("decision") == "include"):
+            self._cohort_changed()
         return old
 
     def touch(self, node_id: str, depends_on: list[str] | None = None) -> dict:
@@ -182,6 +186,13 @@ class ReviewStore:
         if n["status"] != status:
             self._log("status", node_id, actor, reason, n["status"], status)
             n["status"] = status
+            if n["type"] == "screen" and n["data"].get("decision") == "include":
+                self._cohort_changed()
+
+    def _cohort_changed(self) -> None:
+        """The included set moved: the `cohort` node follows (state.py), so what depends on it becomes stale."""
+        from . import state
+        state.refresh_cohort(self)
 
     def _next_flag_id(self) -> str:
         """Flag ids come from a counter in meta, so they are unique even when flags are resolved and

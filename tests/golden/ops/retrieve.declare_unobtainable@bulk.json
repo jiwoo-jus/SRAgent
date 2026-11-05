@@ -5,14 +5,15 @@
   ],
   "flags_closed": [],
   "flags_opened": [],
-  "meta_changed": [
-   "pdf_unavailable"
-  ],
+  "meta_changed": [],
   "model_calls": {},
   "out_of_date": [],
   "proposals": [],
   "provenance": [
    "pdf_provision:not_obtainable"
+  ],
+  "state_nodes": [
+   "pdf:G03"
   ]
  },
  "result": {

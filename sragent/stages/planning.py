@@ -106,7 +106,7 @@ def apply_protocol(ctx: Ctx, protocol: dict, actor: str, reason: str, record: di
                       changed=changed, **(record or {}))
     st.meta.setdefault("protocol_revisions", []).append({"ts": time.strftime("%Y-%m-%d %H:%M"), "actor": actor,
                                                          "reason": reason, "changed": changed, **(record or {})})
-    st.meta.pop("protocol_approved", None)      # a changed protocol is approved again
+    # a changed protocol is approved again: its approval node (state.approval) no longer matches its version
     return {"changed": changed, "decisions_changed": r["changed"]}
 
 

@@ -15,6 +15,7 @@ import json
 import time
 from pathlib import Path
 
+from . import state
 from .context import Ctx
 from .store import criteria_by_id, record_of, study_of
 
@@ -74,7 +75,7 @@ def status_of(st, rid: str) -> tuple[str, str, str]:
             return "pending", "undecided: agents disagree after extraction", f"extraction says exclude ({because}); the verifier says include"
         return "pending", "undecided after full-text review", "unclear: " + because
     if d["decision"] == "fulltext_unavailable":
-        no = rid in st.meta.get("pdf_unavailable", [])
+        no = rid in state.unavailable(st)
         return "pending", "full text not retrieved" + (" (declared not obtainable)" if no else ""), d.get("retrieval_note", "")
     if d["decision"] == "parse_failed":
         return "pending", "full text unreadable", d.get("retrieval_note", "")
@@ -244,8 +245,8 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
            "record": {k: rec.get(k) for k in ("title", "authors", "journal", "year", "pmid", "doi", "pmcid",
                                               "pub_types", "abstract", "source")},
            "links": links(rec, (ftn or {}).get("data")),
-           "pdf_wanted": bool(st.meta.get("pdf_wanted", {}).get(rid)),
-           "pdf_unavailable": rid in st.meta.get("pdf_unavailable", [])}
+           "pdf_wanted": bool(state.pdf_request(st, rid).get("wanted")),
+           "pdf_unavailable": bool(state.pdf_request(st, rid).get("unavailable"))}
     if ftn:
         f = ftn["data"]
         out["source"] = {k: f.get(k) for k in ("kind", "origin", "pmcid", "chars", "local_file", "auto_pdf", "auto_text", "auto_pdf_status")}

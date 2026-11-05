@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from collections import Counter
 
-from .. import provenance
+from .. import provenance, state
+from ..stages import fulltext
 from ..context import Ctx
 from ..todos import STEPS
 
@@ -24,19 +25,19 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     syn = st.by_type("synthesis", active_only=True)
     syn_flag = sum(1 for n in syn for f in n["flags"] if f["status"] == "open")
     s = (st.get("search") or {}).get("data", {})
-    conf_q = (st.meta.get("search_strategy") or {}).get("confirmed") or {}
+    conf_q = state.confirmed_query(st) or {}
     proto = st.get("protocol")
     human_dec = sum(1 for n in screens if n["data"].get("human_decision"))
 
     ft_dec = [n for n in screens if n["data"]["stage"] == "full_text"]
     fdec = Counter(n["data"]["decision"] for n in ft_dec)
     retrieval = [n for n in screens if n["data"]["stage"] == "retrieval"]
-    sb = st.meta.get("snowball") or {}
+    sb = state.snowball(st) or {}
     chasing = ctx.cfg["pipeline"].get("citation_chasing", True)
     rep = st.get("report")
     # key -> (done, summary, run until); the keys and their order are stagespec.STAGES (+ feedback, across stages)
     info = {
-        "protocol": (bool(proto), "approved" if st.meta.get("protocol_approved") else
+        "protocol": (bool(proto), "approved" if state.approval(st) else
                      ("drafted by the agent (agent-only: used as drafted)" if provenance.mode(ctx) == "agent_only"
                       else "drafted, waiting for your approval") if proto else "not started", "protocol"),
         "search": (bool(s), f"{s.get('hits', 0)} PubMed hits; {s.get('n_identified', 0)} records, "
@@ -67,7 +68,7 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     }
     ready = {"search": not s and bool(conf_q.get("query")),                               # query confirmed, not run yet
              "synthesis": not syn and bool(inc) and len(ext) == len(inc) and len(robs) == len(inc)
-                          and not st.meta.get("waiting_for_pdfs")}                      # inputs complete, not written yet
+                          and not fulltext.waiting_for_pdfs(ctx)}                      # inputs complete, not written yet
     out = []
     for key, label in STEPS:
         done, summary, run_until = info[key]

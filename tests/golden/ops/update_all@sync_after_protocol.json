@@ -3,9 +3,7 @@
   "decisions_log": [],
   "flags_closed": [],
   "flags_opened": [],
-  "meta_changed": [
-   "synthesis_considered"
-  ],
+  "meta_changed": [],
   "model_calls": {
    "screen_full_text_sync": 3,
    "screen_title_abstract_sync": 3,
@@ -15,7 +13,11 @@
    "search keep"
   ],
   "proposals": [],
-  "provenance": []
+  "provenance": [],
+  "state_nodes": [
+   "cohort",
+   "syn_scope"
+  ]
  },
  "result": {
   "changes": [

@@ -5,14 +5,15 @@
   ],
   "flags_closed": [],
   "flags_opened": [],
-  "meta_changed": [
-   "protocol_approved"
-  ],
+  "meta_changed": [],
   "model_calls": {},
   "out_of_date": [],
   "proposals": [],
   "provenance": [
    "human_judgment:protocol:approve"
+  ],
+  "state_nodes": [
+   "approval:protocol"
   ]
  },
  "result": {

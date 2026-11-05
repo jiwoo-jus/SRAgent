@@ -13,6 +13,8 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
+from . import state
+
 # stage -> (input tokens, output tokens at low effort, output tokens at default effort)
 DEFAULTS = {
     "plan": (500, 900, 1700),
@@ -106,7 +108,7 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
     inc = st.included_ids()
     pending_ft = sum(1 for n in forwarded_known if not st.get(f"ext:{n['id'].split(':', 1)[1]}"))
     n_inc_future = int(calls["screen_title_abstract"] * INCLUDE_RATE) + math.ceil(pending_ft * INCLUDE_RATE / FORWARD_RATE)
-    if "snowball" in order and ctx.cfg["pipeline"].get("citation_chasing", True) and not st.meta.get("snowball"):
+    if "snowball" in order and ctx.cfg["pipeline"].get("citation_chasing", True) and not state.snowball(st):
         cand = int((len(inc) + n_inc_future) * SNOWBALL_PER_SEED)     # found papers go through both screening steps
         calls["screen_title_abstract"] += cand
         calls["screen_full_text"] += int(cand * FORWARD_RATE * RETRIEVED_RATE)
@@ -138,8 +140,8 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
                 n_rep = math.ceil(N_STATEMENTS * REPAIR_RATE)         # the repair round: one rewrite and one re-check each
                 calls["synthesis_repair"] = n_rep
                 calls["synthesis_verify"] += n_rep
-        elif set(st.meta.get("synthesis_considered") or []) != set(inc) or n_inc_future:
-            n_new = len(set(inc) - set(st.meta.get("synthesis_considered") or [])) + n_inc_future
+        elif set(state.considered(st) or []) != set(inc) or n_inc_future:
+            n_new = len(set(inc) - set(state.considered(st) or [])) + n_inc_future
             calls["feedback"] = n_new                 # one integrate call per new study
             calls["synthesis_verify"] = min(N_STATEMENTS, max(1, n_new))
     return dict(calls)

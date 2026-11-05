@@ -507,7 +507,8 @@ def _flow(ctx: Ctx) -> dict:
     ft = [n for n in screens if D(n)["stage"] == "full_text"]
     ft_ex = [n for n in ft if D(n)["decision"] == "exclude"]
     reasons = Counter((D(n).get("because") or ["unspecified"])[0] for n in ft_ex)
-    added = set((st.meta.get("snowball") or {}).get("added") or [])
+    from .. import state
+    added = set((state.snowball(st) or {}).get("added") or [])
     identified, dups = s.get("n_identified") or 0, s.get("n_duplicates") or 0
     f = {"identified": identified, "duplicates": dups,
          "not_sampled": max(0, identified - dups - s["sampled_to"]) if s.get("sampled_to") else 0,
@@ -699,7 +700,8 @@ def report_html(ctx: Ctx) -> str:
                  f"({f['identified']} records), so that the agent's decisions can be compared with a published review.</p>")
     elif src.get("source") == "file":
         H.append(f"<p>Records were imported from a file ({f['identified']} records).</p>")
-    sb = st.meta.get("snowball") or {}
+    from .. import state
+    sb = state.snowball(st) or {}
     if f["citation"]:
         H.append(f"<p>Reference lists and citing articles of the included studies were searched (backward and forward citation searching; "
                  f"{len(sb.get('seeds') or {})} seed studies, {sb.get('rounds', 1)} round{'s' if sb.get('rounds', 1) != 1 else ''}), "
@@ -710,7 +712,8 @@ def report_html(ctx: Ctx) -> str:
                  f"<pre class='query'>{_e(s.get('translation') or s['query'])}</pre>")
     if s.get("rationale"):
         H.append(f"<details><summary>Rationale for the search strategy (agent)</summary><p class='prose note'>{_e(s['rationale'])}</p></details>")
-    rules_used = (st.meta.get("rules_applied") or {}).get("rules") or []
+    from .. import state
+    rules_used = ((st.get(state.RULES) or {}).get("data") or {}).get("rules") or []
     n_human = sum(1 for n in st.by_type("screen") if n["data"].get("human_decision"))
     H.append("<h3>1.3 Selection process</h3><div class='prose'>"
              + (f"<p>Records were first checked against deterministic publication-type rules ({_e(', '.join(_label(r).lower() for r in rules_used))}), "

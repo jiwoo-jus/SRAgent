@@ -215,9 +215,10 @@ def test_todos_answers_and_user_files(tmp_path):
     st.upsert(n["id"], "screen", {**before, "decision": "fulltext_unavailable", "stage": "retrieval"}, depends_on=n["depends_on"])
     req = [t for t in todos.build(ctx) if t["id"] == "fulltexts"]
     assert req and "1004" in str(req[0])
-    st.meta["pdf_unavailable"] = ["1004"]
+    from sragent import state
+    state.set_pdf_request(st, "1004", unavailable=True)
     assert not [t for t in todos.build(ctx) if t["id"] == "fulltexts"]
-    st.meta["pdf_unavailable"] = []
+    state.set_pdf_request(st, "1004", unavailable=False)
     st.upsert(n["id"], "screen", before, depends_on=n["depends_on"])
     # answers
     assert todos.apply(ctx, {"todo_id": "protocol", "option": "approve"})["ok"]
@@ -450,8 +451,10 @@ def test_citation_chasing(tmp_path, monkeypatch):
     monkeypatch.setattr(pubmed, "efetch", lambda pmids: [])
     ctx.cfg["pipeline"]["citation_chasing"] = True
     res = snowball.snowball(ctx, ctx.store.get("protocol")["data"])
-    assert res["added"] == 1 and ctx.store.get(f"screen:{ctx.store.meta['snowball']['added'][0]}")
-    assert ctx.store.meta["found_via"][ctx.store.meta["snowball"]["added"][0]] == ["citation"]
+    from sragent import state
+    added = state.snowball(ctx.store)["added"][0]
+    assert res["added"] == 1 and ctx.store.get(f"screen:{added}")
+    assert ctx.store.get(f"rec:{added}")["data"]["found_via"]                     # backward / forward, on the record
 
 
 def test_config_lock(tmp_path):
@@ -863,7 +866,8 @@ def test_estimate_counts_rules_snowball_parts_and_updates(tmp_path):
     c2 = remaining_calls(ctx, None, "report")
     assert c2.get("screen_title_abstract", 0) == 0 and c1["screen_title_abstract"] > c2.get("screen_title_abstract", 0)
     pipeline.run(ctx)                                             # done: an existing synthesis is updated, not re-written
-    st.meta["synthesis_considered"] = ["1001"]                    # pretend two included studies were added since
+    from sragent import state
+    state.set_considered(st, ["1001"])                            # pretend two included studies were added since
     c3 = remaining_calls(ctx, None, "report")
     assert c3.get("synthesis", 0) == 0 and c3["feedback"] == 2 and c3["synthesis_verify"] == 2
 
@@ -1427,20 +1431,22 @@ def test_wait_for_pdfs_holds_the_first_synthesis_until_the_list_is_settled(tmp_p
     pipeline.run(ctx)
     st = ctx.store
     assert st.get("screen:1003")["data"]["decision"] == "fulltext_unavailable"
-    assert not st.by_type("synthesis") and st.meta.get("waiting_for_pdfs") == 1
+    from sragent import state
+    from sragent.stages import fulltext as _ft
+    assert not st.by_type("synthesis") and _ft.waiting_for_pdfs(ctx) == 1
     from sragent.stages.fulltext import fulltext_dir
     assert (fulltext_dir(ctx) / "needed_pdfs.csv").exists()
     from sragent import todos
     todos.apply(ctx, {"todo_id": "protocol", "option": "approve"})     # the protocol check comes first in human mode
     assert "waits for 1 requested full text" in todos.next_action(ctx, todos.build(ctx), False, 0)["text"]
-    st.meta.setdefault("pdf_unavailable", []).append("1003")       # the person says it cannot be obtained
+    state.set_pdf_request(st, "1003", unavailable=True)             # the person says it cannot be obtained
     pipeline.run(ctx)
-    assert st.by_type("synthesis", active_only=True) and "waiting_for_pdfs" not in st.meta
-    assert st.meta["synthesis_written_with"]["not_retrieved"] == 1
+    assert st.by_type("synthesis", active_only=True) and not _ft.waiting_for_pdfs(ctx)
+    assert st.get(state.SCOPE)["data"]["written_with"]["not_retrieved"] == 1
     md = report.report_markdown(ctx)
     assert "forwarded reports had no full text" in md
     # the option never holds back an existing synthesis
-    st.meta["pdf_unavailable"] = []
+    state.set_pdf_request(st, "1003", unavailable=False)
     pipeline.run(ctx)
     assert "waiting_for_pdfs" not in st.meta
 
@@ -1522,9 +1528,10 @@ def test_search_strategy_is_chosen_with_the_review_team(tmp_path, monkeypatch):
     with ctx.at("search"):
         r = search.refine_query(ctx, protocol, m["variants"][1]["query"], "exclude review papers")
     assert r["query"].endswith("NOT review[pt]") and r["count"] == len(r["query"]) * 10 and "lost" in r["explanation"]
-    assert st.meta["search_strategy"]["chat"][-1]["query"] == r["query"]
+    from sragent import state
+    assert state.strategy(st)["chat"][-1]["query"] == r["query"]
     c = search.confirm_query(ctx, r["query"], note="team choice")
-    assert c["count"] == r["count"] and st.meta["search_strategy"]["confirmed"]["query"] == r["query"]
+    assert c["count"] == r["count"] and state.confirmed_query(st)["query"] == r["query"]
     pipeline.run(ctx)                                            # now the search runs, with the confirmed query
     sn = st.get("search")["data"]
     assert sn["query"] == r["query"] and sn["query_source"] == "confirmed by the review team" and sn["confirmed"]["note"] == "team choice"
@@ -1586,11 +1593,12 @@ def test_protocol_changed_with_the_review_team(tmp_path):
     t = next(x for x in todos.build(ctx) if x["kind"] == "protocol")
     assert t["criteria"] and all("id" in c and "text" in c for c in t["criteria"])
     todos.apply(ctx, {"todo_id": "protocol", "option": "approve"})
-    assert st.meta.get("protocol_approved")
+    from sragent import state
+    assert state.approval(st)
     with ctx.at("plan"):
         r = planning.revise_protocol(ctx, "widen I2")
     assert r["applied"] and r["changed"]["changed"] == ["I2"] and "widened as asked" in st.get("protocol")["data"]["criteria"][1]["text"]
-    assert "protocol_approved" not in st.meta and st.meta["protocol_revisions"][-1]["instruction"] == "widen I2"
+    assert not state.approval(st) and st.meta["protocol_revisions"][-1]["instruction"] == "widen I2"
     import yaml
     assert "widened as asked" in yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))["criteria"][1]["text"]
     r2 = planning.edit_criteria(ctx, [{"id": "I1", "text": "about emicizumab (edited)", "type": "inclusion", "stage": "title_abstract"},

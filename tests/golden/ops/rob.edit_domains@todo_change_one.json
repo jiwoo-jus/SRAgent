@@ -14,7 +14,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:rob:change"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "job": null,

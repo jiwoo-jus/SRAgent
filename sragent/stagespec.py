@@ -50,7 +50,7 @@ STAGES: tuple[StageSpec, ...] = (
     StageSpec("eligibility", "Full-text screening", True, ("screen",), tags=("screen_full_text",), legacy=("fulltext",),
               started=lambda st: _screen_at(st, "full_text")),
     StageSpec("snowball", "Citation chasing", True, ("[snowball]", "record"),
-              started=lambda st: bool(st.meta.get("snowball"))),
+              started=lambda st: st.get("snowball") is not None),
     StageSpec("extract", "Data extraction", True, ("extraction",), tags=("extract",),
               started=lambda st: bool(st.by_type("extraction"))),
     StageSpec("rob", "Risk of bias", True, ("rob",), tags=("rob",),

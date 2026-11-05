@@ -17,7 +17,10 @@
    "syn:S2 revise"
   ],
   "proposals": [],
-  "provenance": []
+  "provenance": [],
+  "state_nodes": [
+   "cohort"
+  ]
  },
  "result": {
   "checked": 5,

@@ -99,7 +99,7 @@ def apply(ctx, protocol: dict | None = None) -> list[dict]:
         data = dict(sc["data"]) if sc else {"stage": "title_abstract", "criteria": []}
         data.update({"decision": "exclude", "because": [f"rule:{hit[0]}"], "rule": hit[0], "rule_reason": hit[1],
                      "decision_before_rule": before})
-        deps = sc["depends_on"] if sc else [f"rec:{rid}", "protocol"]
+        deps = (sc["depends_on"] if sc else [f"rec:{rid}", "protocol"]) + _rule_edge(st)
         st.write(f"screen:{rid}", "screen", data, depends_on=deps, actor="rule",
                   reason=f"screening rule {hit[0]}: {hit[1]}")
         for f in st.get(f"screen:{rid}")["flags"]:
@@ -111,8 +111,14 @@ def apply(ctx, protocol: dict | None = None) -> list[dict]:
         if r and r not in rules and n["data"].get("decision") == "exclude" and r != "outside_date_range":
             restore(ctx, n["id"].split(":", 1)[1], note=f"rule {r} is no longer enabled")
             changes.append({"rid": n["id"].split(":", 1)[1], "rule": r, "before": "exclude", "restored": True})
-    st.meta["rules_applied"] = {"rules": rules, "version": RULES_VERSION, "n": len(changes)}
+    from . import state
+    state.save_rules_applied(st, {"rules": rules, "version": RULES_VERSION, "n": len(changes)})
     return changes
+
+
+def _rule_edge(st) -> list[str]:
+    """A rule exclusion depends on the rule setting: a changed rule set makes exactly those decisions out of date."""
+    return ["cfg:screening_rules"] if st.get("cfg:screening_rules") else []
 
 
 def restore(ctx, rid: str, note: str = "") -> None:
@@ -126,7 +132,8 @@ def restore(ctx, rid: str, note: str = "") -> None:
     d["decision"] = before if full_text_decided else "forward"
     d["because"] = []
     d["rule_restored"] = {"rule": d.pop("rule", None), "note": note}
-    st.annotate(n["id"], d, actor="user", reason=f"rule exclusion undone. {note}".strip())
+    st.annotate(n["id"], d, depends_on=[x for x in n["depends_on"] if x != "cfg:screening_rules"],   # no longer the rule's
+                actor="user", reason=f"rule exclusion undone. {note}".strip())
 
 
 def exclude(ctx, rid: str, rule: str, reason: str) -> None:
@@ -139,7 +146,7 @@ def exclude(ctx, rid: str, rule: str, reason: str) -> None:
     before = data.get("decision")
     data.update({"decision": "exclude", "because": [f"rule:{rule}"], "rule": rule, "rule_reason": reason,
                  "decision_before_rule": before})
-    st.write(f"screen:{rid}", "screen", data, depends_on=sc["depends_on"] if sc else [f"rec:{rid}", "protocol"],
+    st.write(f"screen:{rid}", "screen", data, depends_on=(sc["depends_on"] if sc else [f"rec:{rid}", "protocol"]) + _rule_edge(st),
               actor="rule", reason=f"screening rule {rule}: {reason}")
     for kind in ("ext", "rob"):
         if st.get(f"{kind}:{rid}") and st.get(f"{kind}:{rid}")["status"] == "active":

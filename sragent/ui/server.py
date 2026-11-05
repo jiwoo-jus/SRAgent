@@ -23,7 +23,7 @@ from urllib.parse import unquote, parse_qs, urlparse
 
 import yaml
 
-from .. import stagespec
+from .. import stagespec, state
 from ..config import EFFORTS, LLM_STAGES, STAGE_LABELS, is_benchmark, load_config, load_secrets, role_cfg, stage_cfg
 from ..config_lock import ConfigChanged
 from ..context import Ctx
@@ -111,7 +111,7 @@ class App:
         if self.job is not None or not ctx.store.get("protocol") or not ctx.store.by_type("screen"):
             return
         want = rules.enabled_rules(ctx)
-        ra = ctx.store.meta.get("rules_applied") or {}
+        ra = state.rules_applied(ctx.store) or {}
         if ra.get("rules") == want and ra.get("version") == rules.RULES_VERSION:
             return
         changes = rules.apply(ctx)
@@ -716,7 +716,7 @@ class App:
             return None if (c.store.get("protocol") or {}).get("data") else "Draft the protocol first (Run: up to stage 1)."
 
         def keep(live, sb, r):   # the work wrote only the strategy notes: take them over
-            live.store.meta["search_strategy"] = search.strategy_meta(sb.store)
+            state.save_strategy(live.store, state.strategy(sb.store), reason="search strategy (from the page)")
             return r
         if op == "suggest":
             def work(sb):
@@ -751,7 +751,9 @@ class App:
                     if not q:
                         return {"ok": False, "message": "write a query first"}
                     r = {"ok": True, "query": q, **search.count(ctx, q)}
-                    search.strategy_meta(st)["draft"] = {"query": q, "count": r.get("count")}
+                    m = state.strategy(st)
+                    m["draft"] = {"query": q, "count": r.get("count")}
+                    state.save_strategy(st, m, actor="user", reason="query counted")
                 elif op == "confirm":
                     q = (b.get("query") or "").strip()
                     if not q:
@@ -759,7 +761,9 @@ class App:
                     c = search.confirm_query(ctx, q, note=b.get("note") or "")
                     r = {"ok": True, "confirmed": c, "message": f"query confirmed ({c.get('count')} hits); run the search when ready"}
                 elif op == "clear":
-                    search.strategy_meta(st)["confirmed"] = None
+                    m = state.strategy(st)
+                    m["confirmed"] = None
+                    state.save_strategy(st, m, actor="user", reason="confirmation removed")
                     r = {"ok": True, "message": "confirmation removed"}
                 else:
                     return {"ok": False, "message": f"unknown op {op}"}

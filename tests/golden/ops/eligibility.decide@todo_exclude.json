@@ -13,7 +13,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:elig:exclude"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "job": null,

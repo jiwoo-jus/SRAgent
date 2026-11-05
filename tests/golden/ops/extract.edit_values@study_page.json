@@ -19,7 +19,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:manual_edit:ext"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "message": "saved sample_size (v2)",

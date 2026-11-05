@@ -220,7 +220,8 @@ def needed_pdfs(ctx: Ctx) -> list[dict]:
     could not be parsed (plus, in human-in-the-loop mode, undecided studies a person asked a PDF for)."""
     st = ctx.store
     out = []
-    unavailable = set(st.meta.get("pdf_unavailable", []))
+    from .. import state
+    unavailable, wanted = state.unavailable(st), state.wanted(st)
     for n in st.by_type("screen"):
         rid = n["id"].split(":", 1)[1]
         dec = n["data"]["decision"]
@@ -228,7 +229,7 @@ def needed_pdfs(ctx: Ctx) -> list[dict]:
             why, prio = "needed for the full-text eligibility review; no open-access copy was found", 1
         elif dec == "parse_failed":
             why, prio = "the supplied file has no usable text (scanned PDF?); please add a text PDF or a .txt", 1
-        elif dec == "awaiting" and st.meta.get("pdf_wanted", {}).get(rid):
+        elif dec == "awaiting" and rid in wanted:
             why, prio = "a reviewer asked for another copy to decide eligibility", 2
         else:
             continue
@@ -240,6 +241,15 @@ def needed_pdfs(ctx: Ctx) -> list[dict]:
                     "year": rec.get("year", ""), "journal": rec.get("journal", ""),
                     "present": local_file(ctx, rid) is not None, "declared_not_obtainable": rid in unavailable})
     return sorted(out, key=lambda r: (r["priority"], r["rid"]))
+
+
+def waiting_for_pdfs(ctx: Ctx) -> int:
+    """pipeline.wait_for_pdfs: how many requested full texts the first synthesis waits for (0: it does not wait).
+    Derived each time from the full-text requests; a synthesis that exists is never held back."""
+    st = ctx.store
+    if not ctx.cfg["pipeline"].get("wait_for_pdfs") or st.by_type("synthesis", active_only=True):
+        return 0
+    return sum(1 for x in needed_pdfs(ctx) if not x["present"] and not x["declared_not_obtainable"])
 
 
 def write_needed_pdfs(ctx: Ctx) -> Path:

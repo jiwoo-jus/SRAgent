@@ -11,7 +11,8 @@
   "proposals": [],
   "provenance": [
    "annotation:comment"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "send_to_agent": false,

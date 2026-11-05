@@ -23,7 +23,7 @@ from .context import Ctx
 from .store import criteria_by_id, record_of
 from .stages import fulltext
 
-from . import stagespec
+from . import stagespec, state
 
 # the To-do groups: one per stage (stagespec.STAGES), then feedback and revisions (across stages)
 STEPS = [(s.key, f"{s.order}. {s.label}") for s in stagespec.STAGES] + \
@@ -54,7 +54,7 @@ def build(ctx: Ctx) -> list[dict]:
 
     # -- protocol approval (after approval the card stays, collapsed, so the criteria can still be changed with
     #    the agent or by hand; a change makes the dependent decisions stale and asks for approval again)
-    approved = bool(st.meta.get("protocol_approved")) or provenance.mode(ctx) == "agent_only"
+    approved = bool(state.approval(st)) or provenance.mode(ctx) == "agent_only"
     if st.get("protocol"):
         todos.append({
             "id": "protocol", "step": "protocol", "kind": "protocol", "priority": 0,
@@ -75,7 +75,7 @@ def build(ctx: Ctx) -> list[dict]:
     # -- search strategy: before the search exists, the team can see alternatives, ask for changes and confirm the query
     from . import provenance as _prov
     if _prov.mode(ctx) != "agent_only":
-        m = st.meta.get("search_strategy") or {}
+        m = state.strategy(st)
         sn = (st.get("search") or {}).get("data") or {}
         todos.append({
             "id": "search", "step": "search", "kind": "search", "priority": 0,
@@ -106,13 +106,13 @@ def build(ctx: Ctx) -> list[dict]:
         "options": [], "context": []})
 
     # -- eligibility: awaiting classification (shown as one table in the UI)
-    wanted_pdf = st.meta.get("pdf_wanted", {})
+    wanted_pdf = state.wanted(st)
     for n in st.by_type("screen"):
         d = n["data"]
         rid = n["id"].split(":", 1)[1]
         if d["decision"] != "awaiting" or d.get("human_decision"):
             continue
-        if wanted_pdf.get(rid) and ((st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext"):
+        if rid in wanted_pdf and ((st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext"):
             continue  # waiting for the PDF; listed under Full texts
         r = record_of(st, rid)
         def _bad(a):
@@ -164,7 +164,7 @@ def build(ctx: Ctx) -> list[dict]:
             "link": f"/report#screen:{rid}"})
 
     # -- full texts (grouped)
-    unavailable = set(st.meta.get("pdf_unavailable", []))
+    unavailable = state.unavailable(st)
     wanted = [x for x in fulltext.needed_pdfs(ctx) if x["rid"] not in unavailable]   # blocked or asked for
     if wanted:
         present = [x for x in wanted if x["present"]]
@@ -420,7 +420,7 @@ def apply(ctx: Ctx, answer: dict) -> dict:
         msg = "snoozed"
     elif tid == "protocol":
         if opt == "approve":
-            st.meta["protocol_approved"] = {"ts": time.time(), "note": text}
+            state.approve(st, text)
             msg = "protocol approved"
         elif opt == "edited":
             import yaml
@@ -447,14 +447,13 @@ def apply(ctx: Ctx, answer: dict) -> dict:
                     st.resolve_flag(n["id"], f["id"], f"human decided: {opt}", actor="user")
             msg = f"{rid} {opt}d" + ("; extraction and synthesis can be updated from the to-do list" if opt == "include" else "")
         elif opt == "pdf":
-            st.meta.setdefault("pdf_wanted", {})[rid] = True
+            state.set_pdf_request(st, rid, wanted=True)
             msg = f"waiting for {rid}.pdf in {fulltext.fulltext_dir(ctx)}"
     elif tid == "fulltexts":
         ids = [x.strip() for x in (extra.get("unavailable") or "").replace(";", ",").split(",") if x.strip()]
-        if ids:
-            st.meta["pdf_unavailable"] = sorted(set(st.meta.get("pdf_unavailable", [])) | set(ids))
-            for rid in ids:
-                st.meta.get("pdf_wanted", {}).pop(rid, None)
+        for rid in ids:
+            if st.get(f"rec:{rid}"):
+                state.set_pdf_request(st, rid, wanted=False, unavailable=True)
         if opt == "process":
             job = {"action": "pdfs"}
             msg = "processing added files"
@@ -591,16 +590,15 @@ def bulk(ctx: Ctx, kind: str, ids: list[str], note: str = "", items: list[dict] 
         ctx.save()
     if kind == "pdf_unavailable":
         st = ctx.store
-        st.meta["pdf_unavailable"] = sorted(set(st.meta.get("pdf_unavailable", [])) | set(ids))
         for rid in ids:
-            st.meta.get("pdf_wanted", {}).pop(rid, None)
+            state.set_pdf_request(st, rid, wanted=False, unavailable=True)
             log_answer(ctx, {"todo_id": f"pdf:{rid}", "option": "unavailable"}, "applied")
             provenance.record(ctx, "pdf_provision", "not_obtainable", rid=rid)
             n += 1
         ctx.save()
     if kind == "pdf_unwant":
         for rid in ids:
-            ctx.store.meta.get("pdf_wanted", {}).pop(rid, None)
+            state.set_pdf_request(ctx.store, rid, wanted=False)
             provenance.record(ctx, "human_judgment", "decide_without_fulltext", rid=rid)
             n += 1
         ctx.save()
@@ -638,8 +636,8 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
     if provenance.mode(ctx) == "agent_only" and st.get("protocol"):
         if new_files:
             return {"text": f"Process {new_files} added full-text file{'s' if new_files > 1 else ''}.", "go": "pdfs"}
-        if st.meta.get("waiting_for_pdfs"):
-            return {"text": f"The synthesis waits for {st.meta['waiting_for_pdfs']} requested full text(s) (pipeline.wait_for_pdfs): "
+        if fulltext.waiting_for_pdfs(ctx):
+            return {"text": f"The synthesis waits for {fulltext.waiting_for_pdfs(ctx)} requested full text(s) (pipeline.wait_for_pdfs): "
                             "add them or mark them not obtainable, then run again.", "go": "pdfs"}
         if "fulltexts" in by:
             return {"text": "Agent-only mode: the agent decides everything. You can only supply the full texts it requested.",
@@ -651,12 +649,11 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
         return {"text": "Start the review: draft the protocol (one cheap LLM call).", "go": "run", "until": "protocol"}
     if "protocol" in by:
         return {"text": "Check and approve the eligibility criteria.", "go": "todo", "group": "protocol"}
-    if not st.get("search") and ctx.cfg["pipeline"].get("confirm_search") and \
-            not ((st.meta.get("search_strategy") or {}).get("confirmed") or {}).get("query"):
+    if not st.get("search") and ctx.cfg["pipeline"].get("confirm_search") and not state.confirmed_query(st):
         return {"text": "Choose the search strategy: the agent's query, an alternative, or one you ask for; the search runs "
                         "with the query you confirm.", "go": "todo", "group": "search"}
-    if not st.get("search") and ((st.meta.get("search_strategy") or {}).get("confirmed") or {}).get("query"):
-        c = st.meta["search_strategy"]["confirmed"]
+    if not st.get("search") and state.confirmed_query(st):
+        c = state.confirmed_query(st)
         return {"text": f"Run the search with your confirmed query ({c.get('count')} PubMed hits), then screening.",
                 "go": "run", "until": "eligibility"}
     if not st.get("search") or not st.by_type("screen"):
@@ -672,8 +669,8 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
         return {"text": f"Process {new_files} added full-text file{'s' if new_files > 1 else ''}.", "go": "pdfs"}
     if "sync" in by:
         return {"text": "Update the outputs affected by your decisions.", "go": "todo", "group": "sync"}
-    if st.meta.get("waiting_for_pdfs") and not st.by_type("synthesis"):
-        return {"text": f"The synthesis waits for {st.meta['waiting_for_pdfs']} requested full text(s) (pipeline.wait_for_pdfs): "
+    if fulltext.waiting_for_pdfs(ctx) and not st.by_type("synthesis"):
+        return {"text": f"The synthesis waits for {fulltext.waiting_for_pdfs(ctx)} requested full text(s) (pipeline.wait_for_pdfs): "
                         "add them or mark them not obtainable, then continue the review.", "go": "pdfs"}
     if not st.by_type("synthesis"):
         return {"text": "Continue the review: extraction, risk of bias and synthesis.", "go": "run", "until": "report"}

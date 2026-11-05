@@ -14,7 +14,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:rob:confirm"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "job": null,

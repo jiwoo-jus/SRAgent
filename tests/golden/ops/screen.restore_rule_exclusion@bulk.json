@@ -11,7 +11,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:restore_rule_exclusion"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "count": 1,

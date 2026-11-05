@@ -10,6 +10,7 @@ Both write a change summary to the run log and regenerate the reports.
 """
 from __future__ import annotations
 
+from . import state
 from .context import Ctx
 from .stages import extraction, fulltext, report, screening
 
@@ -21,7 +22,7 @@ def process_pdfs(ctx: Ctx) -> dict:
     ctx.log(f"[pdfs] {len(new)} new or changed full-text files: {new}")
     rescreened, reextracted, unreadable = [], [], []
     for rid in new:
-        st.meta.get("pdf_wanted", {}).pop(rid, None)   # the file is here now; decide with it
+        state.set_pdf_request(st, rid, actor="agent", wanted=False)   # the file is here now; decide with it
         sc = st.get(f"screen:{rid}")
         human = sc and sc["data"].get("human_decision")   # a person decided: the file is read, the decision stays
         if sc and not human and not sc["data"].get("rule") and sc["data"]["decision"] != "exclude":
@@ -65,9 +66,9 @@ def pending_changes(ctx: Ctx) -> dict:
     need_extract = sorted(r for r in inc if st.get(f"ext:{r}") is None)
     need_rob = sorted(r for r in inc if st.get(f"rob:{r}") is None)
     has_syn = bool(st.by_type("synthesis", active_only=True))
-    considered = set(st.meta.get("synthesis_considered") or (inc if not has_syn else []))
+    considered = set(state.considered(st) or (inc if not has_syn else []))
     cited = {c for n in st.by_type("synthesis", active_only=True) for c in n["data"]["cites"]}
-    if has_syn and not st.meta.get("synthesis_considered"):
+    if has_syn and not state.considered(st):
         considered = cited | {r for r in inc if st.get(f"ext:{r}")}
     new_for_syn = sorted(r for r in inc if r not in considered) if has_syn else []
     removed = sorted(c for c in cited if c not in inc)

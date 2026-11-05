@@ -61,6 +61,13 @@ class Ctx:
         if check_config:   # a started review refuses a config whose review-defining settings changed
             config_lock.check(cfg, store, rd)
         from . import graph
+        old_schema = int(store.meta.get("schema") or 1)
+        if sp.exists() and not fresh and store.nodes and old_schema < graph.SCHEMA:
+            import shutil                            # an older review: kept as it was before it is migrated
+            bak = sp.with_name(f"store.schema{old_schema}.bak.json")
+            if not bak.exists():
+                shutil.copy2(sp, bak)
+                print(f"[store] {sp.name} (schema {old_schema}) kept as {bak.name} before migrating", flush=True)
         for what in graph.migrate(store, cfg):     # an older store: versioned edges, settings nodes
             print(f"[store] migrated to schema {graph.SCHEMA}: {what}", flush=True)
         if not fresh or not sp.exists():

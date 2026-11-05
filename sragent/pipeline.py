@@ -4,6 +4,7 @@ after that stage; the order is the registry's order."""
 from __future__ import annotations
 
 from . import stagespec
+from . import state as review_state
 from .context import Ctx
 from .stages import extraction, fulltext, planning, report, rob, screening, search, synthesis
 
@@ -61,7 +62,7 @@ def _rob(ctx, state):
 
 def _synthesis(ctx, state):
     st = ctx.store
-    considered = set(st.meta.get("synthesis_considered") or [])
+    considered = set(review_state.considered(st) or [])
     human_edited = any(n["data"].get("edited") for n in st.by_type("synthesis", active_only=True))
     if human_edited and (state["changed"] or considered != set(st.included_ids())):
         ctx.log("[pipeline] the synthesis has human edits; it is not re-written (use 'Update outputs' in the To-do list)")
@@ -101,7 +102,7 @@ def _waiting_for_search(ctx: Ctx) -> bool:
     st = ctx.store
     if not ctx.cfg["pipeline"].get("confirm_search") or st.get("search"):
         return False
-    if ((st.meta.get("search_strategy") or {}).get("confirmed") or {}).get("query"):
+    if review_state.confirmed_query(st):
         return False
     ctx.save()
     ctx.log("[pipeline] the search waits for a confirmed query (pipeline.confirm_search): choose or write one in the "
@@ -113,18 +114,12 @@ def _waiting_for_pdfs(ctx: Ctx) -> bool:
     """pipeline.wait_for_pdfs: the first synthesis is written only once every requested full text has arrived or
     been declared not obtainable, so it is written once, on the settled set, instead of revised study by study.
     A synthesis that already exists is never held back (later PDFs propagate through the update engine)."""
-    st = ctx.store
-    if not ctx.cfg["pipeline"].get("wait_for_pdfs") or st.by_type("synthesis", active_only=True):
-        st.meta.pop("waiting_for_pdfs", None)
-        return False
-    pending = [x for x in fulltext.needed_pdfs(ctx) if not x["present"] and not x["declared_not_obtainable"]]
-    if not pending:
-        st.meta.pop("waiting_for_pdfs", None)
+    n = fulltext.waiting_for_pdfs(ctx)
+    if not n:
         return False
     fulltext.write_needed_pdfs(ctx)
-    st.meta["waiting_for_pdfs"] = len(pending)
     ctx.save()
-    ctx.log(f"[pipeline] the synthesis waits for {len(pending)} full text(s) (pipeline.wait_for_pdfs): add them to "
+    ctx.log(f"[pipeline] the synthesis waits for {n} full text(s) (pipeline.wait_for_pdfs): add them to "
             f"{fulltext.fulltext_dir(ctx)} as <PMID>.pdf or mark them not obtainable, then run again (the list is "
             f"{fulltext.fulltext_dir(ctx) / 'needed_pdfs.csv'}).")
     return True

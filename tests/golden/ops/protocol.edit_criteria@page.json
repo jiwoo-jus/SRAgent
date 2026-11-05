@@ -20,7 +20,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:protocol_edited"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "applied": true,

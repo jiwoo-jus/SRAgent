@@ -17,7 +17,8 @@
   "provenance": [
    "human_judgment:rob:confirm",
    "human_judgment:rob:confirm"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "count": 2,

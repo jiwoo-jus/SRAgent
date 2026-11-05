@@ -9,7 +9,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:decide_without_fulltext"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "count": 1,

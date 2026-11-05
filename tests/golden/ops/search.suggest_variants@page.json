@@ -3,16 +3,17 @@
   "decisions_log": [],
   "flags_closed": [],
   "flags_opened": [],
-  "meta_changed": [
-   "search_strategy"
-  ],
+  "meta_changed": [],
   "model_calls": {
    "search": 1,
    "search_variants": 1
   },
   "out_of_date": [],
   "proposals": [],
-  "provenance": []
+  "provenance": [],
+  "state_nodes": [
+   "strategy"
+  ]
  },
  "result": {
   "count": 6,

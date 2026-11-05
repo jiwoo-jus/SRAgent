@@ -4,7 +4,7 @@ For every study included after the full-text review: the works it cites (backwar
 cite it (forward, up to the search's end date) are collected. Records already in the review are only
 marked as also found this way. New works pass a deterministic pre-filter (title or abstract mentions
 an intervention concept or one of its database synonyms) and then go through the normal route: rules,
-title/abstract screening, full-text review. `meta.found_via` records how every record was found, so
+title/abstract screening, full-text review. A record found this way carries `found_via` (backward / forward), so
 the end-to-end evaluation can count studies found by citation chasing.
 """
 from __future__ import annotations
@@ -31,20 +31,16 @@ def snowball(ctx: Ctx, protocol: dict) -> dict:
         return {"skipped": True}
     from .fulltext import contact_email, secrets
     openalex.configure(contact_email(ctx), secrets(ctx).get("openalex_api_key", ""))
-    meta = st.meta.setdefault("snowball", {"seeds": {}, "added": [], "rounds": 0})
-    fv = st.meta.setdefault("found_via", {})
+    from .. import state
+    sb = state.snowball(st) or {"seeds": {}, "added": [], "rounds": 0}
     until = (ctx.topic.get("records") or {}).get("maxdate")
     until = until.replace("/", "-") if until else None
     terms = _terms(protocol)
-    retrieved = set(((st.get("search") or {}).get("data") or {}).get("retrieved_pmids") or [])
-    for n in st.by_type("record"):
-        if n["data"].get("pmid") in retrieved and "search" not in fv.setdefault(n["id"].split(":", 1)[1], []):
-            fv[n["id"].split(":", 1)[1]].append("search")
     by_pmid = {n["data"].get("pmid"): n["id"].split(":", 1)[1] for n in st.by_type("record") if n["data"].get("pmid")}
     by_doi = {(n["data"].get("doi") or "").lower(): n["id"].split(":", 1)[1] for n in st.by_type("record") if n["data"].get("doi")}
     # records added before the date check existed: exclude those published after the search end date
     maxdate = (ctx.topic.get("records") or {}).get("maxdate")
-    added = [r for r in meta.get("added", []) if (st.get(f"rec:{r}") or {}).get("data", {}).get("pmid")]
+    added = [r for r in sb.get("added", []) if (st.get(f"rec:{r}") or {}).get("data", {}).get("pmid")]
     if maxdate and added:
         ok = pubmed.within_dates([st.get(f"rec:{r}")["data"]["pmid"] for r in added], maxdate=maxdate)
         for r in added:
@@ -52,7 +48,7 @@ def snowball(ctx: Ctx, protocol: dict) -> dict:
                 rules.exclude(ctx, r, "outside_date_range", f"Published after the search end date ({maxdate}).")
     total_new = []
     for rnd in range(int(p.get("citation_chasing_rounds", 1))):
-        seeds = [r for r in st.included_ids() if r not in meta["seeds"]]
+        seeds = [r for r in st.included_ids() if r not in sb["seeds"]]
         if not seeds:
             break
         cands, filtered = {}, 0
@@ -79,14 +75,14 @@ def snowball(ctx: Ctx, protocol: dict) -> dict:
                     continue
                 back = [recs[x] for x in refs if x in recs]
                 fwd = [recs[x] for x in cit if x in recs]
-            meta["seeds"][rid] = {"source": src, "references": len(back), "citing": len(fwd)}
+            sb["seeds"][rid] = {"source": src, "references": len(back), "citing": len(fwd)}
             for r, how in [(x, f"backward:{rid}") for x in back] + [(x, f"forward:{rid}") for x in fwd]:
                 r = {**r, "pmid": r.get("pmid", ""), "doi": (r.get("doi") or "").lower(), "abstract": r.get("abstract") or "",
                      "title": r.get("title") or "", "year": str(r.get("year") or "")}
                 hit = by_pmid.get(r["pmid"]) or by_doi.get(r["doi"])
-                if hit:
-                    if f"citation" not in fv.setdefault(hit, []):
-                        fv[hit].append("citation")
+                if hit:   # already a record (found by the search or an earlier round): noted, not added again
+                    if hit not in sb.setdefault("also_cited", []):
+                        sb["also_cited"].append(hit)
                     continue
                 if until and r["year"] and r["year"] > until[:4]:
                     continue
@@ -119,10 +115,9 @@ def snowball(ctx: Ctx, protocol: dict) -> dict:
                 continue
             rec["found_via"] = how
             st.write(f"rec:{rec['rid']}", "record", rec, depends_on=["search"], reason=f"citation chasing ({how})")
-            fv[rec["rid"]] = ["citation"]
             new.append(rec["rid"])
-        meta["added"] += new
-        meta["rounds"] += 1
+        sb["added"] += new
+        sb["rounds"] += 1
         total_new += new
         ctx.log(f"[snowball] round {rnd + 1}: {len(seeds)} seeds -> {len(cands)} new candidates "
                 f"({filtered} without an intervention term skipped); added {len(new)}")
@@ -131,5 +126,7 @@ def snowball(ctx: Ctx, protocol: dict) -> dict:
             todo = [r for r in new if st.get(f"screen:{r}") is None]
             ctx.map(lambda r: screening.screen_one(ctx, protocol, r, "title_abstract"), todo)
             screening.fulltext_review(ctx, protocol)
+        state.save_snowball(st, sb)
         ctx.save()
-    return {"added": len(total_new), "seeds": len(meta["seeds"])}
+    state.save_snowball(st, sb)
+    return {"added": len(total_new), "seeds": len(sb["seeds"])}

@@ -15,7 +15,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:cs:accept"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "job": null,

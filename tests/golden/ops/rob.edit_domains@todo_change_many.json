@@ -19,7 +19,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:manual_edit:rob"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "message": "2 domain(s) changed, overall high",

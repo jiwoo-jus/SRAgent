@@ -13,7 +13,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:flag:ok"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "job": null,

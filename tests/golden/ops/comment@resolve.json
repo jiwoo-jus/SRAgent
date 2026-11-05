@@ -9,7 +9,8 @@
   "model_calls": {},
   "out_of_date": [],
   "proposals": [],
-  "provenance": []
+  "provenance": [],
+  "state_nodes": []
  },
  "result": {
   "resolution": "done",

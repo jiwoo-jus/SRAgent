@@ -16,6 +16,9 @@
   "proposals": [],
   "provenance": [
    "human_judgment:elig:include"
+  ],
+  "state_nodes": [
+   "cohort"
   ]
  },
  "result": {

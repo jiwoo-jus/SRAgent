@@ -3,9 +3,7 @@
   "decisions_log": [],
   "flags_closed": [],
   "flags_opened": [],
-  "meta_changed": [
-   "synthesis_considered"
-  ],
+  "meta_changed": [],
   "model_calls": {
    "extract": 1,
    "rob": 1,
@@ -17,6 +15,10 @@
   "provenance": [
    "pdf_provision:supplied",
    "pdf_provision:supplied"
+  ],
+  "state_nodes": [
+   "cohort",
+   "syn_scope"
   ]
  },
  "result": {

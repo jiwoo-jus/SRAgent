@@ -15,6 +15,9 @@
   "proposals": [],
   "provenance": [
    "human_judgment:manual_edit:screen"
+  ],
+  "state_nodes": [
+   "cohort"
   ]
  },
  "result": {

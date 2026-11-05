@@ -5,14 +5,15 @@
   ],
   "flags_closed": [],
   "flags_opened": [],
-  "meta_changed": [
-   "pdf_wanted"
-  ],
+  "meta_changed": [],
   "model_calls": {},
   "out_of_date": [],
   "proposals": [],
   "provenance": [
    "human_judgment:elig:pdf"
+  ],
+  "state_nodes": [
+   "pdf:G03"
   ]
  },
  "result": {

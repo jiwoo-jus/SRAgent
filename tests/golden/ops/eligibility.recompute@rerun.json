@@ -18,7 +18,8 @@
   ],
   "provenance": [
    "human_judgment:rerun_request:screen"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "changes": [],

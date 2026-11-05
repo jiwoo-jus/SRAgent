@@ -21,7 +21,7 @@ import copy
 import json
 from typing import Iterable
 
-SCHEMA = 2
+SCHEMA = 3
 
 # How a node type is brought up to date when a dependency changed (the vocabulary of the step-2 engine).
 #   settings   a value from the config: changes only by a settings change (config_lock)
@@ -35,14 +35,22 @@ TYPES: dict[str, dict] = {
     "setting":    {"depends": [], "update": "settings"},
     "protocol":   {"depends": ["cfg:question", "cfg:seed_eligibility"], "update": "derive"},
     "criterion":  {"depends": ["protocol"], "update": "derive"},
-    "search":     {"depends": ["protocol", "cfg:records"], "update": "derive"},
+    "search":     {"depends": ["protocol", "cfg:records", "strategy?"], "update": "derive"},
     "record":     {"depends": ["search"], "update": "derive"},
     "fulltext":   {"depends": ["rec:<rid>"], "update": "recompute"},
-    "screen":     {"depends": ["rec:<rid>", "protocol", "crit:*?", "ft:<rid>?"], "update": "assess"},
+    "screen":     {"depends": ["rec:<rid>", "protocol", "crit:*?", "ft:<rid>?", "cfg:screening_rules?"], "update": "assess"},
     "extraction": {"depends": ["screen:<rid>", "ft:<rid>|rec:<rid>", "field:*?", "cfg:question"], "update": "recompute"},
     "rob":        {"depends": ["ext:<rid>", "ft:<rid>|rec:<rid>", "dom:*?", "cfg:rob_tool"], "update": "recompute"},
     "synthesis":  {"depends": ["ext:*?", "rob:*?", "cfg:question"], "update": "revise"},
     "report":     {"depends": ["syn:*?"], "update": "render"},
+    # review state that lived in store.meta (state.py)
+    "approval":   {"depends": ["protocol"], "update": "person"},            # stale: the protocol changed since approval
+    "strategy":   {"depends": ["protocol"], "update": "person"},            # the search strategy chosen with the team
+    "cohort":     {"depends": [], "update": "derived"},                     # the included set
+    "synthesis_scope": {"depends": ["cohort"], "update": "integrate"},      # stale: studies to integrate or remove
+    "snowball":   {"depends": ["cohort"], "update": "derive"},
+    "pdf_request": {"depends": ["rec:<rid>"], "update": "person"},
+    "rules_run":  {"depends": ["cfg:screening_rules?"], "update": "derive"},
 }
 # How to read "depends": an id is required as written; <rid> is the node's own study; `a|b` is one of them; `x:*` any
 # number of nodes with that prefix (at least one; `x:*?` also none); a trailing `?` makes any edge optional.
@@ -82,6 +90,7 @@ def settings_from_config(cfg: dict) -> dict[str, dict]:
         "cfg:screening_rules": {"value": topic.get("screening_rules")},
         "cfg:records": {"value": topic.get("records") or {}},
         "cfg:human_mode": {"value": p.get("human_mode")},
+        "cfg:fulltext_unclear": {"value": p.get("fulltext_unclear")},
         "cfg:rob_tool": {"value": topic.get("rob_tool_name", "")},
     }
     for f in topic.get("extraction_fields") or []:
@@ -206,6 +215,20 @@ def migrate(store, cfg: dict | None = None) -> list[str]:
                 _set_deps(store, n, list(n["depends_on"]) + ["cfg:records"])
             done.append("edges refined: extraction -> field:*, rob -> dom:*, synthesis/protocol/search -> cfg:*")
         store.meta["schema"] = 2
+        store.reindex()
+        schema = 2
+    if schema < 3:
+        # the side notes in meta become nodes (state.py); rule exclusions get their edge to the rule setting
+        from . import state
+        if cfg is not None:
+            sync_settings(store, cfg)
+        if store.get("cfg:screening_rules"):
+            for n in store.by_type("screen"):
+                if n["data"].get("rule"):
+                    _set_deps(store, n, list(n["depends_on"]) + ["cfg:screening_rules"])
+        moved = state.migrate_meta(store)
+        done += [f"{m} moved from meta into a node" for m in moved]
+        store.meta["schema"] = 3
         store.reindex()
     return done
 

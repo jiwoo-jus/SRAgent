@@ -87,7 +87,8 @@ def not_retrieved(st) -> int:
 
 def coverage_note(st) -> str:
     """One sentence for the report: what the synthesis rests on and what was missing."""
-    w = st.meta.get("synthesis_written_with") or {}
+    from .. import state
+    w = (st.get(state.SCOPE) or {}).get("data", {}).get("written_with") or {}
     now = not_retrieved(st)
     inc = len(st.included_ids())
     parts = []
@@ -109,9 +110,9 @@ def synthesize(ctx: Ctx) -> int:
     for n in ctx.store.by_type("synthesis", active_only=True):   # a re-written synthesis replaces the old one
         if n["id"] not in keep:
             ctx.store.set_status(n["id"], "superseded", reason="synthesis re-written")
-    ctx.store.meta["synthesis_considered"] = sorted(ctx.store.included_ids())
-    ctx.store.meta["synthesis_written_with"] = {"included": len(ctx.store.included_ids()), "not_retrieved": not_retrieved(ctx.store),
-                                               "when": time.strftime("%Y-%m-%d %H:%M")}
+    from .. import state
+    state.set_considered(ctx.store, ctx.store.included_ids(), written_with={
+        "included": len(ctx.store.included_ids()), "not_retrieved": not_retrieved(ctx.store), "when": time.strftime("%Y-%m-%d %H:%M")})
     ctx.log(f"[synthesis] {len(statements)} statements")
     if ctx.cfg["pipeline"].get("verify_synthesis", True):
         verify_all(ctx)

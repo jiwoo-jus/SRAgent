@@ -128,7 +128,8 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
                 items.append(_item(n["id"], t, action, [f"new item(s) {names}"], pinned, rid))   # a person's edited values are kept
     # outputs that are missing (not stale: they do not exist yet)
     has_syn = bool(st.by_type("synthesis", active_only=True))
-    considered = set(st.meta.get("synthesis_considered") or [])
+    from . import state
+    considered = set(state.considered(st) or [])
     for rid in sorted(inc):
         if scope is not None and f"screen:{rid}" not in scope:
             continue
@@ -432,7 +433,8 @@ def _synthesis(ctx: Ctx, cs: dict, items: list[dict], tag: str) -> None:
             feedback._include_study(ctx, cs, rid, tp=tag, integrate=True)
             touched |= {c["node"] for c in cs["changes"] if c["node"].startswith("syn:")} - before | \
                 {n["id"] for n in st.by_type("synthesis", active_only=True)} - before
-    st.meta["synthesis_considered"] = sorted(inc)
+    from . import state
+    state.set_considered(st, inc)
     if ctx.cfg["pipeline"].get("verify_synthesis", True):
         for sid in sorted(touched):
             if st.get(sid) and st.get(sid)["status"] == "active":

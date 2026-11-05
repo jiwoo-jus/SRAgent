@@ -46,6 +46,10 @@ def _lines(p: Path) -> list[dict]:
     return [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
 
 
+# review state that lived in meta until phase 2b (sragent/state.py)
+STATE_TYPES = ("approval", "strategy", "cohort", "synthesis_scope", "snowball", "pdf_request", "rules_run")
+
+
 def _snapshot(ctx) -> dict:
     from sragent import provenance
     st = ctx.store
@@ -55,6 +59,7 @@ def _snapshot(ctx) -> dict:
             "usage": len(_lines(ctx.run_dir / "usage.jsonl")),
             "flags": {(n["id"], f["id"]): (f.get("source"), f["status"]) for n in st.nodes.values() for f in n["flags"]},
             "meta": json.loads(json.dumps(st.meta, default=str)),
+            "state": {n["id"]: n["version"] for n in st.nodes.values() if n["type"] in STATE_TYPES},
             "proposals": {p.name for p in fb.glob("*.json")} if fb.exists() else set()}
 
 
@@ -87,6 +92,7 @@ def effects(ctx, before: dict, tmp) -> dict:
     return {"decisions_log": [f"{x.get('todo_id', '').split(':', 1)[0]}:{x.get('option')} ({x.get('status')})" for x in hd],
             "provenance": sorted(f"{e['category']}:{e['action']}" for e in prov),
             "flags_opened": opened, "flags_closed": closed, "meta_changed": meta,
+            "state_nodes": sorted(k for k, v in after["state"].items() if before["state"].get(k) != v),
             "proposals": [cs_view(c) for c in new_cs],
             "model_calls": dict(sorted(Counter(u.get("tag") for u in usage).items())),
             "out_of_date": sorted(f"{i['node']} {i['action']}" for i in plan["items"] if i["action"] not in ("render",))}
@@ -465,6 +471,76 @@ def test_a_confirmation_does_not_make_an_output_current(tmp_path):
     assert graph.stale_reasons(ctx.store, "rob:G01")                     # still out of date ...
     item = next(i for i in engine.plan(ctx)["items"] if i["node"] == "rob:G01")
     assert item["action"] == "keep" and item["pinned"]                   # ... and kept, because a person confirmed it
+
+
+# meta keys that are presentation, history or job bookkeeping, not review state (sragent/state.py)
+META_ALLOWED = {"snoozed", "comments", "config_lock", "config_changes", "protocol_revisions", "flag_seq", "schema",
+                "rob_reassess", "gold_input", "verified_extraction_input"}
+
+
+def test_review_state_is_in_nodes_not_meta():
+    """No code reads or writes review state in store.meta outside the documented presentation and bookkeeping keys."""
+    import re
+    root = Path(__file__).resolve().parents[1] / "sragent"
+    used = {}
+    for p in root.rglob("*.py"):
+        if p.name == "state.py":                       # the migration from meta
+            continue
+        for k in re.findall(r"meta(?:\.get|\.setdefault|\.pop)?[\(\[]\s*[\"'](\w+)[\"']", p.read_text()):
+            used.setdefault(k, []).append(p.name)
+    assert set(used) <= META_ALLOWED, {k: v for k, v in used.items() if k not in META_ALLOWED}
+
+
+def test_an_older_review_is_migrated_with_a_backup(tmp_path):
+    """A review saved before phase 2b (side notes in meta, schema 2) opens with its notes moved into nodes, its old
+    store kept beside it, and the same meaning: the approval holds, the scope, requests and rules are where they were."""
+    from sragent import state
+    from sragent.context import Ctx
+    from test_golden import golden_mock
+    ctx = reviewed(tmp_path, AWAITING)
+    st = ctx.store
+    state.approve(st, "ok")
+    approved_v = st.get("protocol")["version"]
+    # turn the nodes back into the meta of an older store
+    m = st.meta
+    m["protocol_approved"] = {"ts": 1.0, "note": "ok"}
+    m["search_strategy"] = {"variants": [], "chat": [], "confirmed": {"query": "emicizumab[tiab]", "count": 9}}
+    m["synthesis_considered"] = state.considered(st)
+    m["synthesis_written_with"] = {"included": 2, "not_retrieved": 0, "when": "x"}
+    m["pdf_wanted"], m["pdf_unavailable"] = {"G03": True}, ["G05"]
+    m["rules_applied"] = state.rules_applied(st)
+    m["waiting_for_pdfs"] = 1
+    for nid in [n["id"] for n in st.nodes.values() if n["type"] in STATE_TYPES]:
+        del st.nodes[nid]
+    for n in st.by_type("screen"):
+        n["depends_on"] = [d for d in n["depends_on"] if d != "cfg:screening_rules"]
+    m["schema"] = 2
+    st.reindex()
+    ctx.save()
+    c2 = Ctx.create(ctx.cfg, mock_fn=golden_mock)
+    s2 = c2.store
+    assert (ctx.run_dir / "store.schema2.bak.json").exists() and s2.meta["schema"] == 3
+    assert not set(s2.meta) - META_ALLOWED
+    assert state.approval(s2) and s2.get("protocol")["version"] == approved_v
+    assert state.confirmed_query(s2)["query"] == "emicizumab[tiab]"
+    assert state.considered(s2) == ["G01", "G02"] and s2.get(state.SCOPE)["data"]["written_with"]["included"] == 2
+    assert state.wanted(s2) == {"G03"} and state.unavailable(s2) == {"G05"}
+    assert state.rules_applied(s2)["rules"] and "cfg:screening_rules" in s2.get("screen:G07")["depends_on"]
+    from sragent import graph
+    assert not graph.stale(s2), graph.stale(s2)         # the migration itself makes nothing out of date
+
+
+def test_a_changed_rule_set_makes_its_exclusions_out_of_date(tmp_path):
+    """Rule exclusions depend on the rule setting; the agent's own screening decisions do not."""
+    from sragent import graph, state
+    ctx = reviewed(tmp_path)
+    st = ctx.store
+    assert st.get("screen:G07")["data"]["rule"] and state.rules_applied(st)
+    st.write("cfg:screening_rules", "setting", {"value": ["no_abstract_off_topic"]}, reason="rule set changed")
+    stale = graph.stale(st)
+    assert "screen:G07" in stale and "rules" in stale
+    assert not [n for n in stale if n.startswith("screen:") and n != "screen:G07"]
+    assert state.rules_applied(st) is None               # the interface applies the rules again
 
 
 def test_every_operation_is_accounted_for():

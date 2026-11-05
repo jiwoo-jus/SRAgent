@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from .. import gold
+from .. import gold, state
 from ..context import Ctx
 from ..stages.screening import RETRIEVAL_FAILURES
 from .common import prf, wilson
@@ -74,9 +74,9 @@ def end_to_end(ctx: Ctx) -> dict:
     retrieved = set(s.get("retrieved_pmids") or [])
     recs = {n["id"].split(":", 1)[1]: n["data"] for n in st.by_type("record")}
     gold_inc = sorted(r for r, l in labels.items() if l == 1)
-    fv = st.meta.get("found_via", {})
+    cited = set((state.snowball(st) or {}).get("also_cited") or [])
     found_by = lambda rid: ("search" if (recs.get(rid) or {}).get("pmid") in retrieved else
-                            "citation chasing" if "citation" in fv.get(rid, []) else None)
+                            "citation chasing" if (recs.get(rid) or {}).get("found_via") or rid in cited else None)
     per = []
     for rid in gold_inc:
         pmid = (recs.get(rid) or {}).get("pmid", "")
@@ -97,7 +97,7 @@ def end_to_end(ctx: Ctx) -> dict:
                    "search_recall": round(sum(p["found_by_search"] for p in per) / len(gold_inc), 3) if gold_inc else None,
                    "retrieved_outside_benchmark_pool": len(retrieved - pool_pmids),
                    "gold_found_by_citation_chasing_only": sum(p["found_by"] == "citation chasing" for p in per),
-                   "records_added_by_citation_chasing": len((st.meta.get("snowball") or {}).get("added", []))},
+                   "records_added_by_citation_chasing": len((state.snowball(st) or {}).get("added", []))},
         "gold_outcomes": dict(Counter(p["outcome"] for p in per)),
         "gold_found_any_route": sum(1 for p in per if p["found_by"]),
         "end_to_end_recall": round(tp / len(gold_inc), 3) if gold_inc else None,

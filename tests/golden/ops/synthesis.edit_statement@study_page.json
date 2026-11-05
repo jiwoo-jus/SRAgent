@@ -11,7 +11,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:manual_edit:syn"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "message": "statement saved",

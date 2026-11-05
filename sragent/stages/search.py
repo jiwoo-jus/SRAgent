@@ -68,7 +68,7 @@ def build_query(ctx: Ctx, protocol: dict) -> dict:
 
 # ---------------------------------------------------------------- the search strategy chosen with the review team
 # The agent's query is one proposal. In a real review the team can see alternatives with their PubMed hit counts, ask
-# for changes in plain words, count any query, and confirm the one to run (store.meta["search_strategy"]).
+# for changes in plain words, count any query, and confirm the one to run (the `strategy` node, state.py).
 
 def count(ctx: Ctx, query: str) -> dict:
     """PubMed hit count of a query (free; one esearch with retmax 0), with the date limit of the review."""
@@ -81,7 +81,9 @@ def count(ctx: Ctx, query: str) -> dict:
 
 
 def strategy_meta(st) -> dict:
-    return st.meta.setdefault("search_strategy", {"variants": [], "chat": [], "confirmed": None})
+    """The strategy notes (a copy; saved with state.save_strategy)."""
+    from .. import state
+    return state.strategy(st)
 
 
 def _syn_lines(protocol: dict) -> str:
@@ -117,6 +119,8 @@ def suggest_queries(ctx: Ctx, protocol: dict) -> dict:
         variants.append(var)
     m["variants"] = variants
     m["suggested_at"] = time.strftime("%Y-%m-%d %H:%M")
+    from .. import state
+    state.save_strategy(st, m, reason="the agent's query and alternatives")
     ctx.log(f"[search] {len(variants) - 1} alternative queries proposed: " +
             ", ".join(f"{v['name']} ({v.get('count')})" for v in variants[1:]))
     return m
@@ -135,6 +139,8 @@ def refine_query(ctx: Ctx, protocol: dict, query: str, instruction: str) -> dict
     m["chat"].append({"role": "user", "text": instruction})
     m["chat"].append({"role": "agent", "text": res["explanation"], "query": new_q, "count": res.get("count")})
     m["draft"] = {"query": new_q, "count": res.get("count")}
+    from .. import state
+    state.save_strategy(st, m, reason=f"query changed as asked: {instruction[:80]}")
     return res
 
 
@@ -149,6 +155,8 @@ def confirm_query(ctx: Ctx, query: str, note: str = "") -> dict:
                       "variant": (var or {}).get("name"), "rationale": (var or {}).get("rationale", ""),
                       "concept_blocks": (var or {}).get("concept_blocks", []), "note": note,
                       "by": "user", "ts": time.strftime("%Y-%m-%d %H:%M")}
+    from .. import state
+    state.save_strategy(st, m, actor="user", reason="query confirmed by the review team")
     ctx.log(f"[search] query confirmed by the review team ({c.get('count')} hits)")
     return m["confirmed"]
 
@@ -156,7 +164,8 @@ def confirm_query(ctx: Ctx, query: str, note: str = "") -> dict:
 def search(ctx: Ctx, protocol: dict) -> list[dict]:
     src = ctx.topic.get("records", {})
     kind = src.get("source", "pubmed")
-    confirmed = (ctx.store.meta.get("search_strategy") or {}).get("confirmed")
+    from .. import state
+    confirmed = state.confirmed_query(ctx.store)
     if confirmed and confirmed.get("query"):
         strategy = {"query": confirmed["query"], "concept_blocks": confirmed.get("concept_blocks") or [],
                     "rationale": confirmed.get("rationale") or "", "query_source": "confirmed by the review team",
@@ -217,7 +226,8 @@ def search(ctx: Ctx, protocol: dict) -> list[dict]:
             g = gold.load(ctx.run_dir)
             g["benchmark_search_recall"] = bench
             gold.save(ctx.run_dir, g)
-    st.write("search", "search", strategy, depends_on=["protocol", "cfg:records"], reason="search executed")
+    st.write("search", "search", strategy, depends_on=["protocol", "cfg:records"] + (["strategy"] if st.get("strategy") else []),
+             reason="search executed")
     for r in recs:
         rid = r["rid"]
         if st.get(f"rec:{rid}") is None:

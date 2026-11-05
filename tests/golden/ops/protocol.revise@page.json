@@ -22,7 +22,8 @@
   "proposals": [],
   "provenance": [
    "human_judgment:protocol_revision_requested"
-  ]
+  ],
+  "state_nodes": []
  },
  "result": {
   "applied": true,
