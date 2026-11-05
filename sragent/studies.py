@@ -90,10 +90,12 @@ def _study_nodes(st, rid):
 
 
 def _flags_of(st, rid):
+    from .attention import by_node
+    derived = by_node(st)
     out = []
     for nid in _study_nodes(st, rid):
-        for f in st.get(nid)["flags"]:
-            out.append({**{k: f.get(k) for k in ("id", "text", "status", "actor", "source", "ts", "resolution")}, "node": nid})
+        for f in st.get(nid)["flags"] + derived.get(nid, []):
+            out.append({**{k: f.get(k) for k in ("id", "text", "status", "actor", "source", "ts", "resolution", "derived")}, "node": nid})
     return out
 
 

@@ -620,7 +620,7 @@ class App:
             return {"ok": False, "message": str(e)}
         from ..sync import pending_changes
         pc = pending_changes(self.ctx()).get("stale") or {}
-        n = (pc.get("summary") or {}).get("extraction:extract", 0) + (pc.get("summary") or {}).get("rob:assess", 0)
+        n = (pc.get("summary") or {}).get("extraction:recompute", 0) + (pc.get("summary") or {}).get("rob:recompute", 0)
         return {"ok": True, "message": f"saved to {lib.rel(target)}" + (f"; {n} output(s) to bring up to date (Out-of-date outputs)" if n else ""),
                 "pending": pc}
 

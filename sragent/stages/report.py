@@ -198,7 +198,9 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
                                  if k in STATEMENT_FIELDS and str(x.get("value", "NR")).upper() != "NR")
                 block.append(f"      [{c}] {vals or '(no values)'}")
         L.append(cap("\n".join(block)))
-    flags = [(n["id"], f) for n in st.nodes.values() for f in n["flags"] if f["status"] == "open"]
+    from ..attention import by_node, open_flags as _open
+    derived = by_node(st)
+    flags = [(n["id"], f) for n in st.nodes.values() for f in _open(st, n, derived)]
     if flags:
         L += ["", "### Open flags"] + [f"[{nid}] {f['text']}" for nid, f in flags]
     return "\n".join(L)
@@ -397,14 +399,16 @@ def _fbbox(nid: str) -> str:
 
 
 FLAG_KIND = {"screening": "awaiting classification", "screening_unclear": "included by rule", "eligibility_doubt": "eligibility doubt",
-             "reassess": "protocol changed", "synthesis_verify": "self-check", "evidence_check": "evidence", "term_validation": "term"}
+             "reassess": "differs from your decision", "source_changed": "full text changed", "manual_edit": "your edit", "synthesis_verify": "self-check", "evidence_check": "evidence", "term_validation": "term"}
 
 
 def open_flags(ctx: Ctx) -> dict:
     """Every open flag on an active output of the review, for the report and the Overview (in agent-only mode nobody
     answers them during the run, so they must be visible at the end)."""
+    from ..attention import by_node, open_flags as _open
     st = ctx.store
     inc = set(st.included_ids())
+    derived = by_node(st)      # notes that follow from the graph (attention.py), alongside the stored flags
     items = []
     for n in st.nodes.values():
         if n["status"] != "active" or n["type"] in ("setting", "record", "fulltext"):
@@ -412,9 +416,7 @@ def open_flags(ctx: Ctx) -> dict:
         rid = n["id"].split(":", 1)[1] if ":" in n["id"] and n["type"] in ("screen", "eligibility", "extraction", "rob") else ""
         if n["type"] in ("extraction", "rob") and rid not in inc:
             continue
-        for f in n["flags"]:
-            if f["status"] != "open":
-                continue
+        for f in _open(st, n, derived):
             rec = (st.get(f"rec:{rid}") or {}).get("data", {}) if rid else {}
             items.append({"node": n["id"], "study": (rec.get("title") or "") if rid else (n["data"].get("id") or ""),
                           "source": FLAG_KIND.get(f.get("source"), f.get("source") or "flag"), "text": f["text"]})
@@ -422,8 +424,11 @@ def open_flags(ctx: Ctx) -> dict:
     return {"n": len(items), "by_source": dict(sorted(by.items())), "items": items}
 
 
-def _flags(n) -> str:
-    return "".join(f'<div class="flag">{_e(f["text"])} ({_e(f["status"])})</div>' for f in n["flags"])
+def _flags(n, derived: dict | None = None) -> str:
+    """A node's flags: stored ones (any status) and its derived notes (attention.by_node, keyed by node id; a study
+    record carries the id of its decision node as node_id)."""
+    notes = (derived or {}).get(n.get("node_id") or n["id"], [])
+    return "".join(f'<div class="flag">{_e(f["text"])} ({_e(f["status"])})</div>' for f in list(n["flags"]) + notes)
 
 
 def _label(name) -> str:
@@ -600,7 +605,9 @@ def report_html(ctx: Ctx) -> str:
     from collections import Counter
     from .. import provenance
     from ..config_lock import changes as cfg_changes, models_by_stage, short
+    from ..attention import by_node
     st = ctx.store
+    _derived = by_node(st)      # notes that follow from the graph, shown beside each output's stored flags
     p = st.get("protocol")["data"]
     crit_list = p.get("criteria", [])
     crit_by_id = {c["id"]: c for c in crit_list}
@@ -828,7 +835,7 @@ def report_html(ctx: Ctx) -> str:
                        for c in d.get("cites", []))
         H.append(f"<div class='stmt' id='{_e(n['id'])}'><p><span class='sid'>{_e(d['id'])}</span>{_e(d['text'])} {_cite(d.get('cites', []), num)}</p>"
                  f"<div class='smeta'>Automated check: {_badge(v.get('support', 'unchecked'))} · Scope: {_e(d.get('scope') or 'not stated')} · version {n['version']}</div>"
-                 + _flags(n) + f"<details><summary>Populations of the cited studies (scope check)</summary>{pops}</details>"
+                 + _flags(n, _derived) + f"<details><summary>Populations of the cited studies (scope check)</summary>{pops}</details>"
                  + _fbbox(n["id"]) + "</div>")
 
     # ---------------- references
@@ -848,7 +855,7 @@ def report_html(ctx: Ctx) -> str:
         rec = st.get(f"rec:{rid}")["data"]
         H.append(f"<div class='study'><h3 id='ext:{_e(rid)}'>A.{i + 1} {_e(lab.get(rid, rid))} {_cite([rid], num)}</h3>"
                  f"<p class='ref'>{_e((rec.get('title') or '').rstrip('.'))}. Assessed from the {_e(str(n['data'].get('source_kind', '')).replace('fulltext', 'full text'))}"
-                 f"{' · record ' + _e(rid)} · version {n['version']}</p>{_flags(n)}")
+                 f"{' · record ' + _e(rid)} · version {n['version']}</p>{_flags(n, _derived)}")
         rows = []
         for k, v in n["data"]["fields"].items():
             chk = v.get("check", {}).get("status", "")
@@ -868,7 +875,7 @@ def report_html(ctx: Ctx) -> str:
             H.append(_table("", ["Domain", "Judgement", "Rationale", "Supporting sentences"],
                             [[_e(_label(d.get("domain"))), tl(d.get("judgment")) + " " + _badge(d.get("judgment")), _e(d.get("rationale")), _ev_html(d, rid)]
                              for d in r["data"]["domains"]], cls=["nw", "nw", "", ""]).replace("<p class='cap'></p>", ""))
-            H.append(_flags(r) + _fbbox(r["id"]) + "</details>")
+            H.append(_flags(r, _derived) + _fbbox(r["id"]) + "</details>")
         H.append(_source_html(ctx, rid) + "</div>")
 
     # ---------------- Appendix B: excluded at full text
@@ -902,7 +909,7 @@ def report_html(ctx: Ctx) -> str:
             crit_html = f"<div class='note'>Agent: {_e(d['reason'])}</div>" + crit_html
         H.append(f"<tr id='screen:{_e(rid)}'><td style='white-space:normal'><span class='mono'>{_e(rid)}</span> {_e((rec.get('title') or '')[:140])}</td>"
                  f"<td style='white-space:normal'>{_badge(d['decision'])}<div class='note'>{_e(_label(d['stage']))}"
-                 f"{'; ' + _e(', '.join(d.get('because', []))) if d.get('because') else ''}</div>{_flags(n)}</td>"
+                 f"{'; ' + _e(', '.join(d.get('because', []))) if d.get('because') else ''}</div>{_flags(n, _derived)}</td>"
                  f"<td style='white-space:normal'><details><summary>Show assessment</summary>{crit_html}</details>{_fbbox(n['id'])}</td></tr>")
     H.append("</tbody></table></div>")
 

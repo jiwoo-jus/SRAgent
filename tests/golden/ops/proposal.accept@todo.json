@@ -9,9 +9,9 @@
   "flags_opened": [],
   "meta_changed": [],
   "model_calls": {},
-  "out_of_date": [
-   "rob:G02 assess"
-  ],
+  "notes_appeared": [],
+  "notes_cleared": [],
+  "out_of_date": [],
   "proposals": [],
   "provenance": [
    "human_judgment:cs:accept"

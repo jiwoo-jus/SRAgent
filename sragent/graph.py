@@ -21,7 +21,7 @@ import copy
 import json
 from typing import Iterable
 
-SCHEMA = 4
+SCHEMA = 5
 
 # How a node type is brought up to date when a dependency changed (the vocabulary of the step-2 engine).
 #   settings   a value from the config: changes only by a settings change (config_lock)
@@ -238,6 +238,13 @@ def migrate(store, cfg: dict | None = None) -> list[str]:
             done.append(f"{n} full-text decisions moved from screen:<rid> to elig:<rid>")
         store.meta["schema"] = 4
         store.reindex()
+        schema = 4
+    if schema < 5:
+        from .attention import settle_legacy
+        n = settle_legacy(store)
+        if n:
+            done.append(f"{n} awaiting / unclear / protocol-changed / source-changed / edit flags closed: derived from the graph now")
+        store.meta["schema"] = 5
     return done
 
 

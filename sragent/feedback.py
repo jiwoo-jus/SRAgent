@@ -412,7 +412,6 @@ def _propagate(sb: Ctx, cs: dict, src_id: str, before: dict, after: dict, reason
         if after["decision"] == "forward":
             # forwarded past title/abstract: its full-text review is done now, not left to the next run
             screening.review_one(sb, st.get("protocol")["data"], rid)
-            screening.sync_awaiting_flags(sb)
             from .selection import view
             final = view(st, rid)                     # the full-text decision the review just made
             for c in cs["changes"]:
@@ -713,6 +712,13 @@ def commit(ctx: Ctx, sandbox, cs: dict, actor: str = "user"):
         for f in sn.get("flags", []):              # flags raised in the sandbox (evidence checks, retirements)
             if (f.get("text"), f.get("source")) not in have:
                 ctx.store.flag(nid, f["text"], actor=f.get("actor", "agent"), source=f.get("source", "feedback"))
+    # nodes the proposal re-checked and found unchanged are current with what they read (after the writes above,
+    # so the versions they depend on are final here; never ahead of them)
+    for nid, sn in nodes.items():
+        live = ctx.store.get(nid)
+        if live is not None and live["data"] == sn["data"] and live.get("dep_versions") != sn.get("dep_versions"):
+            live["dep_versions"] = {d: min(v, (ctx.store.get(d) or {}).get("version", v))
+                                    for d, v in (sn.get("dep_versions") or {}).items() if d in live["depends_on"]}
     for k, v in meta.items():
         ctx.store.meta[k] = copy.deepcopy(v)
     tgt = cs.get("target")

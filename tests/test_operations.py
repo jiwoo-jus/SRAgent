@@ -58,6 +58,7 @@ def _snapshot(ctx) -> dict:
             "prov": len(provenance.events(ctx.run_dir)),
             "usage": len(_lines(ctx.run_dir / "usage.jsonl")),
             "flags": {(n["id"], f["id"]): (f.get("source"), f["status"]) for n in st.nodes.values() for f in n["flags"]},
+            "notes": {f"{x['node']} [{x['source']}]" for x in __import__("sragent.attention", fromlist=["x"]).notes(st)},
             "meta": json.loads(json.dumps(st.meta, default=str)),
             "state": {n["id"]: n["version"] for n in st.nodes.values() if n["type"] in STATE_TYPES},
             "proposals": {p.name for p in fb.glob("*.json")} if fb.exists() else set()}
@@ -93,6 +94,7 @@ def effects(ctx, before: dict, tmp) -> dict:
             "provenance": sorted(f"{e['category']}:{e['action']}" for e in prov),
             "flags_opened": opened, "flags_closed": closed, "meta_changed": meta,
             "state_nodes": sorted(k for k, v in after["state"].items() if before["state"].get(k) != v),
+            "notes_appeared": sorted(after["notes"] - before["notes"]), "notes_cleared": sorted(before["notes"] - after["notes"]),
             "proposals": [cs_view(c) for c in new_cs],
             "model_calls": dict(sorted(Counter(u.get("tag") for u in usage).items())),
             "out_of_date": sorted(f"{i['node']} {i['action']}" for i in plan["items"] if i["action"] not in ("render",))}
@@ -351,8 +353,9 @@ def _special(name, ctx, monkeypatch):
         return _todo(f"cs:{cs['id']}", "accept" if accept else "reject", "ok" if accept else "keep it")
     if name in ("edited_ok", "edited_update"):
         actions.edit(ctx, {"kind": "ext", "rid": "G01", "fields": {"sample_size": "14 participants"}, "note": "Table 1"})
-        f = next(f for f in ctx.store.get("ext:G01")["flags"] if f["status"] == "open" and f.get("source") == "manual_edit")
-        return _todo(f"edited:ext:G01:{f['id']}", "ok" if name == "edited_ok" else "update")
+        from sragent import todos
+        assert any(t["id"] == "edited:ext:G01" for t in todos.build(ctx))     # derived from the out-of-date dependents
+        return _todo("edited:ext:G01", "ok" if name == "edited_ok" else "update")
     if name == "clarify":
         cs = feedback.handle_feedback(ctx, "this is wrong", target=None, auto_accept=False)
         return _todo(f"clarify:{cs['id']}", "answer", "the sample size of G01")
@@ -470,7 +473,7 @@ def test_a_confirmation_does_not_make_an_output_current(tmp_path):
     assert todos.apply(ctx, {"todo_id": "rob:G01", "option": "confirm", "text": "fine"})["ok"]
     assert graph.stale_reasons(ctx.store, "rob:G01")                     # still out of date ...
     item = next(i for i in engine.plan(ctx)["items"] if i["node"] == "rob:G01")
-    assert item["action"] == "keep" and item["pinned"]                   # ... and kept, because a person confirmed it
+    assert item["action"] == "kept" and item["pinned"]                   # ... and kept, because a person confirmed it
 
 
 # meta keys that are presentation, history or job bookkeeping, not review state (sragent/state.py)
@@ -582,6 +585,17 @@ def test_a_changed_rule_set_makes_its_exclusions_out_of_date(tmp_path):
     assert "screen:G07" in stale and "rules" in stale
     assert not [n for n in stale if n.startswith("screen:") and n != "screen:G07"]
     assert state.rules_applied(st) is None               # the interface applies the rules again
+
+
+def test_derived_notes_are_never_stored_as_flags():
+    """Awaiting, included-by-policy, differs-from-your-decision, source-changed and your-edit notices are derived from
+    the graph (attention.py); no code stores them as flags that would then need to be kept in step by hand."""
+    import re
+    from sragent.attention import SOURCES
+    root = Path(__file__).resolve().parents[1] / "sragent"
+    hits = [f"{p.relative_to(root)}:{i}" for p in root.rglob("*.py") for i, line in enumerate(p.read_text().splitlines(), 1)
+            if re.search(r"source=[\"'](%s)[\"']" % "|".join(SOURCES), line)]
+    assert not hits, hits
 
 
 def test_every_operation_is_accounted_for():

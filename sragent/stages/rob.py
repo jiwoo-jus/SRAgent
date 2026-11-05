@@ -24,10 +24,7 @@ def rob_one(ctx: Ctx, rid: str) -> dict:
         ftn = st.get(f"ft:{rid}")
         d = dict(old["data"], source_version=ftn["version"] if ftn else None)
         st.annotate(old["id"], d, evidence=old["evidence"], reason="source changed; the assessment a person confirmed is kept")
-        if not any(f["status"] == "open" and f["source"] == "source_changed" for f in old["flags"]):
-            st.flag(old["id"], "The full text changed after you confirmed this assessment; it was kept. "
-                    "Ask for a re-assessment if the new text should change it.", actor="agent", source="source_changed")
-        return d
+        return d   # it stays out of date with the new text: a derived note (attention.py) says so
     text, kind = st.text_of(rid)
     src_node = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
     ext_brief = _ext_brief(st, rid)

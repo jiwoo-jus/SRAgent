@@ -3,15 +3,17 @@
   "decisions_log": [
    "edit:manual_edit (applied)"
   ],
-  "flags_closed": [
-   "elig:G03 [screening]"
-  ],
+  "flags_closed": [],
   "flags_opened": [],
   "meta_changed": [],
   "model_calls": {},
+  "notes_appeared": [],
+  "notes_cleared": [
+   "elig:G03 [screening]"
+  ],
   "out_of_date": [
-   "ext:G03 extract",
-   "syn:+G03 integrate"
+   "ext:G03 recompute",
+   "syn:+G03 revise"
   ],
   "proposals": [],
   "provenance": [

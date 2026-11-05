@@ -3,17 +3,15 @@
   "decisions_log": [
    "edited:ok (applied)"
   ],
-  "flags_closed": [
-   "ext:G01 [manual_edit]"
-  ],
+  "flags_closed": [],
   "flags_opened": [],
   "meta_changed": [],
   "model_calls": {},
-  "out_of_date": [
-   "rob:G01 assess",
-   "syn:S1 revise",
-   "syn:S3 revise"
+  "notes_appeared": [],
+  "notes_cleared": [
+   "ext:G01 [manual_edit]"
   ],
+  "out_of_date": [],
   "proposals": [],
   "provenance": [
    "human_judgment:edited:ok"

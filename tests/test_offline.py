@@ -311,19 +311,19 @@ def test_ui_app_state_and_estimate(tmp_path):
     assert r["ok"]
 
 
-def test_awaiting_flags_follow_the_decision(tmp_path):
+def test_awaiting_notes_follow_the_decision(tmp_path):
+    """'Awaiting classification' is derived from the decision (attention.py): there while undecided, gone after."""
     import pytest
-    from sragent.stages import screening
+    from sragent import attention
     ctx = make_ctx(tmp_path)
     st = ctx.store
     st.upsert("rec:1", "record", {"rid": "1", "title": "t", "abstract": "a"})
-    st.upsert("elig:1", "eligibility", {"stage": "full_text", "decision": "awaiting", "because": ["I1"]})
-    screening.sync_awaiting_flags(ctx)
-    screening.sync_awaiting_flags(ctx)
-    assert [f["status"] for f in SN(st, "1")["flags"]] == ["open"]
+    st.upsert("screen:1", "screen", {"stage": "title_abstract", "decision": "forward", "because": []}, depends_on=["rec:1"])
+    st.upsert("elig:1", "eligibility", {"stage": "full_text", "decision": "awaiting", "because": ["I1"]}, depends_on=["screen:1"])
+    assert [x["source"] for x in attention.by_node(st).get("elig:1", [])] == ["screening"]
+    assert not SN(st, "1")["flags"]                                    # nothing stored to keep in step
     SN(st, "1")["data"]["decision"] = "exclude"
-    screening.sync_awaiting_flags(ctx)
-    assert [f["status"] for f in SN(st, "1")["flags"]] == ["resolved"]
+    assert not attention.by_node(st).get("elig:1")
     with pytest.raises(ValueError, match="agent_only"):
         load_config(None, {"pipeline": {"human_mode": "agent_only"}})
 
@@ -729,7 +729,11 @@ def test_human_edits_survive_a_re_extraction_and_re_assessment(tmp_path):
     rob.rob_one(ctx, "1001")
     d = st.get("rob:1001")["data"]
     assert d["overall"] == "high" and d["human_confirmed"]
-    assert any(f["status"] == "open" and f["source"] == "source_changed" for f in st.get("rob:1001")["flags"])
+    from sragent import attention
+    assert not [x for x in attention.by_node(st).get("rob:1001", []) if x["source"] == "source_changed"]   # same text
+    ft = st.get("ft:1001")
+    st.write("ft:1001", "fulltext", {**ft["data"], "text": ft["data"]["text"] + " A new section."}, depends_on=ft["depends_on"])
+    assert any(x["source"] == "source_changed" for x in attention.by_node(st).get("rob:1001", []))   # a new text: noted
 
 
 def test_missing_criterion_assessment_counts_as_unclear():
@@ -1039,7 +1043,7 @@ def test_an_answer_after_a_criterion_change_keeps_the_reassessment_pending(tmp_p
     planning.plan(ctx)                                                   # the protocol changes first ...
     assert todos.apply(ctx, {"todo_id": "elig:1002", "option": "include", "text": "PK table"})["ok"]   # ... then the answer
     by = {i["node"]: i for i in engine.plan(ctx)["items"]}
-    assert by["elig:1002"]["action"] == "reassess" and by["elig:1002"]["criteria"] == ["E1"]
+    assert by["elig:1002"]["action"] == "recompute" and by["elig:1002"]["criteria"] == ["E1"]
 
 
 def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
@@ -1062,12 +1066,12 @@ def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
     plan = engine.plan(ctx)
     assert sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines()) == n_calls   # planning made no model call
     by = {i["node"]: i for i in plan["items"]}
-    assert by["elig:1001"]["action"] == "reassess" and by["elig:1001"]["criteria"] == ["E1"]
-    assert by["elig:1002"]["action"] == "reassess" and by["elig:1002"]["pinned"]                  # assessed, decision kept
-    assert by["screen:1001"]["action"] == "touch"                     # screened on its full text: that node decides
-    assert by["screen:1004"]["action"] == "reassess"                                             # excluded ones too
+    assert by["elig:1001"]["action"] == "recompute" and by["elig:1001"]["criteria"] == ["E1"]
+    assert by["elig:1002"]["action"] == "recompute" and by["elig:1002"]["pinned"]                  # assessed, decision kept
+    assert by["screen:1001"]["action"] == "current"                     # screened on its full text: that node decides
+    assert by["screen:1004"]["action"] == "recompute"                                             # excluded ones too
     assert plan["cost"]["total_usd"] is not None and \
-        plan["summary"].get("screen:reassess", 0) + plan["summary"].get("eligibility:reassess", 0) >= 3
+        plan["summary"].get("screen:recompute", 0) + plan["summary"].get("eligibility:recompute", 0) >= 3
     cs = engine.execute(ctx, tag="test")
     d2 = SC(st, "1002")
     assert d2["decision"] == "include" and d2["human_decision"] and "E1" in {a["id"] for a in d2["criteria"]}
@@ -1075,7 +1079,7 @@ def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
     assert {a["id"] for a in SC(st, "1001")["criteria"]} >= {"I1", "I2", "I3", "E1"}
     assert st.get("ext:1001")["data"]["fields"]["sample_size"]["value"] == "14 participants"      # the edit survived
     left = engine.plan(ctx)["items"]                                    # nothing left to do: only notes for a person
-    assert [i for i in left if i["action"] not in ("keep", "render")] == []
+    assert [i for i in left if i["action"] not in ("kept", "render")] == []
     assert {i["node"] for i in left} <= {"search", "report"}            # the search was built from the old protocol
 
 
@@ -1307,7 +1311,7 @@ def test_first_extraction_set_aside_by_the_eligibility_check_does_not_crash(tmp_
     # the update engine's extract item
     ecs = {"changes": []}
     with ctx.at("extract"):
-        engine._extract(ctx, ecs, {"rid": "1002", "action": "extract"})
+        engine._extract(ctx, ecs, {"rid": "1002", "action": "recompute"})
     assert st.get("ext:1002") is None
     assert any(c["node"] == "elig:1002" and c["after"]["decision"] == "exclude" for c in ecs["changes"])
 
@@ -1704,7 +1708,7 @@ def test_an_extraction_item_added_to_the_config_is_extracted_for_every_included_
     assert "field:funding" in graph.sync_settings(st, ctx.cfg)
     p = engine.plan(ctx)
     ex = [i for i in p["items"] if i["type"] == "extraction"]
-    assert ex and all(i["action"] == "extract" and "funding" in " ".join(i["why"]) for i in ex)
+    assert ex and all(i["action"] == "recompute" and "funding" in " ".join(i["why"]) for i in ex)
     cs = engine.execute(ctx, {"id": "t", "changes": []}, tag="t", render=False)
     after = st.get("ext:1001")["data"]["fields"]
     assert set(after) == before | {"funding"} and "field:funding" in st.get("ext:1001")["depends_on"]
@@ -1753,7 +1757,7 @@ topic: {{records: {{source: file, file: {recf}}}}}
     assert "funding" in (cdir / "topic.yaml").read_text() and "pk_results" in (cdir / "topic.yaml").read_text()
     assert any(f["name"] == "funding" for f in app.cfg["topic"]["extraction_fields"])     # reloaded
     from sragent.config_lock import changes as cfg_changes
-    assert cfg_changes(app.ctx().store) and (r["pending"].get("summary") or {}).get("extraction:extract", 0) >= 1
+    assert cfg_changes(app.ctx().store) and (r["pending"].get("summary") or {}).get("extraction:recompute", 0) >= 1
     bad = app.data_items({"op": "save", "fields": [{"name": "Bad Name", "description": "x"}]}, ws.lib)
     assert not bad["ok"] and "letters" in bad["message"]
 
@@ -1809,7 +1813,8 @@ def test_screening_decisions_get_a_second_reading(tmp_path):
     assert "1002" not in st.included_ids() and status_of(st, "1002")[1] == "undecided: screener and verifier disagree"
     t = next(x for x in todos.build(ctx) if x["kind"] == "eligibility" and x["rid"] == "1002")
     assert t["verify"]["decision"] == "exclude" and t["suggest"]["option"] == "exclude" and "disagree" in t["suggest"]["why"]
-    assert any(f["status"] == "open" and "verifier disagree" in f["text"] for f in SN(st, "1002")["flags"])
+    from sragent import attention
+    assert any("verifier disagree" in x["text"] for x in attention.by_node(st).get(SN(st, "1002")["id"], []))
     rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
     assert sum(r["tag"].startswith("screen_verify_") for r in rows) >= 4
     (tmp_path / "ao").mkdir()

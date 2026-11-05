@@ -157,11 +157,14 @@ def view(ctx) -> dict:
            for n in st.by_type("rob")}
     syn = {rid(n["id"]): {"status": n["status"], "text": n["data"].get("text"), "cites": sorted(n["data"].get("cites") or [])}
            for n in st.by_type("synthesis")}
+    from sragent.attention import by_node, open_flags
+    derived = by_node(st)        # stored flags and the notes derived from the graph (attention.py) alike
     flags = {}
     for n in st.nodes.values():   # a study's eligibility flags count under its key (screen:<rid>), on either node
         k = "screen:" + rid(n["id"]) if n["type"] == "eligibility" else n["id"]
-        if any(f["status"] == "open" for f in n["flags"]):
-            flags[k] = flags.get(k, 0) + sum(1 for f in n["flags"] if f["status"] == "open")
+        f_open = open_flags(st, n, derived)
+        if f_open:
+            flags[k] = flags.get(k, 0) + len(f_open)
     prov = {}
     for e in provenance.events(ctx.run_dir):
         k = f"{e['category']}:{e['action']}"

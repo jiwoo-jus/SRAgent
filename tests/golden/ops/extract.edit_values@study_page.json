@@ -4,15 +4,15 @@
    "edit:manual_edit (applied)"
   ],
   "flags_closed": [],
-  "flags_opened": [
+  "flags_opened": [],
+  "meta_changed": [],
+  "model_calls": {},
+  "notes_appeared": [
    "ext:G01 [manual_edit]"
   ],
-  "meta_changed": [
-   "flag_seq"
-  ],
-  "model_calls": {},
+  "notes_cleared": [],
   "out_of_date": [
-   "rob:G01 assess",
+   "rob:G01 recompute",
    "syn:S1 revise",
    "syn:S3 revise"
   ],

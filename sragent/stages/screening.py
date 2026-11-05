@@ -303,11 +303,7 @@ def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str
         deps.append("protocol")
     st.write(n["id"], n["type"], d, depends_on=deps, evidence=evidence,
              reason=f"re-assessed on criteria {', '.join(crit_ids)} (protocol changed)")
-    if hd and agent_dec != hd["decision"] and agent_dec in ("include", "exclude", "forward") and \
-            not any(f["status"] == "open" and f["source"] == "reassess" for f in n["flags"]):
-        st.flag(n["id"], f"The protocol changed (criteria {', '.join(crit_ids)}): the agent would now say "
-                f"'{agent_dec}', your decision '{hd['decision']}' is kept. Please check.", actor="agent", source="reassess")
-    return d
+    return d   # a reading that differs from a person's decision is a derived note (attention.py)
 
 
 def _verify_wanted(ctx: Ctx, stage: str, decision: str) -> bool:
@@ -428,7 +424,6 @@ def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: lis
         return rec["outcome"]
     with ctx.at("eligibility"):
         outcomes = ctx.map(one, todo)
-    sync_awaiting_flags(ctx)
     ctx.save()
     c = dict(Counter(outcomes))
     ctx.log(f"[screen] second reading done: {c}")
@@ -547,7 +542,6 @@ def eligibility_all(ctx: Ctx, protocol: dict) -> dict:
     todo = [rid for rid in _forwarded(st) if ((st.get(f"ft:{rid}") or {}).get("data") or {}).get("kind") == "fulltext"]
     ctx.log(f"[eligibility] full-text screening of {len(todo)} records")
     out = ctx.map(lambda rid: eligibility_one(ctx, protocol, rid), todo)
-    sync_awaiting_flags(ctx)
     from .. import rules
     rules.apply(ctx, protocol)
     fulltext.write_needed_pdfs(ctx)
@@ -573,37 +567,7 @@ def _merge_outcomes(r: dict, e: dict) -> dict:
     return out
 
 
-SCREEN_FLAG_SOURCES = ("screening", "screening_unclear")
-
-
-def sync_awaiting_flags(ctx: Ctx):
-    """Screening flags follow the decision: one 'awaiting classification' flag while a person must decide,
-    one 'included although unclear' flag when pipeline.fulltext_unclear: include decided it, none otherwise."""
-    st = ctx.store
-    protocol = (st.get("protocol") or {}).get("data") or {}
-    for n in st.by_type("eligibility") + st.by_type("screen"):
-        d, rid = n["data"], n["id"].split(":", 1)[1]
-        dec = d["decision"]
-        want = None
-        if n["type"] == "screen" or decision_node(st, rid) is not n:
-            dec = "superseded"       # title/abstract nodes and set-aside full-text nodes carry no screening flag
-        elif dec == "awaiting" and (d.get("screen_verify") or {}).get("outcome") == "pending_disagreement":
-            v = d["screen_verify"]
-            want = ("screening", f"Awaiting classification: the screener and the verifier disagree after full-text screening "
-                                 f"(verifier: {v.get('decision')}; {v.get('explanation', '')[:200]}). Please decide.")
-        elif dec == "awaiting":
-            want = ("screening", f"Awaiting classification: criteria {d.get('because')} unclear after "
-                                 f"full-text screening (source: {st.text_of(rid)[1]}). Please decide. "
-                                 f"{criterion_reasons(protocol, d)}".rstrip())
-        elif dec == "include" and d.get("unclear_by_rule") == "include":
-            want = ("screening_unclear", f"Included by rule although criteria {d.get('because')} were still unclear "
-                                         f"after full-text screening (pipeline.fulltext_unclear: include). Check this inclusion. "
-                                         f"{criterion_reasons(protocol, d)}".rstrip())
-        for f in n["flags"]:
-            if f["status"] == "open" and f["source"] in SCREEN_FLAG_SOURCES and (not want or f["source"] != want[0]):
-                st.resolve_flag(n["id"], f["id"], f"decision is now '{dec}'")
-        if want and not any(f["status"] == "open" and f["source"] == want[0] for f in n["flags"]):
-            st.flag(n["id"], want[1], actor="agent", source=want[0])
+SCREEN_FLAG_SOURCES = ("screening", "screening_unclear")   # derived notes now (attention.py); kept for older stores
 
 
 def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
@@ -629,9 +593,6 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
             else:
                 d.pop("unclear_by_rule", None)
             st.annotate(n["id"], d, actor="user", reason="protocol revised: decision re-derived from stored assessments")
-            for f in n["flags"]:
-                if f["status"] == "open" and f["source"] in SCREEN_FLAG_SOURCES:
-                    st.resolve_flag(n["id"], f["id"], "protocol revised")
             changed += 1
     changed += len(rules.apply(ctx, protocol))
     inc = set(st.included_ids())
@@ -641,7 +602,6 @@ def rescreen_rule_only(ctx: Ctx, protocol: dict) -> dict:
             want = "active" if rid in inc else "excluded"
             if n["status"] != want:
                 st.set_status(n["id"], want, actor="user", reason="eligibility re-derived")
-    sync_awaiting_flags(ctx)
     ctx.save()
     ctx.log(f"[screen] rule-only re-screen: {changed} decisions changed; included now {len(inc)}")
     return {"changed": changed, "included": len(inc)}

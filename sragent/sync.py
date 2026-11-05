@@ -51,7 +51,6 @@ def process_pdfs(ctx: Ctx) -> dict:
             # the risk of bias and the synthesis statements that depend on the new values are now out of date: the
             # update engine below (sync_dependents) brings them up to date under update_policy, like any other change
         ctx.save()
-    screening.sync_awaiting_flags(ctx)
     res = {"processed": new, "rescreened": rescreened, "reextracted": reextracted, "unreadable": unreadable}
     res["sync"] = sync_dependents(ctx)
     fulltext.write_needed_pdfs(ctx)
@@ -74,11 +73,11 @@ def pending_changes(ctx: Ctx) -> dict:
     removed = sorted(c for c in cited if c not in inc)
     from . import engine
     p = engine.plan(ctx)
-    work = [i for i in p["items"] if i["action"] not in ("keep", "render")]
+    work = [i for i in p["items"] if i["action"] not in ("kept", "render")]
     return {"need_extract": need_extract, "need_rob": need_rob, "new_for_synthesis": new_for_syn,
             "excluded_but_cited": removed, "has_synthesis": has_syn,
             "stale": {"n": len(work), "summary": p["summary"], "est_usd": p["cost"].get("total_usd"),
-                      "kept": [i["node"] for i in p["items"] if i["action"] == "keep"], "lines": engine.describe(p)[:30]}}
+                      "kept": [i["node"] for i in p["items"] if i["action"] == "kept"], "lines": engine.describe(p)[:30]}}
 
 
 def sync_dependents(ctx: Ctx) -> dict:

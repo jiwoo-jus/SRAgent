@@ -79,47 +79,47 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
             elif superseded or (t == "eligibility" and deps <= {f"screen:{rid}"}):
                 # screened on its full text: the full-text node decides; a full-text node whose title/abstract
                 # node moved (a restored rule exclusion, a revised forward) has nothing to redo
-                items.append(_item(nid, t, "touch", why, pinned, rid))
+                items.append(_item(nid, t, "current", why, pinned, rid))
             elif t == "eligibility" and any(d.startswith("ft:") for d in deps) and not pinned:
-                items.append(_item(nid, t, "rescreen", why, False, rid))
+                items.append(_item(nid, t, "recompute", why, False, rid, stage="full_text"))   # screened again on the new text
             else:
                 crits = _changed_criteria(st, n, protocol) if ("protocol" in deps or any(d.startswith("crit:") for d in deps)) else []
                 stage = "full_text" if t == "eligibility" else "title_abstract"
                 crits = [c for c in crits if not (stage == "title_abstract" and _crit(protocol, c).get("stage") == "full_text")]
                 if pinned:   # a person decided: the new criteria are assessed and shown beside the decision, which is kept
-                    items.append(_item(nid, t, "reassess" if crits else "touch", why, True, rid, criteria=crits, stage=stage))
+                    items.append(_item(nid, t, "recompute" if crits else "current", why, True, rid, criteria=crits, stage=stage))
                 else:
-                    items.append(_item(nid, t, "reassess" if crits else "rederive", why, False, rid, criteria=crits, stage=stage))
+                    items.append(_item(nid, t, "recompute" if crits else "rederive", why, False, rid, criteria=crits, stage=stage))
         elif t == "extraction":
             if rid not in inc:
                 items.append(_item(nid, t, "retire", why, pinned, rid))
             elif deps <= {f"screen:{rid}", f"elig:{rid}"}:
-                items.append(_item(nid, t, "touch", why, pinned, rid))       # the decision is still include: nothing to redo
+                items.append(_item(nid, t, "current", why, pinned, rid))     # the decision is still include: nothing to redo
             else:
-                items.append(_item(nid, t, "extract", why, pinned, rid))     # a person's edited values are kept
+                items.append(_item(nid, t, "recompute", why, pinned, rid))   # a person's edited values are kept
         elif t == "rob":
             if rid not in inc:
                 items.append(_item(nid, t, "retire", why, pinned, rid))
             elif deps <= {f"screen:{rid}", f"elig:{rid}"}:
-                items.append(_item(nid, t, "touch", why, pinned, rid))
+                items.append(_item(nid, t, "current", why, pinned, rid))
             elif pinned:
-                items.append(_item(nid, t, "keep", why, True, rid))          # confirmed by a person: flagged, kept
+                items.append(_item(nid, t, "kept", why, True, rid))          # confirmed by a person: noted, kept
             else:
-                items.append(_item(nid, t, "assess", why, False, rid))
+                items.append(_item(nid, t, "recompute", why, False, rid))
         elif t == "synthesis":
             if pinned:
-                items.append(_item(nid, t, "keep", why, True, rid))
+                items.append(_item(nid, t, "kept", why, True, rid))
             else:
                 items.append(_item(nid, t, "revise", why, False, rid, sources=sorted(deps)))
         elif t == "report":
             items.append(_item(nid, t, "render", why, False, None))
         elif t in ("protocol", "search", "criterion"):
-            items.append(_item(nid, t, "keep", why, False, None, manual=True))   # re-planning is a person's call
+            items.append(_item(nid, t, "kept", why, False, None, manual=True))   # re-planning is a person's call
     # extraction items or risk-of-bias domains added to the config after an output was made: the new setting node
     # is not among the output's dependencies yet, so it is not "stale", but the output is incomplete
     planned = {i["node"] for i in items}
     fdeps, ddeps = set(graph.field_deps(ctx.cfg)) - {"cfg:question"}, set(graph.domain_deps(ctx.cfg)) - {"cfg:rob_tool"}
-    for t, want, action in (("extraction", fdeps, "extract"), ("rob", ddeps, "assess")):
+    for t, want, action in (("extraction", fdeps, "recompute"), ("rob", ddeps, "recompute")):
         for n in st.by_type(t, active_only=True):
             rid = study_of(n["id"])
             new = sorted(want - set(n["depends_on"]))
@@ -128,7 +128,7 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
             names = ", ".join(x.split(":", 1)[1] for x in new)
             pinned = graph.human_pinned(n)
             if t == "rob" and pinned:
-                items.append(_item(n["id"], t, "keep", [f"new domain(s) {names}; confirmed by you, so kept"], True, rid))
+                items.append(_item(n["id"], t, "kept", [f"new domain(s) {names}; confirmed by you, so kept"], True, rid))
             else:
                 items.append(_item(n["id"], t, action, [f"new item(s) {names}"], pinned, rid))   # a person's edited values are kept
     # outputs that are missing (not stale: they do not exist yet)
@@ -140,15 +140,15 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
             continue
         back = False
         if not st.get(f"ext:{rid}") and f"ext:{rid}" not in {i["node"] for i in items}:
-            items.append(_item(f"ext:{rid}", "extraction", "extract", ["included, not extracted"], False, rid))
+            items.append(_item(f"ext:{rid}", "extraction", "recompute", ["included, not extracted"], False, rid))
         elif st.get(f"ext:{rid}") and st.get(f"ext:{rid}")["status"] != "active" and \
                 f"ext:{rid}" not in {i["node"] for i in items}:
             items.append(_item(f"ext:{rid}", "extraction", "reactivate", ["included again"], False, rid))
             back = True   # a study included again: the statements that cited it must get it back (history)
         if st.get(f"ext:{rid}") and not st.get(f"rob:{rid}") and f"rob:{rid}" not in {i["node"] for i in items}:
-            items.append(_item(f"rob:{rid}", "rob", "assess", ["included, not assessed"], False, rid))
+            items.append(_item(f"rob:{rid}", "rob", "recompute", ["included, not assessed"], False, rid))
         if has_syn and (rid not in considered or back):
-            items.append(_item(f"syn:+{rid}", "synthesis", "integrate",
+            items.append(_item(f"syn:+{rid}", "synthesis", "revise",
                                ["included again, dropped from the synthesis" if back else "included, not in the synthesis"], False, rid))
     # active outputs of studies that are no longer included
     for n in st.by_type("extraction", active_only=True) + st.by_type("rob", active_only=True):
@@ -168,7 +168,15 @@ def _crit(protocol: dict, cid: str) -> dict:
     return next((c for c in protocol.get("criteria", []) if c["id"] == cid), {})
 
 
+# The engine's whole vocabulary (04 §1.4): what it does to an out-of-date node ...
+VERBS = ("rederive", "recompute", "revise", "retire", "reactivate", "render")
+# ... and what it reports when there is nothing to do: kept (a person decided, confirmed or edited it, or re-planning
+# is a person's call) and current (its inputs moved but nothing it rests on changed: marked current)
+RESULTS = ("kept", "current")
+
+
 def _item(node, ntype, action, why, pinned, rid, **extra) -> dict:
+    assert action in VERBS + RESULTS, action
     return {"node": node, "type": ntype, "action": action, "why": why, "pinned": pinned, "rid": rid, **extra}
 
 
@@ -183,16 +191,14 @@ def _cost(ctx: Ctx, items: list[dict]) -> dict:
     from .estimate import estimate_stages
     calls = defaultdict(int)
     for i in items:
-        a = i["action"]
-        if a == "reassess":
+        a, t = i["action"], i["type"]
+        if a == "recompute" and t in ("screen", "eligibility"):
             calls["screen_title_abstract" if i.get("stage") == "title_abstract" else "screen_full_text"] += 1
-        elif a == "rescreen":
-            calls["screen_full_text"] += 1
-        elif a == "extract":
+        elif a == "recompute" and t == "extraction":
             calls["extract"] += 1
-        elif a == "assess":
+        elif a == "recompute" and t == "rob":
             calls["rob"] += 1
-        elif a in ("revise", "integrate"):
+        elif a == "revise":
             calls["feedback"] += 1
             calls["synthesis_verify"] += 1
     try:
@@ -223,16 +229,16 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
     for rnd in range(max_rounds):
         p = plan(ctx, roots)
         for i in p["items"]:    # the policy: what a person wants to see first is not applied
-            if i["action"] in ("keep", "render", "touch"):
+            if i["action"] in RESULTS + ("render",):
                 continue
             mode = pol.get("screen" if i["type"] == "eligibility" else i["type"], "auto")   # update_policy.screen: both stages
             if mode == "propose":
                 deferred.setdefault(i["node"], i)
-                i["action"] = "keep"; i["manual"] = False; i["policy"] = "propose"
+                i["action"] = "kept"; i["manual"] = False; i["policy"] = "propose"
             elif mode == "manual":
-                i["action"] = "keep"; i["manual"] = True; i["policy"] = "manual"
-        todo = [i for i in p["items"] if i["action"] not in ("keep", "render")]
-        kept = [i for i in p["items"] if i["action"] == "keep"]
+                i["action"] = "kept"; i["manual"] = True; i["policy"] = "manual"
+        todo = [i for i in p["items"] if i["action"] not in ("kept", "render")]
+        kept = [i for i in p["items"] if i["action"] == "kept"]
         cs["rounds"].append({"round": rnd, "summary": p["summary"], "est_usd": p["cost"].get("total_usd")})
         for k in kept:
             if k["node"] not in {x["node"] for x in cs["kept"]}:
@@ -243,17 +249,17 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
         if any(i["type"] in ("screen", "eligibility") for i in todo) and st.get("cfg:screening_rules"):
             rules.apply(ctx, protocol)
         # 2. screening: re-assess only the changed criteria; re-derive the rest
-        for i in [x for x in todo if x["type"] in ("screen", "eligibility") and x["action"] != "touch"]:
+        for i in [x for x in todo if x["type"] in ("screen", "eligibility") and x["action"] != "current"]:
             _screen(ctx, cs, i, protocol, tag)   # a touch only marks the node current (below): a person's decision stays
-        for i in [x for x in todo if x["action"] == "touch"]:
+        for i in [x for x in todo if x["action"] == "current"]:
             st.touch(i["node"])
         # 3. statuses follow the included set (free)
         _statuses(ctx, cs)
         # 4. extraction, then risk of bias, for the stale and the missing
         inc = set(st.included_ids())
-        for i in [x for x in todo if x["type"] == "extraction" and x["action"] in ("extract", "reactivate") and x["rid"] in inc]:
+        for i in [x for x in todo if x["type"] == "extraction" and x["action"] in ("recompute", "reactivate") and x["rid"] in inc]:
             _extract(ctx, cs, i)
-        for i in [x for x in todo if x["type"] == "rob" and x["action"] == "assess" and x["rid"] in inc and st.get(f"ext:{x['rid']}")]:
+        for i in [x for x in todo if x["type"] == "rob" and x["action"] == "recompute" and x["rid"] in inc and st.get(f"ext:{x['rid']}")]:
             _rob(ctx, cs, i)
         # 5. the synthesis: revise the statements the changes reach, integrate new studies, check what changed
         _synthesis(ctx, cs, [x for x in todo if x["type"] == "synthesis"], tag)
@@ -336,9 +342,9 @@ def _screen(ctx: Ctx, cs: dict, i: dict, protocol: dict, tag: str) -> None:
     if n["data"].get("rule"):            # excluded by a screening rule: the rules step decided it; nothing to re-derive
         st.touch(i["node"])
         return
-    if i["action"] == "reassess":
+    if i["action"] == "recompute" and i.get("criteria"):    # only the criteria that changed
         screening.reassess(ctx, protocol, rid, i["criteria"], i["stage"], tag_suffix=f"_{tag}")
-    elif i["action"] == "rescreen":
+    elif i["action"] == "recompute":                          # the whole record again (a new full text)
         screening.review_one(ctx, protocol, rid)
     else:   # rederive from the stored assessments (a removed criterion, a changed policy); never includes without a full text
         d = dict(n["data"])
@@ -351,7 +357,6 @@ def _screen(ctx: Ctx, cs: dict, i: dict, protocol: dict, tag: str) -> None:
         st.write(n["id"], n["type"], d, depends_on=n["depends_on"], reason=f"{tag}: decision re-derived ({'; '.join(i['why'])[:160]})")
     after = st.get(i["node"])["data"]
     _record(cs, i["node"], before, after, i["action"], ntype=n["type"])
-    screening.sync_awaiting_flags(ctx)
 
 
 def _statuses(ctx: Ctx, cs: dict) -> None:
@@ -403,7 +408,7 @@ def _synthesis(ctx: Ctx, cs: dict, items: list[dict], tag: str) -> None:
         return
     inc = set(st.included_ids())
     touched = set()
-    for i in [x for x in items if x["action"] == "revise"]:
+    for i in [x for x in items if x["action"] == "revise" and not x["node"].startswith("syn:+")]:
         n = st.get(i["node"])
         if not n or n["status"] != "active":
             continue
@@ -434,7 +439,7 @@ def _synthesis(ctx: Ctx, cs: dict, items: list[dict], tag: str) -> None:
             if st.get(i["node"])["status"] == "active":
                 st.touch(i["node"])
             touched.add(i["node"])
-    for i in [x for x in items if x["action"] == "integrate"]:
+    for i in [x for x in items if x["action"] == "revise" and x["node"].startswith("syn:+")]:   # a study to take in
         rid = i["rid"]
         if rid in inc and st.get(f"ext:{rid}") and st.get(f"ext:{rid}")["status"] == "active":
             before = {n["id"] for n in st.by_type("synthesis", active_only=True)}
@@ -458,9 +463,9 @@ def describe(p: dict) -> list[str]:
     """Plain lines for the To-do list and the log."""
     lines = []
     for i in p["items"]:
-        if i["action"] == "keep":
+        if i["action"] == "kept":
             lines.append(f"{i['node']}: kept ({'decided or edited by you' if i['pinned'] else 'needs a person'}): {'; '.join(i['why'])[:120]}")
-        elif i["action"] == "reassess":
+        elif i["action"] == "recompute" and i.get("criteria"):
             lines.append(f"{i['node']}: re-assess criteria {', '.join(i['criteria'])}")
         else:
             lines.append(f"{i['node']}: {i['action']} ({'; '.join(i['why'])[:120]})")

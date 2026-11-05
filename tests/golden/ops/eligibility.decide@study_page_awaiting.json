@@ -7,6 +7,8 @@
   "flags_opened": [],
   "meta_changed": [],
   "model_calls": {},
+  "notes_appeared": [],
+  "notes_cleared": [],
   "out_of_date": [
    "ext:G01 retire",
    "rob:G01 retire",

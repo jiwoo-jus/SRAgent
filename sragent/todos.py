@@ -219,18 +219,18 @@ def build(ctx: Ctx) -> list[dict]:
                 "options": opts, "free_text": "Your comment (sent to the agent if you choose to fix)",
                 "link": f"/report#{n['id'] if n['type'] in ('synthesis', 'screen') else 'ext:' + rid}"})
 
-    # -- manual edits whose dependents may be stale
-    for n in st.nodes.values():
-        for f in n["flags"]:
-            if f["status"] != "open" or f.get("source") != "manual_edit":
-                continue
-            rid = n["id"].split(":", 1)[1] if ":" in n["id"] else ""
-            todos.append({
-                "id": f"edited:{n['id']}:{f['id']}", "step": STEP_OF_TYPE.get(n["type"], "feedback"), "kind": "manual_edit",
+    # -- manual edits whose dependents are out of date with them (derived from the graph: attention.py)
+    from .attention import edit_state
+    for n in st.by_type("extraction", active_only=True) + st.by_type("rob", active_only=True):
+        e = edit_state(st, n)
+        if not e:
+            continue
+        rid = n["id"].split(":", 1)[1]
+        todos.append({
+                "id": f"edited:{n['id']}", "step": STEP_OF_TYPE.get(n["type"], "feedback"), "kind": "manual_edit",
                 "priority": 2, "title": f"You edited {n['id']} ({_study_label(st, rid)})",
                 "question": "Other outputs use this one. Should the agent update them?",
-                "context": [f["text"].split(" dependent output")[0].split(". ")[0] + ".",
-                            "Depends on it: " + ", ".join(f.get("dependents", []))],
+                "context": ["You edited this output.", "Depends on it: " + ", ".join(e["dependents"])],
                 "options": [{"value": "update", "label": "Yes, propose updates",
                              "hint": "The agent revises only the dependent outputs (a cent or two). You approve the result here."},
                             {"value": "ok", "label": "No, they are fine"}],
@@ -483,14 +483,18 @@ def apply(ctx: Ctx, answer: dict) -> dict:
         else:
             msg = "feedback withdrawn"
     elif tid.startswith("edited:"):
-        node_id, fid = tid[len("edited:"):].rsplit(":", 1)
+        from .attention import edit_state
+        node_id = tid[len("edited:"):]
+        if not st.get(node_id):                      # an id from before phase 2d: edited:<node>:<flag id>
+            node_id = node_id.rsplit(":", 1)[0]
         n = st.get(node_id)
-        flag = next((f for f in n["flags"] if f["id"] == fid), None)
-        if opt == "ok":
-            st.resolve_flag(node_id, fid, f"human: dependents are fine. {text}".strip(), actor="user")
+        e = edit_state(st, n) or {"dependents": [], "from_version": None}
+        if opt == "ok":   # the person says the outputs that use the edit are fine: they are current with it
+            for cid in e["dependents"]:
+                st.touch(cid)
             msg = "closed"
         elif opt == "update":
-            job = {"action": "propagate", "target": node_id, "from_version": (flag or {}).get("from_version"),
+            job = {"action": "propagate", "target": node_id, "from_version": e["from_version"],
                    "text": text, "rid": node_id.split(":", 1)[1]}
             msg = "the agent will propose updates to the dependent outputs"
     elif tid.startswith("disagree:"):

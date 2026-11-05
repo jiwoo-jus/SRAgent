@@ -28,7 +28,7 @@ def _screen(ctx, state):
         # records screened before the protocol changed: re-assessed on the changed criteria only
         from . import engine
         p = engine.plan(ctx)
-        if any(i["type"] in ("screen", "eligibility") and i["action"] in ("reassess", "rederive") for i in p["items"]):
+        if any(i["type"] in ("screen", "eligibility") and i["action"] in ("recompute", "rederive") for i in p["items"]):
             cs = engine.execute(ctx, {"id": "pipeline_screen", "changes": []}, tag="pipeline", render=False, max_rounds=1)
             ctx.log(f"[screen] protocol changed since screening: {p['summary']}; "
                     f"{len([c for c in cs['changes'] if c['node'].startswith('screen:')])} decisions re-derived")

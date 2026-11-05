@@ -2,18 +2,18 @@
  "effects": {
   "decisions_log": [],
   "flags_closed": [],
-  "flags_opened": [
-   "elig:G02 [screening]"
-  ],
-  "meta_changed": [
-   "flag_seq"
-  ],
+  "flags_opened": [],
+  "meta_changed": [],
   "model_calls": {
    "screen_verify_full_text": 3,
    "screen_verify_title_abstract": 2
   },
+  "notes_appeared": [
+   "elig:G02 [screening]"
+  ],
+  "notes_cleared": [],
   "out_of_date": [
-   "ext:G01 touch",
+   "ext:G01 current",
    "syn:S2 revise"
   ],
   "proposals": [],

@@ -217,7 +217,7 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     Returns 'exclude', 'pending' or 'kept'."""
     import time
     from ..evidence import joined, packed, resolve
-    from .screening import SCREEN_FLAG_SOURCES, human_decided, sync_awaiting_flags
+    from .screening import SCREEN_FLAG_SOURCES, human_decided
     st = ctx.store
     from ..selection import decision_node
     sc = decision_node(st, rid)          # the full-text decision that included the study
@@ -283,7 +283,6 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
             nid = f"{kind_}:{rid}"
             if st.get(nid) and st.get(nid)["status"] == "active":
                 st.set_status(nid, "excluded", reason=f"study {'excluded' if outcome == 'exclude' else 'undecided'} after the eligibility review")
-    sync_awaiting_flags(ctx)
     if outcome == "kept" and not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in st.get(sc["id"])["flags"]):
         st.flag(sc["id"], f"Two agents disagree after extraction ({cid}): extraction says exclude ({why[:160]}); the verifier says "
                          f"include ({review['verifier']['explanation'][:160]}). Included by pipeline.fulltext_unclear; check this inclusion.",

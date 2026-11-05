@@ -307,14 +307,14 @@ class ReviewStore:
         return s
 
     def diff(self, base: "ReviewStore") -> dict:
-        """What this (sandbox) store changed relative to `base`: new node ids, changed node ids (data,
-        status, version, evidence or flags differ) and changed meta keys."""
+        """What this (sandbox) store changed relative to `base`: new node ids, changed node ids (data, status, version,
+        evidence, flags, edges, or only the input versions: a node re-checked and found current) and changed meta keys."""
         new, changed = [], []
         for nid, n in self.nodes.items():
             b = base.nodes.get(nid)
             if b is None:
                 new.append(nid)
-            elif any(n.get(k) != b.get(k) for k in ("version", "status", "data", "evidence", "flags", "depends_on")):
+            elif any(n.get(k) != b.get(k) for k in ("version", "status", "data", "evidence", "flags", "depends_on", "dep_versions")):
                 changed.append(nid)
         meta = [k for k in set(self.meta) | set(base.meta) if self.meta.get(k) != base.meta.get(k)]
         return {"new": sorted(new), "changed": sorted(changed), "meta": sorted(meta)}

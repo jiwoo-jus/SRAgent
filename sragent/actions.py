@@ -82,21 +82,6 @@ def _dependents(st, node_id: str) -> list[str]:
     return out
 
 
-def _mark_dependents(st, node_id: str, from_version: int, what: str):
-    deps = _dependents(st, node_id)
-    if not deps:
-        return None
-    for f in st.get(node_id)["flags"]:   # one open notice per node is enough; keep the oldest version
-        if f["status"] == "open" and f.get("source") == "manual_edit":
-            f["text"] = f"{f['text'].split(' || ')[0]} || also: {what}"[:600]
-            return f
-    f = st.flag(node_id, f"You edited this output ({what}). {len(deps)} dependent output(s) may now be out of date: "
-                f"{', '.join(deps)}", actor="user", source="manual_edit")
-    f["from_version"] = from_version
-    f["dependents"] = deps
-    return f
-
-
 def edit(ctx: Ctx, op: dict) -> dict:
     """op = {kind: screen|ext|rob|syn, rid|node, note, ...}. Returns {"ok", "message"}."""
     from . import provenance
@@ -151,7 +136,6 @@ def edit(ctx: Ctx, op: dict) -> dict:
             return {"ok": True, "message": "nothing changed"}
         v0 = n["version"]
         st.annotate(n["id"], d, evidence=n["evidence"], actor="user", reason=f"manual edit of {', '.join(changed)}.{sfx}")
-        _mark_dependents(st, n["id"], v0, "edited " + ", ".join(changed))
         msg = f"saved {', '.join(changed)} (v{v0 + 1})"
     elif kind == "rob":
         rid = op["rid"]
@@ -184,11 +168,8 @@ def edit(ctx: Ctx, op: dict) -> dict:
             d["human_confirmed"] = {"ts": time.time(), "note": (("changed " + ", ".join(changed) + ". ") if changed else "") + note}
         if not changed and not op.get("confirm", True):
             return {"ok": True, "message": "nothing changed"}
-        v0 = n["version"]
         st.annotate(n["id"], d, evidence=n["evidence"], actor="user",
                     reason=(f"manual risk-of-bias edit: {', '.join(changed)}." if changed else "risk of bias confirmed by human.") + sfx)
-        if changed:
-            _mark_dependents(st, n["id"], v0, "changed " + ", ".join(changed))
         msg = (f"{len(changed)} domain(s) changed, overall {d['overall']}" if changed else "confirmed")
     elif kind == "syn":
         from .stages import synthesis
@@ -318,9 +299,9 @@ def propagate_from(ctx: Ctx, node_id: str, from_version: int | None = None, note
     provenance.record(ctx, "human_judgment", "propagate_request", target=node_id, rid=study_of(node_id), note=note[:300])
     st = ctx.store
     n = st.get(node_id)
-    if from_version is None:
-        f = next((f for f in n["flags"] if f["status"] == "open" and f.get("source") == "manual_edit"), None)
-        from_version = (f or {}).get("from_version", n["version"] - 1)
+    if from_version is None:   # the version the out-of-date dependents last saw (attention.edit_state)
+        from .attention import edit_state
+        from_version = (edit_state(st, n) or {}).get("from_version", n["version"] - 1)
     old = next((h for h in n["history"] if h["version"] == from_version), None)
     if old is None:
         raise ValueError(f"{node_id} has no version {from_version}")
@@ -333,8 +314,5 @@ def propagate_from(ctx: Ctx, node_id: str, from_version: int | None = None, note
     done = {node_id}
     feedback._propagate(sb, cs, node_id, old["data"], n["data"], f"manual edit by the reviewer. {note}".strip(),
                         "propagate", 0, done)
-    for f in st.get(node_id)["flags"]:
-        if f["status"] == "open" and f.get("source") == "manual_edit":
-            st.resolve_flag(node_id, f["id"], f"sent to the agent ({cs['id']})", actor="user")
     cs["explanation"] = f"{len(cs['changes'])} dependent output(s) would change."
     return _finish(ctx, sb, cs, node_id, usd0, t0)

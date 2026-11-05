@@ -7,6 +7,10 @@
   "flags_opened": [],
   "meta_changed": [],
   "model_calls": {},
+  "notes_appeared": [
+   "rob:G01 [manual_edit]"
+  ],
+  "notes_cleared": [],
   "out_of_date": [
    "syn:S1 revise",
    "syn:S3 revise"
@@ -81,7 +85,9 @@
    "G01",
    "G02"
   ],
-  "open_flags": {},
+  "open_flags": {
+   "rob:G01": 1
+  },
   "prisma": {
    "awaiting_classification": 0,
    "awaiting_fulltext_review": 0,
