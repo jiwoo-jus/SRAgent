@@ -21,7 +21,7 @@ import copy
 import json
 from typing import Iterable
 
-SCHEMA = 3
+SCHEMA = 4
 
 # How a node type is brought up to date when a dependency changed (the vocabulary of the step-2 engine).
 #   settings   a value from the config: changes only by a settings change (config_lock)
@@ -38,8 +38,9 @@ TYPES: dict[str, dict] = {
     "search":     {"depends": ["protocol", "cfg:records", "strategy?"], "update": "derive"},
     "record":     {"depends": ["search"], "update": "derive"},
     "fulltext":   {"depends": ["rec:<rid>"], "update": "recompute"},
-    "screen":     {"depends": ["rec:<rid>", "protocol", "crit:*?", "ft:<rid>?", "cfg:screening_rules?"], "update": "assess"},
-    "extraction": {"depends": ["screen:<rid>", "ft:<rid>|rec:<rid>", "field:*?", "cfg:question"], "update": "recompute"},
+    "screen":     {"depends": ["rec:<rid>", "protocol", "crit:*?", "cfg:screening_rules?"], "update": "assess"},
+    "eligibility": {"depends": ["screen:<rid>", "ft:<rid>?", "protocol", "crit:*?", "cfg:fulltext_unclear?"], "update": "assess"},
+    "extraction": {"depends": ["elig:<rid>", "ft:<rid>|rec:<rid>", "field:*?", "cfg:question"], "update": "recompute"},
     "rob":        {"depends": ["ext:<rid>", "ft:<rid>|rec:<rid>", "dom:*?", "cfg:rob_tool"], "update": "recompute"},
     "synthesis":  {"depends": ["ext:*?", "rob:*?", "cfg:question"], "update": "revise"},
     "report":     {"depends": ["syn:*?"], "update": "render"},
@@ -230,7 +231,75 @@ def migrate(store, cfg: dict | None = None) -> list[str]:
         done += [f"{m} moved from meta into a node" for m in moved]
         store.meta["schema"] = 3
         store.reindex()
+        schema = 3
+    if schema < 4:
+        n = split_eligibility(store)
+        if n:
+            done.append(f"{n} full-text decisions moved from screen:<rid> to elig:<rid>")
+        store.meta["schema"] = 4
+        store.reindex()
     return done
+
+
+def split_eligibility(store) -> int:
+    """Schema 4: one screen node held both screening stages. A study screened on its full text gets an elig node with
+    the full-text decision (data, evidence, flags, status); its screen node goes back to its own title/abstract
+    decision (the last title/abstract version in its history). A study waiting for its full text is a forwarded
+    title/abstract decision (the retrieval state is derived from ft:<rid>); a person's inclusion that waits for the
+    text moves to the elig node. Extraction depends on the elig node. No version changes: nothing becomes stale."""
+    from . import state
+    moved = 0
+    for n in list(store.by_type("screen")):
+        d, rid = n["data"], n["id"].split(":", 1)[1]
+        stage = d.get("stage")
+        if stage not in ("full_text", "retrieval") or d.get("rule") or store.get(f"elig:{rid}"):
+            continue
+        ta_h = next((h for h in reversed(n.get("history") or []) if (h.get("data") or {}).get("stage") == "title_abstract"), None)
+        ta, ta_ev = (ta_h["data"], ta_h.get("evidence") or []) if ta_h else (None, [])
+        if ta is None:   # no title/abstract version kept: its decision and reason, from the snapshot
+            snap = d.get("title_abstract") or {}
+            ta = {"stage": "title_abstract", "decision": snap.get("decision") or "forward", "because": snap.get("because") or [],
+                  "criteria": [], "source_kind": "title_abstract"}
+        ta = dict(ta)
+        # a study that reached the full text (or waits for it) was forwarded: the snapshot taken when it got there
+        # says why; a history entry can be older (a feedback flip committed in one write keeps no forward version)
+        snap = d.get("title_abstract") or {}
+        ta["decision"] = snap.get("decision") if snap.get("decision") in ("forward", "include") else "forward"
+        if snap:
+            ta["because"] = snap.get("because") or []
+        hd = d.get("human_decision_pending_fulltext")
+        ta_deps = [x for x in n["depends_on"] if not x.startswith("ft:")]
+        if stage == "full_text" or hd:
+            el = {k: v for k, v in d.items() if k not in ("title_abstract", "retrieval_note")}
+            if stage == "retrieval":
+                el.update({"stage": "full_text", "decision": "awaiting", "because": []})
+            deps = sorted({f"screen:{rid}"} | {x for x in n["depends_on"] if x != f"rec:{rid}"} |
+                          ({"cfg:fulltext_unclear"} if store.get("cfg:fulltext_unclear") else set()))
+            seen = dict(n.get("dep_versions") or {})
+            seen[f"screen:{rid}"] = n["version"]
+            if store.get("cfg:fulltext_unclear"):
+                seen.setdefault("cfg:fulltext_unclear", store.get("cfg:fulltext_unclear")["version"])
+            store.nodes[f"elig:{rid}"] = {
+                "id": f"elig:{rid}", "type": "eligibility", "data": el, "depends_on": deps,
+                "dep_versions": {k: v for k, v in seen.items() if k in deps}, "evidence": n.get("evidence") or [],
+                "status": n["status"], "version": 1, "history": [], "flags": n["flags"], "updated": n.get("updated")}
+            n["flags"] = []
+            n["evidence"] = ta_ev
+            store._log("migrate", f"elig:{rid}", "system", "full-text decision split from screen node (schema 4)", None, el)
+            for x in ("ext", "rob"):
+                m = store.get(f"{x}:{rid}")
+                if m and f"screen:{rid}" in m["depends_on"]:
+                    m["depends_on"] = sorted((set(m["depends_on"]) - {f"screen:{rid}"}) | {f"elig:{rid}"})
+                    m.setdefault("dep_versions", {}).pop(f"screen:{rid}", None)
+                    m["dep_versions"][f"elig:{rid}"] = 1
+        n["data"] = ta
+        n["depends_on"] = sorted(set(ta_deps))
+        n["dep_versions"] = {k: v for k, v in (n.get("dep_versions") or {}).items() if k in n["depends_on"]}
+        moved += 1
+    if moved:
+        store.reindex()
+        state.refresh_cohort(store)
+    return moved
 
 
 def _set_deps(store, n: dict, deps: list[str]) -> None:

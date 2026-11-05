@@ -37,10 +37,15 @@ from . import prompts
 from .context import Ctx
 from .evidence import attach, cites_of, joined, packed, resolve
 from .stages import extraction, fulltext, rob, screening, synthesis
+
+SCREEN_TYPES = ("screen", "eligibility")     # title/abstract and full-text decision nodes
 from .stages.planning import criteria_text
 from .store import study_of
 
 TYPE_HINTS = {
+    "eligibility": "The eligibility decision is derived by rule from the criterion assessments "
+                   "(exclude if an inclusion criterion is not_met or an exclusion criterion is met). "
+                   "To change the decision, change the relevant criterion assessment(s) and evidence ids.",
     "screen": "The eligibility decision is derived by rule from the criterion assessments "
               "(exclude if an inclusion criterion is not_met or an exclusion criterion is met). "
               "To change the decision, change the relevant criterion assessment(s) and evidence ids.",
@@ -80,7 +85,7 @@ def editable(n: dict) -> dict:
     d, t = n["data"], n["type"]
     if t == "extraction":
         return {"fields": {k: {"value": v.get("value"), "evidence": _ev(v)} for k, v in d["fields"].items()}}
-    if t == "screen":
+    if t in SCREEN_TYPES:
         return {"criteria": [{"id": a.get("id"), "assessment": a.get("assessment"), "evidence": _ev(a)}
                              for a in d.get("criteria", [])],
                 "decision": d.get("decision")}
@@ -102,7 +107,7 @@ def summary_line(n: dict) -> str:
     d, t = n["data"], n["type"]
     if t == "synthesis":
         return d["text"][:160]
-    if t == "screen":
+    if t in SCREEN_TYPES:
         return f"eligibility decision={d['decision']} ({d['stage']})"
     if t == "extraction":
         return "extracted data: " + "; ".join(f"{k}={v['value'][:40]}" for k, v in list(d["fields"].items())[:4])
@@ -118,7 +123,7 @@ def evidence_for(ctx: Ctx, n: dict, limit: int = 40000) -> str:
     if sid:
         text, kind = source_for(ctx, n)
         extra = ""
-        if n["type"] == "screen":
+        if n["type"] in SCREEN_TYPES:
             p = ctx.store.get("protocol")["data"]
             extra = "ELIGIBILITY CRITERIA:\n" + criteria_text(p) + "\n\n"
         return f"{extra}SOURCE ({kind}) for study {sid}, numbered sentences:\n{packed(text, limit)}"
@@ -128,8 +133,9 @@ def evidence_for(ctx: Ctx, n: dict, limit: int = 40000) -> str:
 def source_for(ctx: Ctx, n: dict) -> tuple[str, str]:
     """The text whose sentence ids this node's evidence refers to."""
     sid = study_of(n["id"])
-    if n["type"] == "screen":
-        return screening.screen_source(ctx.store, sid, n["data"].get("stage", "full_text"))[0], n["data"].get("stage")
+    if n["type"] in SCREEN_TYPES:
+        stage = screening.stage_of(n)
+        return screening.screen_source(ctx.store, sid, stage)[0], stage
     return ctx.store.text_of(sid)
 
 
@@ -147,7 +153,7 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
         fields, evidence = extraction.postprocess(ctx, sid, revised.get("fields", {}), text, src_node)
         data = {**n["data"], "fields": fields}
         st.write(node_id, t, data, depends_on=n["depends_on"], evidence=evidence, reason=reason, actor=actor)
-    elif t == "screen":
+    elif t in SCREEN_TYPES:
         sid = study_of(node_id)
         p = st.get("protocol")["data"]
         crits = [a for a in (revised.get("criteria") or n["data"]["criteria"]) if isinstance(a, dict)]
@@ -157,11 +163,11 @@ def apply_revised(ctx: Ctx, node_id: str, revised: dict, reason: str, actor: str
             a.pop("quote", None)
             if cites:
                 attach(a, cites, text, "", "")
-        crits = screening.settle(p, crits, n["data"].get("stage"))   # the full-text rule applies to revised assessments too
+        crits = screening.settle(p, crits, screening.stage_of(n))   # the full-text rule applies to revised assessments too
         decision, because, stage, by_rule = screening.rederive(p, {**n["data"], "criteria": crits},
                                                                ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
         if decision == "include" and st.text_of(sid)[1] != "fulltext":
-            decision, because = "fulltext_unavailable", []   # final inclusion only after a full-text review
+            decision, because = "awaiting", []   # final inclusion only after a full-text review
         data = {**n["data"], "criteria": crits, "decision": decision, "because": because, "stage": stage}
         data.pop("unclear_by_rule", None)
         if by_rule and decision in ("include", "exclude"):
@@ -202,6 +208,9 @@ def handle_feedback(ctx: Ctx, text: str, target: str | None = None, pmid: str | 
                     auto_accept: bool | None = None, case_id: str | None = None,
                     tag_prefix: str = "feedback") -> dict:
     fcfg = ctx.cfg["feedback"]
+    if target and target.startswith(("screen:", "elig:")):   # a study's eligibility: the node that holds its decision
+        from .selection import node_id
+        target = node_id(ctx.store, target.split(":", 1)[1])
     verify = fcfg["verify_feedback"] if verify is None else verify
     propagate = fcfg["propagate"] if propagate is None else propagate
     auto_accept = fcfg["auto_accept"] if auto_accept is None else auto_accept
@@ -380,7 +389,7 @@ def _propagate(sb: Ctx, cs: dict, src_id: str, before: dict, after: dict, reason
     st = sb.store
     n = st.get(src_id)
     # --- eligibility flips have deterministic structural consequences
-    if n["type"] == "screen" and before.get("decision") != after.get("decision"):
+    if n["type"] in SCREEN_TYPES and before.get("decision") != after.get("decision"):
         rid = study_of(src_id)
         if after["decision"] == "exclude":
             for kind in ("ext", "rob"):
@@ -404,7 +413,8 @@ def _propagate(sb: Ctx, cs: dict, src_id: str, before: dict, after: dict, reason
             # forwarded past title/abstract: its full-text review is done now, not left to the next run
             screening.review_one(sb, st.get("protocol")["data"], rid)
             screening.sync_awaiting_flags(sb)
-            final = st.get(src_id)["data"]
+            from .selection import view
+            final = view(st, rid)                     # the full-text decision the review just made
             for c in cs["changes"]:
                 if c["node"] == src_id and c.get("role") == "target":
                     c["after"] = copy.deepcopy(final)
@@ -581,10 +591,11 @@ def _include_study(sb: Ctx, cs: dict, rid: str, tp: str, integrate: bool = True)
             cs["changes"].append({"node": nid, "role": "dependent", "before": {"status": "excluded"},
                                   "after": {"status": "active"}})
         elif st.get(nid) is None:
-            sc_before = copy.deepcopy((st.get(f"screen:{rid}") or {}).get("data"))
+            from .selection import decision_node
+            sc_before = copy.deepcopy((decision_node(st, rid) or {}).get("data"))
             fn(sb, rid)
             if st.get(nid) is None:   # the eligibility re-check after extraction set the study aside
-                sc = st.get(f"screen:{rid}")
+                sc = decision_node(st, rid)
                 if sc and sc_before and sc_before.get("decision") != sc["data"].get("decision"):
                     cs["changes"].append({"node": sc["id"], "role": "dependent", "before": sc_before,
                                           "after": copy.deepcopy(sc["data"])})
@@ -649,7 +660,8 @@ def _add_paper(sb: Ctx, cs: dict, pmid: str | None, text: str, propagate: bool, 
         screening.screen_one(sb, p, rid, "title_abstract", tag_suffix="_feedback")
     if st.get(f"screen:{rid}")["data"]["decision"] != "exclude":
         screening.review_one(sb, p, rid)
-    d = st.get(f"screen:{rid}")["data"]
+    from .selection import view
+    d = view(st, rid)
     cs["changes"].append({"node": f"screen:{rid}", "role": "target", "before": prev, "after": d})
     if d["decision"] in screening.RETRIEVAL_FAILURES:
         cs["verdict"] = "insufficient_evidence"

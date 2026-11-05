@@ -219,7 +219,8 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     from ..evidence import joined, packed, resolve
     from .screening import SCREEN_FLAG_SOURCES, human_decided, sync_awaiting_flags
     st = ctx.store
-    sc = st.get(f"screen:{rid}")
+    from ..selection import decision_node
+    sc = decision_node(st, rid)          # the full-text decision that included the study
     if not sc:
         return "kept"
     cid, why = doubt["criterion"], doubt["why"]
@@ -327,7 +328,8 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
     if kept:
         data["kept_human_edits"] = kept
     from ..graph import field_deps
-    st.write(f"ext:{rid}", "extraction", data, depends_on=[f"screen:{rid}", src_node] + field_deps(ctx.cfg),
+    from ..selection import node_id
+    st.write(f"ext:{rid}", "extraction", data, depends_on=[node_id(st, rid), src_node] + field_deps(ctx.cfg),
               evidence=evidence, reason="extracted")
     n = st.get(f"ext:{rid}")
     for name, item in fields.items():

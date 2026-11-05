@@ -7,12 +7,13 @@ from .. import provenance, state
 from ..stages import fulltext
 from ..context import Ctx
 from ..todos import STEPS
+from .. import selection
 
 
 def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     st = ctx.store
     tcount = Counter(t["step"] for t in todos if not t.get("snoozed") and not t.get("optional"))
-    screens = st.by_type("screen")
+    screens = selection.study_nodes(st)
     dec = Counter(n["data"]["decision"] for n in screens)
     ta = [n for n in screens if n["data"]["stage"] == "title_abstract"]
     inc = st.included_ids()

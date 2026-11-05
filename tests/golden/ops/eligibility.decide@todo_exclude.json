@@ -4,7 +4,7 @@
    "elig:exclude (applied)"
   ],
   "flags_closed": [
-   "screen:G03 [screening]"
+   "elig:G03 [screening]"
   ],
   "flags_opened": [],
   "meta_changed": [],

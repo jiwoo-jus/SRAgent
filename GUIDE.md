@@ -237,9 +237,10 @@ Other SYNERGY reviews (26 in total) can be used by changing `records.synergy_key
 | `protocol`, `crit:I1` | protocol, criteria (a criterion removed from the protocol is retired, not deleted) | cfg:question, cfg:seed_eligibility | re-planning |
 | `search` | strategy and hits | protocol, cfg:records | re-searching |
 | `rec:<id>` | bibliographic record | search | |
-| `screen:<id>` | eligibility decision | rec, protocol, criteria (+ ft at full-text stage) | re-assessing the criteria that changed |
+| `screen:<id>` | title/abstract decision (forward / exclude) | rec, protocol, criteria (+ the rule setting for a rule exclusion) | re-assessing the criteria that changed |
+| `elig:<id>` | full-text decision (include / exclude / awaiting); a person's eligibility decision | screen, ft, protocol, criteria, the full-text-unclear setting | re-assessing the criteria that changed; screening again on a new full text |
 | `ft:<id>` | full text or abstract | rec | retrieval |
-| `ext:<id>` | extracted data | screen, ft, the `field:` definitions, cfg:question | extracting again |
+| `ext:<id>` | extracted data | elig, ft, the `field:` definitions, cfg:question | extracting again |
 | `rob:<id>` | risk-of-bias draft | ext, ft, the `dom:` definitions | assessing again |
 | `syn:S<k>` | synthesis statement | ext and rob of every cited study, cfg:question | revising the statements the change affects |
 | `report` | rendered report | synthesis statements | rendering |

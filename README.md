@@ -14,7 +14,7 @@ The full documentation (data, workflow, inputs and outputs, evaluation design an
 | `search`     | Loads records from SYNERGY, PubMed (the agent's query, or the one the team confirmed in the interface), or a JSONL file; removes duplicates | `rec:<rid>` nodes                   |
 | `screen`     | Judges each criterion with cited sentences, derives a decision by rule; final inclusion only after a full-text review         | `screen:<rid>`                      |
 | `retrieve`   | Gets full text from your files, Europe PMC, or a legal open-access copy (no model calls)                                      | `ft:<rid>`                          |
-| `eligibility`| Screens each retrieved record on its full text; undecided ones wait for a person                                             | `screen:<rid>`                      |
+| `eligibility`| Screens each retrieved record on its full text; undecided ones wait for a person                                             | `elig:<rid>`                        |
 | `snowball`   | Follows references and citations of the included studies                                                                      | new `rec:<rid>` nodes               |
 | `extract`    | Extracts configured fields with source sentences and checks drug and disease terms against RxNorm, PubChem, ChEMBL, and MONDO | `ext:<rid>`                         |
 | `rob`        | Drafts quality judgments per domain with evidence                                                                             | `rob:<rid>`                         |

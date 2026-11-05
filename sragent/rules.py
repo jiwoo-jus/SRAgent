@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+from .selection import human_decided
+
 RULES_VERSION = 2   # bump when patterns change, so existing reviews are re-checked automatically
 DEFAULT_RULES = ["empty_record", "conference_abstract", "erratum", "editorial", "off_topic_no_abstract"]
 
@@ -87,8 +89,9 @@ def apply(ctx, protocol: dict | None = None) -> list[dict]:
     for n in st.by_type("record"):
         rid = n["id"].split(":", 1)[1]
         sc = st.get(f"screen:{rid}")
-        if sc and (sc["data"].get("human_decision") or sc["data"].get("human_decision_pending_fulltext")
-                   or sc["data"].get("rule_restored")):
+        el = st.get(f"elig:{rid}")
+        if (sc and (sc["data"].get("human_decision") or sc["data"].get("human_decision_pending_fulltext")
+                    or sc["data"].get("rule_restored"))) or (el and human_decided(el["data"])):
             continue
         hit = classify(n["data"], keys, rules)
         if not hit:
@@ -126,10 +129,7 @@ def restore(ctx, rid: str, note: str = "") -> None:
     st = ctx.store
     n = st.get(f"screen:{rid}")
     d = dict(n["data"])
-    before = d.get("decision_before_rule")
-    has_ft = (st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") == "fulltext"
-    full_text_decided = d["stage"] == "full_text" and before in ("include", "awaiting") and has_ft
-    d["decision"] = before if full_text_decided else "forward"
+    d["decision"] = "forward"      # to the full text; a full-text decision made earlier (elig:<rid>) applies again
     d["because"] = []
     d["rule_restored"] = {"rule": d.pop("rule", None), "note": note}
     st.annotate(n["id"], d, depends_on=[x for x in n["depends_on"] if x != "cfg:screening_rules"],   # no longer the rule's

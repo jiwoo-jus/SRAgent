@@ -33,6 +33,28 @@ RECORDS = [
 ]
 
 
+
+def SC(st, rid):
+    """A study's eligibility record (selection.view: title/abstract and full-text nodes together)."""
+    from sragent.selection import view
+    return view(st, rid)
+
+
+def SN(st, rid):
+    """The node that holds a study's eligibility decision (its flags live there)."""
+    from sragent.selection import decision_node
+    return decision_node(st, rid)
+
+
+def set_fulltext_decision(st, rid, **changes):
+    """Test setup: a full-text decision for a study, on elig:<rid> (created from its record when needed)."""
+    d = {**(SC(st, rid) or {}), "stage": "full_text", **changes}
+    for k in ("retrieval_note", "title_abstract"):
+        d.pop(k, None)
+    if st.get(f"elig:{rid}"):
+        return st.upsert(f"elig:{rid}", "eligibility", d, depends_on=st.get(f"elig:{rid}")["depends_on"])
+    return st.upsert(f"elig:{rid}", "eligibility", d, depends_on=[f"screen:{rid}", "protocol"] + ([f"ft:{rid}"] if st.get(f"ft:{rid}") else []))
+
 def make_ctx(tmp_path, fulltexts=("1001", "1002", "1003"), extra_cfg: dict | None = None) -> Ctx:
     recf = tmp_path / "recs.jsonl"
     recf.write_text("\n".join(json.dumps(r) for r in RECORDS))
@@ -203,16 +225,16 @@ def test_todos_answers_and_user_files(tmp_path):
     pipeline.run(ctx)
     st = ctx.store
     # make one included study 'awaiting classification' as if full-text screening could not decide
-    n = st.get("screen:1003")
-    d = dict(n["data"]); d["decision"] = "awaiting"; d["stage"] = "full_text"
-    st.upsert(n["id"], "screen", d, depends_on=n["depends_on"])
+    set_fulltext_decision(st, "1003", decision="awaiting")
     ids = {t["id"]: t for t in todos.build(ctx)}
     assert "protocol" in ids and "elig:1003" in ids and any(k.startswith("rob:") for k in ids)
     assert all(t["question"] and (t["options"] or t["kind"] in ("search", "fields") or t.get("approved")) for t in ids.values())   # custom cards
     # a record whose full-text review is blocked is requested, unless declared not obtainable
     n = st.get("screen:1004")
     before = dict(n["data"])
-    st.upsert(n["id"], "screen", {**before, "decision": "fulltext_unavailable", "stage": "retrieval"}, depends_on=n["depends_on"])
+    st.upsert(n["id"], "screen", {**before, "decision": "forward"}, depends_on=n["depends_on"])         # forwarded ...
+    st.upsert("ft:1004", "fulltext", {"kind": "abstract", "text": ""}, depends_on=["rec:1004"])      # ... no full text found
+    assert SC(st, "1004")["decision"] == "fulltext_unavailable"
     req = [t for t in todos.build(ctx) if t["id"] == "fulltexts"]
     assert req and "1004" in str(req[0])
     from sragent import state
@@ -220,10 +242,12 @@ def test_todos_answers_and_user_files(tmp_path):
     assert not [t for t in todos.build(ctx) if t["id"] == "fulltexts"]
     state.set_pdf_request(st, "1004", unavailable=False)
     st.upsert(n["id"], "screen", before, depends_on=n["depends_on"])
+    del st.nodes["ft:1004"]
+    st.reindex()
     # answers
     assert todos.apply(ctx, {"todo_id": "protocol", "option": "approve"})["ok"]
     assert todos.apply(ctx, {"todo_id": "elig:1003", "option": "exclude", "extra": {"criterion": "I3"}, "text": "no PK"})["ok"]
-    assert "1003" not in st.included_ids() and st.get("screen:1003")["data"]["human_decision"]["decision"] == "exclude"
+    assert "1003" not in st.included_ids() and SC(st, "1003")["human_decision"]["decision"] == "exclude"
     r = todos.apply(ctx, {"todo_id": "rob:1001", "option": "change", "extra": {"domain": "missing_data", "judgment": "high"}})
     assert r["ok"] and st.get("rob:1001")["data"]["overall"] == "high"
     pc = sync.pending_changes(ctx)
@@ -293,13 +317,13 @@ def test_awaiting_flags_follow_the_decision(tmp_path):
     ctx = make_ctx(tmp_path)
     st = ctx.store
     st.upsert("rec:1", "record", {"rid": "1", "title": "t", "abstract": "a"})
-    st.upsert("screen:1", "screen", {"stage": "full_text", "decision": "awaiting", "because": ["I1"]})
+    st.upsert("elig:1", "eligibility", {"stage": "full_text", "decision": "awaiting", "because": ["I1"]})
     screening.sync_awaiting_flags(ctx)
     screening.sync_awaiting_flags(ctx)
-    assert [f["status"] for f in st.get("screen:1")["flags"]] == ["open"]
-    st.get("screen:1")["data"]["decision"] = "exclude"
+    assert [f["status"] for f in SN(st, "1")["flags"]] == ["open"]
+    SN(st, "1")["data"]["decision"] = "exclude"
     screening.sync_awaiting_flags(ctx)
-    assert [f["status"] for f in st.get("screen:1")["flags"]] == ["resolved"]
+    assert [f["status"] for f in SN(st, "1")["flags"]] == ["resolved"]
     with pytest.raises(ValueError, match="agent_only"):
         load_config(None, {"pipeline": {"human_mode": "agent_only"}})
 
@@ -581,18 +605,19 @@ def test_rescreen_keeps_records_waiting_for_full_text(tmp_path):
     ctx = make_ctx(tmp_path, fulltexts=("1001",))          # 1002 and 1003 have no full text
     pipeline.run(ctx, until="eligibility")
     st = ctx.store
-    waiting = sorted(n["id"] for n in st.by_type("screen") if n["data"]["stage"] == "retrieval")
-    assert waiting == ["screen:1002", "screen:1003"]
+    from sragent.selection import screened
+    waiting = sorted(rid for rid, v in screened(st) if v["stage"] == "retrieval")
+    assert waiting == ["1002", "1003"]
     protocol = st.get("protocol")["data"]
     screening.rescreen_rule_only(ctx, protocol)
     assert st.included_ids() == ["1001"]
-    assert all(st.get(w)["data"]["decision"] == "fulltext_unavailable" for w in waiting)
+    assert all(SC(st, w)["decision"] == "fulltext_unavailable" for w in waiting)
     p2 = copy.deepcopy(protocol)                            # a revised protocol that rules them out
     ta = next(c for c in p2["criteria"] if c["type"] == "inclusion" and c.get("stage", "title_abstract") == "title_abstract")
     ta["type"] = "exclusion"                                 # 'met' now means excluded
     screening.rescreen_rule_only(ctx, p2)
     for w in waiting:
-        d = st.get(w)["data"]
+        d = SC(st, w)
         assert (d["decision"], d["stage"]) == ("exclude", "title_abstract") and ta["id"] in d["because"]
 
 
@@ -615,14 +640,14 @@ def test_accepting_a_proposal_keeps_what_the_sandbox_created(tmp_path):
     ctx = make_ctx(tmp_path)
     pipeline.run(ctx)
     st = ctx.store
-    assert st.get("screen:1004")["data"]["decision"] == "exclude" and st.get("ft:1004") is None
+    assert SC(st, "1004")["decision"] == "exclude" and st.get("ft:1004") is None
     cs = feedback.handle_feedback(ctx, "Study 1004 should not have been excluded: it has human PK data.",
                                   target="screen:1004", propagate=True, auto_accept=False)
     assert cs["status"] == "proposed" and st.get("ft:1004") is None          # nothing applied yet
     assert "ft:1004" in cs["sandbox_nodes"] and "ft:1004" in cs["base_versions"] or True
     feedback.accept(ctx, cs["id"])
     assert st.get("ft:1004") is not None                                       # the retrieval the sandbox did
-    d = st.get("screen:1004")["data"]
+    d = SC(st, "1004")
     assert d["decision"] == "fulltext_unavailable" and d["stage"] == "retrieval"   # no full text: requested
     assert "1004" in fulltext.needed_pdfs(ctx) or any("1004" in str(x) for x in fulltext.needed_pdfs(ctx))
     assert any(e["op"] == "create" and e["node"] == "ft:1004" for e in st.changelog)   # logged, not silent
@@ -636,29 +661,28 @@ def test_a_persons_eligibility_decision_is_never_overwritten(tmp_path):
     ctx = make_ctx(tmp_path)
     pipeline.run(ctx)
     st = ctx.store
-    n = st.get("screen:1003")
-    st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "stage": "full_text"}, depends_on=n["depends_on"])
+    set_fulltext_decision(st, "1003", decision="awaiting")
     assert todos.apply(ctx, {"todo_id": "elig:1003", "option": "include", "text": "PK data in table 2"})["ok"]
-    assert st.get("screen:1003")["data"]["human_decision"]["decision"] == "include"
+    assert SC(st, "1003")["human_decision"]["decision"] == "include"
     # a new PDF for that study: read and re-extracted, the decision kept
     (fulltext.fulltext_dir(ctx) / "1003.txt").write_text("## Methods\n" + "Emicizumab prophylaxis, 30 patients, trough 40 ug/mL. " * 60)
     r = sync.process_pdfs(ctx)
     assert "1003" in r["processed"] and "1003" not in r["rescreened"] and "1003" in r["reextracted"]
-    assert st.get("screen:1003")["data"]["human_decision"]["decision"] == "include" and "1003" in st.included_ids()
+    assert SC(st, "1003")["human_decision"]["decision"] == "include" and "1003" in st.included_ids()
     # the next run's full-text review, the rules and a protocol re-application leave it alone
     assert not screening.needs_fulltext_review(st, "1003")
     screening.fulltext_review(ctx, st.get("protocol")["data"])
     rules.apply(ctx)
     screening.rescreen_rule_only(ctx, st.get("protocol")["data"])
-    d = st.get("screen:1003")["data"]
+    d = SC(st, "1003")
     assert d["decision"] == "include" and d["human_decision"]["decision"] == "include"
     # the agent's own screening (fresh assessments) keeps the decision and records what it would have said
     screening.screen_one(ctx, st.get("protocol")["data"], "1003", "full_text")
-    d = st.get("screen:1003")["data"]
+    d = SC(st, "1003")
     assert d["decision"] == "include" and d["human_decision"] and "agent_decision" in d
     # an explicit re-run a person asked for is the one way to replace it (as a proposal)
     cs = actions.rerun(ctx, "1003", "screen", note="please re-screen")
-    assert cs["kind"] == "rerun" and st.get("screen:1003")["data"]["human_decision"]["decision"] == "include"
+    assert cs["kind"] == "rerun" and SC(st, "1003")["human_decision"]["decision"] == "include"
 
 
 def test_an_added_pdf_follows_the_update_policy(tmp_path):
@@ -881,7 +905,7 @@ def test_edges_carry_versions_and_a_changed_setting_makes_only_its_dependents_st
     assert st.meta["schema"] == graph.SCHEMA
     ext = st.get("ext:1001")
     assert "field:sample_size" in ext["depends_on"] and "protocol" not in ext["depends_on"]
-    assert ext["dep_versions"]["screen:1001"] == st.get("screen:1001")["version"]
+    assert ext["dep_versions"]["elig:1001"] == st.get("elig:1001")["version"]          # the full-text decision
     assert graph.stale(st) == {}                                   # a finished review is current with its inputs
     # the eligibility text changes (as if accepted via config_lock): the protocol is stale, nothing else is
     cfg = json.loads(json.dumps(ctx.cfg))
@@ -1008,15 +1032,14 @@ def test_an_answer_after_a_criterion_change_keeps_the_reassessment_pending(tmp_p
     ctx = make_ctx(tmp_path)
     pipeline.run(ctx)
     st = ctx.store
-    n = st.get("screen:1002")
-    st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "stage": "full_text"}, depends_on=n["depends_on"])
+    set_fulltext_decision(st, "1002", decision="awaiting")
     p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
     p["criteria"].append({"id": "E1", "type": "exclusion", "text": "studies only in children", "stage": "title_abstract"})
     yaml.safe_dump(p, open(ctx.run_dir / "protocol.yaml", "w"), sort_keys=False)
     planning.plan(ctx)                                                   # the protocol changes first ...
     assert todos.apply(ctx, {"todo_id": "elig:1002", "option": "include", "text": "PK table"})["ok"]   # ... then the answer
     by = {i["node"]: i for i in engine.plan(ctx)["items"]}
-    assert by["screen:1002"]["action"] == "reassess" and by["screen:1002"]["criteria"] == ["E1"]
+    assert by["elig:1002"]["action"] == "reassess" and by["elig:1002"]["criteria"] == ["E1"]
 
 
 def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
@@ -1028,8 +1051,7 @@ def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
     st = ctx.store
     assert engine.plan(ctx)["items"] == []                              # a finished review: nothing to do
     # a person decides 1002 and edits 1001's extraction; then a criterion is added to the protocol
-    n = st.get("screen:1002")
-    st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "stage": "full_text"}, depends_on=n["depends_on"])
+    set_fulltext_decision(st, "1002", decision="awaiting")
     assert todos.apply(ctx, {"todo_id": "elig:1002", "option": "include", "text": "PK table"})["ok"]
     actions.edit(ctx, {"kind": "ext", "rid": "1001", "fields": {"sample_size": "14 participants"}, "note": "Table 1"})
     p = yaml.safe_load(open(ctx.run_dir / "protocol.yaml"))
@@ -1040,15 +1062,17 @@ def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
     plan = engine.plan(ctx)
     assert sum(1 for _ in (ctx.run_dir / "usage.jsonl").read_text().splitlines()) == n_calls   # planning made no model call
     by = {i["node"]: i for i in plan["items"]}
-    assert by["screen:1001"]["action"] == "reassess" and by["screen:1001"]["criteria"] == ["E1"]
-    assert by["screen:1002"]["action"] == "reassess" and by["screen:1002"]["pinned"]              # assessed, decision kept
+    assert by["elig:1001"]["action"] == "reassess" and by["elig:1001"]["criteria"] == ["E1"]
+    assert by["elig:1002"]["action"] == "reassess" and by["elig:1002"]["pinned"]                  # assessed, decision kept
+    assert by["screen:1001"]["action"] == "touch"                     # screened on its full text: that node decides
     assert by["screen:1004"]["action"] == "reassess"                                             # excluded ones too
-    assert plan["cost"]["total_usd"] is not None and plan["summary"]["screen:reassess"] >= 3
+    assert plan["cost"]["total_usd"] is not None and \
+        plan["summary"].get("screen:reassess", 0) + plan["summary"].get("eligibility:reassess", 0) >= 3
     cs = engine.execute(ctx, tag="test")
-    d2 = st.get("screen:1002")["data"]
+    d2 = SC(st, "1002")
     assert d2["decision"] == "include" and d2["human_decision"] and "E1" in {a["id"] for a in d2["criteria"]}
     assert "agent_decision" in d2                                                                # shown beside the decision
-    assert {a["id"] for a in st.get("screen:1001")["data"]["criteria"]} >= {"I1", "I2", "I3", "E1"}
+    assert {a["id"] for a in SC(st, "1001")["criteria"]} >= {"I1", "I2", "I3", "E1"}
     assert st.get("ext:1001")["data"]["fields"]["sample_size"]["value"] == "14 participants"      # the edit survived
     left = engine.plan(ctx)["items"]                                    # nothing left to do: only notes for a person
     assert [i for i in left if i["action"] not in ("keep", "render")] == []
@@ -1079,7 +1103,7 @@ def test_disabled_rule_exclusions_are_undone_and_retired_ids_are_not_revived(tmp
                                   "decision_before_rule": "exclude"}, depends_on=n["depends_on"], actor="rule")
     ch = rules.apply(ctx)                                               # 'editorial' is not enabled: undone
     assert any(c.get("restored") and c["rid"] == "1004" for c in ch)
-    d = st.get("screen:1004")["data"]
+    d = SC(st, "1004")
     assert "rule" not in d and d.get("rule_restored", {}).get("rule") == "editorial"
     pipeline.run(ctx)
     sid = st.by_type("synthesis", active_only=True)[0]["id"]
@@ -1218,7 +1242,7 @@ def test_extraction_doubt_is_settled_by_a_second_agent(tmp_path):
     ctx = make_ctx(tmp_path)
     pipeline.run(ctx)
     st = ctx.store
-    assert st.get("screen:1001")["data"]["decision"] == "include" and st.get("ext:1001")
+    assert SC(st, "1001")["decision"] == "include" and st.get("ext:1001")
     st.flag("screen:1001", "Included by rule although criteria ['I2'] were still unclear ...", actor="agent", source="screening_unclear")
     ctx.hub.mock_fn = doubting
     ctx.hub.cache_read = False
@@ -1226,15 +1250,15 @@ def test_extraction_doubt_is_settled_by_a_second_agent(tmp_path):
     with ctx.at("extract"):
         extraction.extract_all(ctx, only=["1001", "1002"])
     # 1001: the verifier agrees -> excluded by extraction + verifier
-    d = st.get("screen:1001")["data"]
+    d = SC(st, "1001")
     assert d["decision"] == "exclude" and d["because"] == ["I2"] and d["decided_by"] == "extraction+verifier"
     assert d["eligibility_review"]["outcome"] == "excluded" and d["eligibility_review"]["verifier"]["verdict"] == "exclude"
     assert next(a for a in d["criteria"] if a["id"] == "I2")["assessment"] == "not_met"
     assert "1001" not in st.included_ids() and st.get("ext:1001")["status"] == "excluded"
-    assert not [f for f in st.get("screen:1001")["flags"] if f["status"] == "open"]
+    assert not [f for f in SN(st, "1001")["flags"] if f["status"] == "open"]
     assert status_of(st, "1001")[1] == "excluded (extraction + verifier)"
     # 1002: the verifier disagrees -> pending, for the person, with both claims; not included
-    d2 = st.get("screen:1002")["data"]
+    d2 = SC(st, "1002")
     assert d2["decision"] == "awaiting" and d2["eligibility_review"]["outcome"] == "pending_disagreement"
     assert "1002" not in st.included_ids() and st.get("ext:1002")["status"] == "excluded"
     assert status_of(st, "1002")[0] == "pending" and "disagree" in status_of(st, "1002")[1]
@@ -1244,14 +1268,14 @@ def test_extraction_doubt_is_settled_by_a_second_agent(tmp_path):
     rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
     assert sum(r["tag"] == "eligibility_verify" for r in rows) == 2
     # a person's decision stands: the review is recorded and flagged, nothing changes
-    st.upsert("screen:1003", "screen", {**st.get("screen:1003")["data"], "human_decision": {"decision": "include", "ts": 0}}, depends_on=st.get("screen:1003")["depends_on"], actor="user")
+    set_fulltext_decision(st, "1003", human_decision={"decision": "include", "ts": 0})
     ctx.hub.mock_fn = lambda m, mode: doubting(m, mode) if "study id 1003" not in m[-1]["content"] else json.dumps({**json.loads(mock_fn(m, mode)), "eligibility_doubt": {"criterion": "I2", "why": "monkeys"}})
     ctx.hub._clients.clear()
     with ctx.at("extract"):
         extraction.extract_all(ctx, only=["1003"])
-    d3 = st.get("screen:1003")["data"]
+    d3 = SC(st, "1003")
     assert d3["decision"] == "include" and d3["eligibility_review"]["outcome"] == "kept_human_decision"
-    assert [f for f in st.get("screen:1003")["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
+    assert [f for f in SN(st, "1003")["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
 
 
 def test_first_extraction_set_aside_by_the_eligibility_check_does_not_crash(tmp_path):
@@ -1278,14 +1302,14 @@ def test_first_extraction_set_aside_by_the_eligibility_check_does_not_crash(tmp_
     ctx.hub._clients.clear()
     # re-run of extraction from the study page: a proposal with the screening change, no crash
     cs = actions.rerun(ctx, "1001", "extract", propagate=False)
-    assert any(c["node"] == "screen:1001" and c["after"]["decision"] == "exclude" for c in cs["changes"])
+    assert any(c["node"] == "elig:1001" and c["after"]["decision"] == "exclude" for c in cs["changes"])
     assert not any(c["node"] == "ext:1001" for c in cs["changes"])
     # the update engine's extract item
     ecs = {"changes": []}
     with ctx.at("extract"):
         engine._extract(ctx, ecs, {"rid": "1002", "action": "extract"})
     assert st.get("ext:1002") is None
-    assert any(c["node"] == "screen:1002" and c["after"]["decision"] == "exclude" for c in ecs["changes"])
+    assert any(c["node"] == "elig:1002" and c["after"]["decision"] == "exclude" for c in ecs["changes"])
 
 
 def test_faulted_synthesis_statements_get_one_repair_round(tmp_path):
@@ -1414,9 +1438,9 @@ def test_planted_eligibility_error_really_excludes_under_any_of(tmp_path):
     st.upsert("screen:2", "screen", {"stage": "full_text", "decision": "include", "because": [], "criteria": A(I1="unclear", I3="met", I4="met")}, depends_on=[])
     ctx = type("C", (), {})(); ctx.store = st
     e1 = inject_eligibility(ctx, "1", structural=False)
-    assert e1["field"] == "I1" and st.get("screen:1")["data"]["decision"] == "exclude"     # the plain criterion first
+    assert e1["field"] == "I1" and SC(st, "1")["decision"] == "exclude"     # the plain criterion first
     e2 = inject_eligibility(ctx, "2", structural=False)
-    assert e2["field"] == "I3, I4" and st.get("screen:2")["data"]["decision"] == "exclude"  # the whole group
+    assert e2["field"] == "I3, I4" and SC(st, "2")["decision"] == "exclude"  # the whole group
     assert e2["corrupted"]["decision"] == "exclude" and e2["gold"]["I4"] == "met"
 
 
@@ -1430,7 +1454,7 @@ def test_wait_for_pdfs_holds_the_first_synthesis_until_the_list_is_settled(tmp_p
                    extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False, "wait_for_pdfs": True}})
     pipeline.run(ctx)
     st = ctx.store
-    assert st.get("screen:1003")["data"]["decision"] == "fulltext_unavailable"
+    assert SC(st, "1003")["decision"] == "fulltext_unavailable"
     from sragent import state
     from sragent.stages import fulltext as _ft
     assert not st.by_type("synthesis") and _ft.waiting_for_pdfs(ctx) == 1
@@ -1458,14 +1482,14 @@ def test_feedback_revised_screening_follows_the_full_text_rule(tmp_path):
     from sragent.feedback import apply_revised
     ctx = make_ctx(tmp_path)
     pipeline.run(ctx)
-    n = ctx.store.get("screen:1001")
+    n = ctx.store.get("elig:1001")                       # the full-text decision
     assert n["data"]["stage"] == "full_text" and n["data"]["decision"] == "include"
     crits = [dict(a) for a in n["data"]["criteria"]]
     for a in crits:
         if a["id"] == "I2":
             a.update({"assessment": "unclear", "reported": True, "reason": "data in monkeys only"})
-    before, after = apply_revised(ctx, "screen:1001", {"criteria": crits}, reason="test")
-    d = ctx.store.get("screen:1001")["data"]
+    before, after = apply_revised(ctx, "elig:1001", {"criteria": crits}, reason="test")
+    d = SC(ctx.store, "1001")
     assert d["decision"] == "exclude" and d["because"] == ["I2"]
     i2 = next(a for a in d["criteria"] if a["id"] == "I2")
     assert i2["assessment"] == "not_met" and i2["model_assessment"] == "unclear"
@@ -1775,26 +1799,26 @@ def test_screening_decisions_get_a_second_reading(tmp_path):
     ctx = make_ctx(tmp_path, extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False, "verify_screening": "all"}})
     pipeline.run(ctx)
     st = ctx.store
-    d1 = st.get("screen:1001")["data"]
+    d1 = SC(st, "1001")
     assert d1["decision"] == "include" and d1["screen_verify"]["outcome"] == "agreed" and d1["screen_verify"]["agree"]
-    d4 = st.get("screen:1004")["data"]        # excluded at title/abstract, disputed: forwarded, then no full text
+    d4 = SC(st, "1004")        # excluded at title/abstract, disputed: forwarded, then no full text
     assert d4["screen_verify"]["outcome"] == "forwarded" and d4["decision"] in ("fulltext_unavailable", "forward")
     assert d4.get("title_abstract", {}).get("decision") == "forward" or d4["decision"] == "forward"
-    d2 = st.get("screen:1002")["data"]        # included at full text, disputed: undecided for the person
+    d2 = SC(st, "1002")        # included at full text, disputed: undecided for the person
     assert d2["decision"] == "awaiting" and d2["screen_verify"]["outcome"] == "pending_disagreement" and d2["because"] == ["I3"]
     assert "1002" not in st.included_ids() and status_of(st, "1002")[1] == "undecided: screener and verifier disagree"
     t = next(x for x in todos.build(ctx) if x["kind"] == "eligibility" and x["rid"] == "1002")
     assert t["verify"]["decision"] == "exclude" and t["suggest"]["option"] == "exclude" and "disagree" in t["suggest"]["why"]
-    assert any(f["status"] == "open" and "verifier disagree" in f["text"] for f in st.get("screen:1002")["flags"])
+    assert any(f["status"] == "open" and "verifier disagree" in f["text"] for f in SN(st, "1002")["flags"])
     rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
     assert sum(r["tag"].startswith("screen_verify_") for r in rows) >= 4
     (tmp_path / "ao").mkdir()
     ctx2 = make_ctx(tmp_path / "ao", extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
                                                               "verify_screening": "full_text", "human_mode": "agent_only", "fulltext_unclear": "include"}})
     pipeline.run(ctx2)
-    e2 = ctx2.store.get("screen:1002")["data"]
+    e2 = SC(ctx2.store, "1002")
     assert e2["decision"] == "include" and e2["screen_verify"]["outcome"] == "include_by_policy_disagreement" and e2["unclear_by_rule"] == "include"
-    assert ctx2.store.get("screen:1004")["data"].get("screen_verify") is None   # full_text mode: title/abstract exclusions not checked
+    assert SC(ctx2.store, "1004").get("screen_verify") is None   # full_text mode: title/abstract exclusions not checked
 
 
 def test_second_reading_of_decisions_already_made(tmp_path):
@@ -1809,9 +1833,9 @@ def test_second_reading_of_decisions_already_made(tmp_path):
     assert not any(n["data"].get("screen_verify") for n in st.by_type("screen"))
     r = verify_existing(ctx, st.get("protocol")["data"], mode="all")
     assert r["checked"] >= 4 and r["outcomes"].get("agreed", 0) >= 2
-    assert st.get("screen:1002")["data"]["decision"] == "awaiting" and st.get("ext:1002")["status"] == "excluded"
-    assert st.get("screen:1004")["data"]["decision"] == "forward" and st.get("screen:1004")["data"]["screen_verify"]["outcome"] == "forwarded"
-    assert st.get("screen:1001")["data"]["decision"] == "include" and st.get("screen:1001")["data"]["screen_verify"]["agree"]
+    assert SC(st, "1002")["decision"] == "awaiting" and st.get("ext:1002")["status"] == "excluded"
+    assert SC(st, "1004")["decision"] == "forward" and SC(st, "1004")["screen_verify"]["outcome"] == "forwarded"
+    assert SC(st, "1001")["decision"] == "include" and SC(st, "1001")["screen_verify"]["agree"]
     r2 = verify_existing(ctx, st.get("protocol")["data"], mode="all")
     assert r2["checked"] == 0                            # nothing is read twice
 
@@ -1826,16 +1850,15 @@ def test_pending_mode_lets_the_verifier_decide_undecided_records(tmp_path):
     pipeline.run(ctx)
     st = ctx.store
     for rid in ("1003", "1001"):                         # make two included records undecided, as if unclear after full text
-        n = st.get(f"screen:{rid}")
-        st.upsert(n["id"], "screen", {**n["data"], "decision": "awaiting", "because": ["I3"]}, depends_on=n["depends_on"])
+        set_fulltext_decision(st, rid, decision="awaiting", because=["I3"])
     r = verify_existing(ctx, st.get("protocol")["data"], mode="pending")
     assert r["checked"] == 2 and r["outcomes"] == {"decided_by_verifier": 1, "still_undecided": 1}
-    d3 = st.get("screen:1003")["data"]                  # the case series: the verifier decided include
+    d3 = SC(st, "1003")                  # the case series: the verifier decided include
     assert d3["decision"] == "include" and d3["decided_by"] == "verifier" and status_of(st, "1003")[1] == "included (verifier)"
     assert next(a for a in d3["criteria"] if a["id"] == "I3")["assessment"] == "met"
-    d1 = st.get("screen:1001")["data"]                  # neither could decide: stays with the person
+    d1 = SC(st, "1001")                  # neither could decide: stays with the person
     assert d1["decision"] == "awaiting" and d1["screen_verify"]["outcome"] == "still_undecided"
-    assert st.get("screen:1002")["data"].get("screen_verify") is None          # decided records are not read in pending mode
+    assert SC(st, "1002").get("screen_verify") is None          # decided records are not read in pending mode
 
 
 def test_rob_drafts_need_a_person_only_with_an_open_reason(tmp_path):

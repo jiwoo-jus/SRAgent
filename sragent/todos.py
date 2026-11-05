@@ -23,12 +23,12 @@ from .context import Ctx
 from .store import criteria_by_id, record_of
 from .stages import fulltext
 
-from . import stagespec, state
+from . import selection, stagespec, state
 
 # the To-do groups: one per stage (stagespec.STAGES), then feedback and revisions (across stages)
 STEPS = [(s.key, f"{s.order}. {s.label}") for s in stagespec.STAGES] + \
         [(stagespec.FEEDBACK, f"{len(stagespec.STAGES) + 1}. Feedback & revisions")]
-STEP_OF_TYPE = {"screen": "screen", "extraction": "extract", "rob": "rob", "synthesis": "synthesis"}
+STEP_OF_TYPE = {"screen": "screen", "eligibility": "eligibility", "extraction": "extract", "rob": "rob", "synthesis": "synthesis"}
 
 
 def _study_label(st, rid):
@@ -107,9 +107,7 @@ def build(ctx: Ctx) -> list[dict]:
 
     # -- eligibility: awaiting classification (shown as one table in the UI)
     wanted_pdf = state.wanted(st)
-    for n in st.by_type("screen"):
-        d = n["data"]
-        rid = n["id"].split(":", 1)[1]
+    for rid, d in selection.screened(st):
         if d["decision"] != "awaiting" or d.get("human_decision"):
             continue
         if rid in wanted_pdf and ((st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext"):
@@ -433,15 +431,13 @@ def apply(ctx: Ctx, answer: dict) -> dict:
             msg = f"protocol re-applied: {r['changed']} decisions changed"
     elif tid.startswith("elig:"):
         rid = tid.split(":", 1)[1]
-        n = st.get(f"screen:{rid}")
         if opt == "include" and (st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext":
             return {"ok": False, "message": f"{rid} cannot be included without a full-text review; supply {rid}.pdf first."}
         if opt in ("include", "exclude"):
-            d = dict(n["data"])
-            d["decision"] = opt
-            d["because"] = [extra.get("criterion") or "human"] if opt == "exclude" else []
-            d["human_decision"] = {"decision": opt, "note": text, "reason": extra.get("criterion"), "ts": time.time()}
-            st.annotate(n["id"], d, actor="user", reason=f"human eligibility decision: {opt}" + (f" ({text})" if text else ""))
+            from .stages.screening import person_decides
+            n = person_decides(st, rid, opt, [extra.get("criterion") or "human"] if opt == "exclude" else [],
+                               {"decision": opt, "note": text, "reason": extra.get("criterion"), "ts": time.time()},
+                               f"human eligibility decision: {opt}" + (f" ({text})" if text else ""))
             for f in n["flags"]:
                 if f["status"] == "open":
                     st.resolve_flag(n["id"], f["id"], f"human decided: {opt}", actor="user")
@@ -613,10 +609,8 @@ def bulk(ctx: Ctx, kind: str, ids: list[str], note: str = "", items: list[dict] 
 def rule_exclusions(ctx: Ctx) -> list[dict]:
     st = ctx.store
     out = []
-    for n in st.by_type("screen"):
-        d = n["data"]
+    for rid, d in selection.screened(st):
         if d.get("rule") and d["decision"] == "exclude":
-            rid = n["id"].split(":", 1)[1]
             r = record_of(st, rid)
             out.append({"rid": rid, "rule": d["rule"], "reason": d.get("rule_reason", ""),
                         "title": (r.get("title") or "(no title)")[:160], "pmid": r.get("pmid", ""), "doi": r.get("doi", "")})

@@ -12,7 +12,7 @@
    "est_usd": 0.0,
    "kept": [],
    "lines": [
-    "ext:G02: retire (screen:G02 v2 -> v3)",
+    "ext:G02: retire (elig:G02 v1 -> v2)",
     "rob:G02: retire (study no longer included)",
     "syn:S2: revise (cites excluded G02)"
    ],

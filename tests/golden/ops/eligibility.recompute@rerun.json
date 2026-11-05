@@ -36,7 +36,7 @@
   "rid": "G01",
   "status": "no_change",
   "step": "screen",
-  "target": "screen:G01",
+  "target": "elig:G01",
   "verdict": "rerun"
  },
  "review": {

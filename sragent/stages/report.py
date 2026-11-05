@@ -14,13 +14,14 @@ from collections import Counter
 import time
 
 from ..context import Ctx
+from .. import selection
 
 
 def prisma(ctx: Ctx) -> dict:
     """PRISMA 2020 flow. Not retrieved, parse failures, undecided and ineligible are kept apart."""
     st = ctx.store
     s = (st.get("search") or {}).get("data", {})
-    screens = st.by_type("screen")
+    screens = selection.study_nodes(st)
     dec = lambda n: n["data"]["decision"]
     ta_excl = [n for n in screens if n["data"]["stage"] == "title_abstract" and dec(n) == "exclude"]
     pending_ta = [n for n in screens if n["data"]["stage"] == "title_abstract" and dec(n) != "exclude"]
@@ -82,7 +83,7 @@ def report_markdown(ctx: Ctx) -> str:
           f"full texts assessed: {pr['fulltext_assessed']}; excluded at full text: {pr['excluded_fulltext']}; "
           f"awaiting classification (human decision needed): {pr['awaiting_classification']}; "
           f"**included: {pr['included']}**.", ""]
-    ft_ex = [n for n in st.by_type("screen") if n["data"]["stage"] == "full_text" and n["data"]["decision"] == "exclude"]
+    ft_ex = [n for n in selection.study_nodes(st) if n["data"]["stage"] == "full_text" and n["data"]["decision"] == "exclude"]
     if ft_ex:
         L += ["**Studies excluded at full text**", "", "| Study | Title | Reason |", "|---|---|---|"]
         for n in ft_ex:
@@ -144,7 +145,7 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
         if max_chars_per_study else (lambda block: block)
     L = ["## EVIDENCE-LINKED DETAILS", "", "### Eligibility decisions (criterion level)"]
     inc = set(st.included_ids())
-    for n in st.by_type("screen"):
+    for n in selection.study_nodes(st):
         rid = n["id"].split(":", 1)[1]
         d = n["data"]
         if d["stage"] == "title_abstract" and d["decision"] == "exclude" and not n["flags"]:
@@ -408,7 +409,7 @@ def open_flags(ctx: Ctx) -> dict:
     for n in st.nodes.values():
         if n["status"] != "active" or n["type"] in ("setting", "record", "fulltext"):
             continue
-        rid = n["id"].split(":", 1)[1] if ":" in n["id"] and n["type"] in ("screen", "extraction", "rob") else ""
+        rid = n["id"].split(":", 1)[1] if ":" in n["id"] and n["type"] in ("screen", "eligibility", "extraction", "rob") else ""
         if n["type"] in ("extraction", "rob") and rid not in inc:
             continue
         for f in n["flags"]:
@@ -499,7 +500,7 @@ def _flow(ctx: Ctx) -> dict:
     from collections import Counter
     st = ctx.store
     s = (st.get("search") or {}).get("data", {})
-    screens = st.by_type("screen")
+    screens = selection.study_nodes(st)
     D = lambda n: n["data"]
     ta = [n for n in screens if D(n)["stage"] == "title_abstract"]
     ta_ex = [n for n in ta if D(n)["decision"] == "exclude"]
@@ -714,7 +715,7 @@ def report_html(ctx: Ctx) -> str:
         H.append(f"<details><summary>Rationale for the search strategy (agent)</summary><p class='prose note'>{_e(s['rationale'])}</p></details>")
     from .. import state
     rules_used = ((st.get(state.RULES) or {}).get("data") or {}).get("rules") or []
-    n_human = sum(1 for n in st.by_type("screen") if n["data"].get("human_decision"))
+    n_human = sum(1 for n in selection.study_nodes(st) if n["data"].get("human_decision"))
     H.append("<h3>1.3 Selection process</h3><div class='prose'>"
              + (f"<p>Records were first checked against deterministic publication-type rules ({_e(', '.join(_label(r).lower() for r in rules_used))}), "
                 "without model calls. " if rules_used else "<p>")
@@ -871,7 +872,7 @@ def report_html(ctx: Ctx) -> str:
         H.append(_source_html(ctx, rid) + "</div>")
 
     # ---------------- Appendix B: excluded at full text
-    ft_ex = [n for n in st.by_type("screen") if n["data"]["stage"] == "full_text" and n["data"]["decision"] == "exclude"]
+    ft_ex = [n for n in selection.study_nodes(st) if n["data"]["stage"] == "full_text" and n["data"]["decision"] == "exclude"]
     H.append("<h2 id='app-b'>Appendix B. Studies excluded at full text</h2>")
     if ft_ex:
         rows = []
@@ -889,7 +890,7 @@ def report_html(ctx: Ctx) -> str:
     H.append("<h2 id='app-c'>Appendix C. Eligibility assessment of all records</h2><p class='prose note'>Decision, stage and the criteria it "
              "rests on for every screened record; open a row for the criterion-level assessments and the sentences cited.</p>"
              "<div class='tbl'><table><thead><tr><th>Record</th><th>Decision</th><th>Criterion-level assessment</th></tr></thead><tbody>")
-    for n in st.by_type("screen"):
+    for n in selection.study_nodes(st):
         rid = n["id"].split(":", 1)[1]
         d = n["data"]
         rec = (st.get(f"rec:{rid}") or {}).get("data", {})

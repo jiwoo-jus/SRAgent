@@ -18,6 +18,7 @@ from pathlib import Path
 from . import state
 from .context import Ctx
 from .store import criteria_by_id, record_of, study_of
+from . import selection
 
 GROUPS = ["included", "pending", "excluded"]
 
@@ -43,7 +44,7 @@ def _stage(s):
 
 def status_of(st, rid: str) -> tuple[str, str, str]:
     """(group, status label, reason)"""
-    sc = st.get(f"screen:{rid}")
+    sc = selection.study_node(st, rid)
     if not sc:
         return "pending", "not screened yet", ""
     d = sc["data"]
@@ -85,7 +86,7 @@ def status_of(st, rid: str) -> tuple[str, str, str]:
 
 
 def _study_nodes(st, rid):
-    return [f"{k}:{rid}" for k in ("rec", "screen", "ft", "ext", "rob") if st.get(f"{k}:{rid}")]
+    return [f"{k}:{rid}" for k in ("rec", "screen", "ft", "elig", "ext", "rob") if st.get(f"{k}:{rid}")]
 
 
 def _flags_of(st, rid):
@@ -144,7 +145,7 @@ def diff_summary(ntype: str, before, after) -> list[str]:
             if b != v.get("value"):
                 out.append(f"{k}: “{str(b)[:160]}” → “{str(v.get('value'))[:160]}”")
         return out or ["evidence locations / term checks updated"]
-    if ntype == "screen":
+    if ntype in ("screen", "eligibility"):
         if before.get("decision") != after.get("decision"):
             out.append(f"decision: {before.get('decision')} → {after.get('decision')}")
         bc = {a.get("id"): a.get("assessment") for a in before.get("criteria", [])}
@@ -240,7 +241,8 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
         raise KeyError(rid)
     crit = criteria_by_id(st)
     g, s, why = status_of(st, rid)
-    ftn, sc, ext, rob = (st.get(f"{k}:{rid}") for k in ("ft", "screen", "ext", "rob"))
+    ftn, ext, rob = (st.get(f"{k}:{rid}") for k in ("ft", "ext", "rob"))
+    sc = selection.study_node(st, rid)       # the study's eligibility: title/abstract and full-text nodes together
     out = {"rid": rid, "group": g, "status": s, "reason": why,
            "record": {k: rec.get(k) for k in ("title", "authors", "journal", "year", "pmid", "doi", "pmcid",
                                               "pub_types", "abstract", "source")},

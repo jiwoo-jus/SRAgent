@@ -9,6 +9,7 @@ from .. import prompts
 from ..context import Ctx
 from .extraction import table_text
 from .rob import rob_text
+from .. import selection
 
 
 def statement_deps(st, cites: list[str]) -> list[str]:
@@ -82,7 +83,7 @@ def write_statements(ctx: Ctx, statements: list[dict], reason: str, actor: str =
 
 def not_retrieved(st) -> int:
     """Forwarded reports with no usable full text (not retrieved, or an unreadable file)."""
-    return sum(1 for n in st.by_type("screen") if n["data"]["decision"] in ("fulltext_unavailable", "parse_failed"))
+    return sum(1 for n in selection.study_nodes(st) if n["data"]["decision"] in ("fulltext_unavailable", "parse_failed"))
 
 
 def coverage_note(st) -> str:

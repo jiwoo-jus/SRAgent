@@ -10,7 +10,7 @@ Both write a change summary to the run log and regenerate the reports.
 """
 from __future__ import annotations
 
-from . import state
+from . import selection, state
 from .context import Ctx
 from .stages import extraction, fulltext, report, screening
 
@@ -23,9 +23,9 @@ def process_pdfs(ctx: Ctx) -> dict:
     rescreened, reextracted, unreadable = [], [], []
     for rid in new:
         state.set_pdf_request(st, rid, actor="agent", wanted=False)   # the file is here now; decide with it
-        sc = st.get(f"screen:{rid}")
-        human = sc and sc["data"].get("human_decision")   # a person decided: the file is read, the decision stays
-        if sc and not human and not sc["data"].get("rule") and sc["data"]["decision"] != "exclude":
+        sc = selection.view(st, rid)
+        human = sc and sc.get("human_decision")   # a person decided: the file is read, the decision stays
+        if sc and not human and not sc.get("rule") and sc["decision"] != "exclude":
             out = screening.review_one(ctx, protocol, rid, refetch=True)   # full-text review with the supplied file
             rescreened.append(rid)
         else:

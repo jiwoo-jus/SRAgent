@@ -23,10 +23,11 @@ from .. import gold, state
 from ..context import Ctx
 from ..stages.screening import RETRIEVAL_FAILURES
 from .common import prf, wilson
+from .. import selection
 
 
 def category(st, rid: str) -> str:
-    n = st.get(f"screen:{rid}")
+    n = selection.study_node(st, rid)
     if not n:
         return "not_screened"
     d = n["data"]
@@ -45,7 +46,7 @@ def category(st, rid: str) -> str:
 
 
 def ta_forwarded(st, rid: str) -> bool | None:
-    n = st.get(f"screen:{rid}")
+    n = selection.study_node(st, rid)
     if not n:
         return None
     d = n["data"]
@@ -117,7 +118,7 @@ def stagewise_screening(ctx: Ctx) -> dict:
     st = ctx.store
     labels = gold.labels(ctx)
     rows = []
-    for n in st.by_type("screen"):
+    for n in selection.study_nodes(st):
         rid = n["id"].split(":", 1)[1]
         if rid not in labels:
             continue

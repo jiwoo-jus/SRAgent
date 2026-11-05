@@ -3,7 +3,7 @@
   "decisions_log": [],
   "flags_closed": [],
   "flags_opened": [
-   "screen:G02 [screening]"
+   "elig:G02 [screening]"
   ],
   "meta_changed": [
    "flag_seq"

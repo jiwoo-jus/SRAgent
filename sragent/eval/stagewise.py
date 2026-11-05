@@ -23,6 +23,7 @@ from pathlib import Path
 from .. import gold
 from ..context import Ctx
 from ..stages import extraction, fulltext, rob, synthesis
+from .. import selection
 
 NOT_VERIFIED = "NR (not verified: the judge did not find this value supported by its cited source sentences)"
 
@@ -41,7 +42,7 @@ def build_gold_input_review(ctx: Ctx, ectx: Ctx, out_dir: Path) -> tuple[Ctx, di
     # start from a clean slate for the later stages
     for nid in [k for k in st.nodes if k.startswith(("ext:", "rob:", "syn:")) or k == "report"]:
         del st.nodes[nid]
-    for n in st.by_type("screen"):
+    for n in selection.study_nodes(st):
         rid = n["id"].split(":", 1)[1]
         d = copy.deepcopy(n["data"])
         d["gold_input"] = True

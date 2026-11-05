@@ -138,12 +138,12 @@ def reviewed(tmp_path, fulltexts=FULLTEXTS, **cfg_over) -> Ctx:
 
 # ---------------------------------------------------------------- the semantic view
 def view(ctx) -> dict:
-    from sragent import provenance
+    from sragent import provenance, selection
     from sragent.stages.report import prisma
     st = ctx.store
     rid = lambda nid: nid.split(":", 1)[1]
     records = {}
-    for n in st.by_type("screen"):
+    for n in selection.study_nodes(st):     # each study's eligibility (title/abstract and full-text nodes together)
         d = n["data"]
         records[rid(n["id"])] = {
             "decision": d.get("decision"), "stage": d.get("stage"), "because": sorted(d.get("because") or []),
@@ -157,8 +157,11 @@ def view(ctx) -> dict:
            for n in st.by_type("rob")}
     syn = {rid(n["id"]): {"status": n["status"], "text": n["data"].get("text"), "cites": sorted(n["data"].get("cites") or [])}
            for n in st.by_type("synthesis")}
-    flags = {n["id"]: sum(1 for f in n["flags"] if f["status"] == "open") for n in st.nodes.values()
-             if any(f["status"] == "open" for f in n["flags"])}
+    flags = {}
+    for n in st.nodes.values():   # a study's eligibility flags count under its key (screen:<rid>), on either node
+        k = "screen:" + rid(n["id"]) if n["type"] == "eligibility" else n["id"]
+        if any(f["status"] == "open" for f in n["flags"]):
+            flags[k] = flags.get(k, 0) + sum(1 for f in n["flags"] if f["status"] == "open")
     prov = {}
     for e in provenance.events(ctx.run_dir):
         k = f"{e['category']}:{e['action']}"

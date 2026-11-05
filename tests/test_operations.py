@@ -454,9 +454,9 @@ def test_the_package_writes_through_write_or_annotate():
 def test_edge_checker_catches_mismatches():
     from sragent.graph import edge_problems as e
     assert e({"id": "screen:G1", "type": "screen", "depends_on": ["rec:G1", "protocol", "cfg:x"]}) == ["undeclared cfg:x"]
-    assert e({"id": "ext:G1", "type": "extraction", "depends_on": ["screen:G1", "cfg:question"]}) == ["missing ft:<rid>|rec:<rid>"]
-    assert e({"id": "ext:G1", "type": "extraction", "depends_on": ["screen:G2", "rec:G1", "cfg:question"]}) == \
-        ["missing screen:<rid>", "undeclared screen:G2"]
+    assert e({"id": "ext:G1", "type": "extraction", "depends_on": ["elig:G1", "cfg:question"]}) == ["missing ft:<rid>|rec:<rid>"]
+    assert e({"id": "ext:G1", "type": "extraction", "depends_on": ["elig:G2", "rec:G1", "cfg:question"]}) == \
+        ["missing elig:<rid>", "undeclared elig:G2"]
     assert e({"id": "x", "type": "nope", "depends_on": []}) == ["type nope is not declared in graph.TYPES"]
 
 
@@ -519,7 +519,8 @@ def test_an_older_review_is_migrated_with_a_backup(tmp_path):
     ctx.save()
     c2 = Ctx.create(ctx.cfg, mock_fn=golden_mock)
     s2 = c2.store
-    assert (ctx.run_dir / "store.schema2.bak.json").exists() and s2.meta["schema"] == 3
+    from sragent import graph as _g
+    assert (ctx.run_dir / "store.schema2.bak.json").exists() and s2.meta["schema"] == _g.SCHEMA
     assert not set(s2.meta) - META_ALLOWED
     assert state.approval(s2) and s2.get("protocol")["version"] == approved_v
     assert state.confirmed_query(s2)["query"] == "emicizumab[tiab]"
@@ -528,6 +529,46 @@ def test_an_older_review_is_migrated_with_a_backup(tmp_path):
     assert state.rules_applied(s2)["rules"] and "cfg:screening_rules" in s2.get("screen:G07")["depends_on"]
     from sragent import graph
     assert not graph.stale(s2), graph.stale(s2)         # the migration itself makes nothing out of date
+
+
+def test_one_screen_node_per_study_is_split_on_load(tmp_path):
+    """A review saved when one screen node held both stages (schema 3) opens with the full-text decision on
+    elig:<rid> and the title/abstract decision on screen:<rid>; every study's eligibility reads the same, the
+    flags move with the decision, and nothing becomes out of date."""
+    from sragent import graph
+    from sragent.context import Ctx
+    from test_golden import golden_mock
+    ctx = reviewed(tmp_path, AWAITING)
+    st = ctx.store
+    want = json.loads(json.dumps(view(ctx), default=list))
+    # merge each elig node back into its screen node, as schema 3 stored it
+    for el in list(st.by_type("eligibility")):
+        rid = el["id"].split(":", 1)[1]
+        sc = st.get(f"screen:{rid}")
+        sc["history"].append({"version": sc["version"], "data": sc["data"], "evidence": sc["evidence"], "status": sc["status"]})
+        sc["data"] = {**el["data"], "title_abstract": {k: sc["data"].get(k) for k in ("decision", "because")}}
+        sc["version"] += 1
+        sc["depends_on"] = sorted({f"rec:{rid}"} | (set(el["depends_on"]) - {f"screen:{rid}", "cfg:fulltext_unclear"}))
+        sc["dep_versions"] = {d: st.get(d)["version"] for d in sc["depends_on"]}
+        sc["evidence"], sc["flags"] = el["evidence"], el["flags"]
+        for x in ("ext", "rob"):
+            m = st.get(f"{x}:{rid}")
+            if m and f"elig:{rid}" in m["depends_on"]:
+                m["depends_on"] = sorted((set(m["depends_on"]) - {f"elig:{rid}"}) | {f"screen:{rid}"})
+                m["dep_versions"].pop(f"elig:{rid}")
+                m["dep_versions"][f"screen:{rid}"] = sc["version"]
+        del st.nodes[el["id"]]
+    st.meta["schema"] = 3
+    st.reindex()
+    ctx.save()
+    c2 = Ctx.create(ctx.cfg, mock_fn=golden_mock)
+    s2 = c2.store
+    assert (ctx.run_dir / "store.schema3.bak.json").exists() and s2.meta["schema"] == graph.SCHEMA
+    assert {n["id"] for n in s2.by_type("eligibility")} == {"elig:G01", "elig:G02", "elig:G03", "elig:G06"}
+    assert json.loads(json.dumps(view(c2), default=list)) == want
+    assert s2.get("screen:G01")["data"]["stage"] == "title_abstract" and "elig:G01" in s2.get("ext:G01")["depends_on"]
+    assert not graph.stale(s2)
+    assert not {n["id"]: p for n in s2.nodes.values() if (p := graph.edge_problems(n))}
 
 
 def test_a_changed_rule_set_makes_its_exclusions_out_of_date(tmp_path):

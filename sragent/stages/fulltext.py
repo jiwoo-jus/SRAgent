@@ -20,6 +20,7 @@ from pathlib import Path
 from .. import provenance
 from ..context import Ctx
 from ..sources import europepmc
+from .. import selection
 
 
 def fulltext_dir(ctx: Ctx) -> Path:
@@ -222,7 +223,7 @@ def needed_pdfs(ctx: Ctx) -> list[dict]:
     out = []
     from .. import state
     unavailable, wanted = state.unavailable(st), state.wanted(st)
-    for n in st.by_type("screen"):
+    for n in selection.study_nodes(st):
         rid = n["id"].split(":", 1)[1]
         dec = n["data"]["decision"]
         if dec == "fulltext_unavailable":

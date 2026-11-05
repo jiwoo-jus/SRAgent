@@ -34,8 +34,9 @@ class StageSpec:
         return KEYS.index(self.key) + 1
 
 
-def _screen_at(st, *stages) -> bool:
-    return any(n["data"].get("stage") in stages for n in st.by_type("screen"))
+def _retrieval_started(st) -> bool:
+    from .selection import screened
+    return bool(st.by_type("fulltext")) or any(v.get("stage") == "retrieval" for _, v in screened(st))
 
 
 STAGES: tuple[StageSpec, ...] = (
@@ -46,9 +47,9 @@ STAGES: tuple[StageSpec, ...] = (
     StageSpec("screen", "Title/abstract screening", True, ("screen",), tags=("screen_title_abstract",),
               started=lambda st: bool(st.by_type("screen"))),
     StageSpec("retrieve", "Full texts", False, ("fulltext",),
-              started=lambda st: bool(st.by_type("fulltext")) or _screen_at(st, "retrieval")),
-    StageSpec("eligibility", "Full-text screening", True, ("screen",), tags=("screen_full_text",), legacy=("fulltext",),
-              started=lambda st: _screen_at(st, "full_text")),
+              started=_retrieval_started),
+    StageSpec("eligibility", "Full-text screening", True, ("eligibility",), tags=("screen_full_text",), legacy=("fulltext",),
+              started=lambda st: bool(st.by_type("eligibility"))),
     StageSpec("snowball", "Citation chasing", True, ("[snowball]", "record"),
               started=lambda st: st.get("snowball") is not None),
     StageSpec("extract", "Data extraction", True, ("extraction",), tags=("extract",),

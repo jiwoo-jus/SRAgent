@@ -21,14 +21,14 @@
  },
  "result": {
   "changes": [
+   "elig:G01",
+   "elig:G02",
+   "elig:G06",
    "ext:G02",
    "rob:G02",
-   "screen:G01",
-   "screen:G02",
    "screen:G03",
    "screen:G04",
    "screen:G05",
-   "screen:G06",
    "syn:S2"
   ],
   "excluded_but_cited": [],

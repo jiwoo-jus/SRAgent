@@ -57,7 +57,7 @@ def criteria_by_id(st) -> dict:
 def study_of(node_id: str) -> str | None:
     if ":" in node_id:
         kind, rest = node_id.split(":", 1)
-        if kind in {"rec", "screen", "ft", "ext", "rob"}:
+        if kind in {"rec", "screen", "elig", "ft", "ext", "rob"}:
             return rest
     return None
 
@@ -117,7 +117,7 @@ class ReviewStore:
             self.nodes[node_id] = node
             self._index(node_id, [], deps)
             self._log("create", node_id, actor, reason, None, data)
-            if ntype == "screen" and data.get("decision") == "include":
+            if ntype in ("screen", "eligibility") and data.get("decision") == "include":
                 self._cohort_changed()
             return node
         same = old["data"] == data and old["status"] == status and (evidence is None or old["evidence"] == evidence)
@@ -142,8 +142,9 @@ class ReviewStore:
         old["version"] += 1
         old["updated"] = now
         self._log("update", node_id, actor, reason, prev, data)
-        if ntype == "screen" and (prev.get("decision") == "include") != (data.get("decision") == "include"):
-            self._cohort_changed()
+        if ntype in ("screen", "eligibility") and (prev.get("decision") != data.get("decision")) and \
+                (ntype == "eligibility" or self.nodes.get("elig:" + node_id.split(":", 1)[1])):
+            self._cohort_changed()   # a decision that can move the included set (a screen decision only with an elig node)
         return old
 
     def touch(self, node_id: str, depends_on: list[str] | None = None) -> dict:
@@ -186,7 +187,7 @@ class ReviewStore:
         if n["status"] != status:
             self._log("status", node_id, actor, reason, n["status"], status)
             n["status"] = status
-            if n["type"] == "screen" and n["data"].get("decision") == "include":
+            if n["type"] in ("screen", "eligibility"):
                 self._cohort_changed()
 
     def _cohort_changed(self) -> None:
@@ -259,7 +260,7 @@ class ReviewStore:
         out = set(self.descendants(node_id))
         sid = study_of(node_id)
         if sid:
-            for kind in ("screen", "ext", "rob"):
+            for kind in ("screen", "elig", "ext", "rob"):
                 nid = f"{kind}:{sid}"
                 if nid in self.nodes and nid != node_id:
                     out.add(nid)
@@ -320,12 +321,10 @@ class ReviewStore:
 
     # ------------------------------------------------------------ helpers
     def included_ids(self) -> list[str]:
-        """Record ids whose final eligibility decision is include."""
-        out = []
-        for n in self.by_type("screen"):
-            if n["status"] == "active" and n["data"].get("decision") == "include":
-                out.append(n["id"].split(":", 1)[1])
-        return sorted(out)
+        """Record ids whose final eligibility decision is include (selection.py: the full-text decision of a
+        forwarded study, or a person's)."""
+        from . import selection
+        return selection.included(self)
 
     def text_of(self, rid: str) -> tuple[str, str]:
         """Best available source text for a study: (text, kind)."""

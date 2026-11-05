@@ -14,6 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import state
+from . import selection
 
 # stage -> (input tokens, output tokens at low effort, output tokens at default effort)
 DEFAULTS = {
@@ -86,7 +87,7 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
             if p.exists():
                 guess = sum(1 for _ in open(p))
         n_records = min(guess, max_records) if max_records else guess
-    screened = len(st.by_type("screen"))
+    screened = len(selection.study_nodes(st))
     unscreened = max(0, n_records - screened)
     if "screen" in order:
         # records the screening rules will exclude cost nothing: count them out when the records are here
@@ -95,9 +96,9 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
         ruled = sum(1 for n in st.by_type("record") if not st.get("screen:" + n["id"].split(":", 1)[1])
                     and rules.classify(n["data"], rules.key_terms(p), rules.enabled_rules(ctx)))
         calls["screen_title_abstract"] = max(0, unscreened - ruled)
-    forwarded_known = [n for n in st.by_type("screen") if n["data"]["stage"] == "title_abstract"
+    forwarded_known = [n for n in selection.study_nodes(st) if n["data"]["stage"] == "title_abstract"
                        and n["data"]["decision"] in ("include", "uncertain", "forward")]
-    waiting = sum(1 for n in st.by_type("screen") if n["data"]["stage"] == "retrieval")   # no full text yet: no call
+    waiting = sum(1 for n in selection.study_nodes(st) if n["data"]["stage"] == "retrieval")   # no full text yet: no call
     if "eligibility" in order:
         calls["screen_full_text"] = int((len(forwarded_known) + calls["screen_title_abstract"] * FORWARD_RATE) * RETRIEVED_RATE)
     vs = ctx.cfg["pipeline"].get("verify_screening") or "off"

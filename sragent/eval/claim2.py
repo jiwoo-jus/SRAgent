@@ -49,6 +49,7 @@ from ..context import Ctx
 from ..stages import extraction
 from .common import Judge, save, short, wilson
 from .inject import NUM, alter_number
+from .. import selection
 
 
 _RUNS_DIR = None   # set by run(): <eval run>/claim2_runs
@@ -150,7 +151,7 @@ def build_C(ctx: Ctx, rid: str) -> dict | None:
         return None
     c = _sub_ctx(ctx, st, f"C_{rid}_build")
     _propagate_into_synthesis(c, f"screen:{rid}", {"included": True, "study": rid}, {"included": False, "study": rid}, rid)
-    for kind in ("rec", "screen", "ft", "ext", "rob"):
+    for kind in ("rec", "screen", "elig", "ft", "ext", "rob"):
         c.store.nodes.pop(f"{kind}:{rid}", None)
     for n in c.store.by_type("synthesis"):
         n["depends_on"] = [d for d in n["depends_on"] if not d.endswith(f":{rid}")]
@@ -180,7 +181,7 @@ def build_D(ctx: Ctx, rnd: random.Random, rid: str) -> dict | None:
 
 def build_E(ctx: Ctx, rnd: random.Random, labels: dict, used: set) -> dict | None:
     st = ctx.store
-    cands = [n["id"].split(":", 1)[1] for n in st.by_type("screen")
+    cands = [n["id"].split(":", 1)[1] for n in selection.study_nodes(st)
              if n["data"]["decision"] == "exclude" and st.get(f"rec:{n['id'].split(':', 1)[1]}")["data"].get("pmid")
              and labels.get(n["id"].split(":", 1)[1]) == 0 and n["id"].split(":", 1)[1] not in used]
     if not cands:
@@ -189,7 +190,7 @@ def build_E(ctx: Ctx, rnd: random.Random, labels: dict, used: set) -> dict | Non
     rid = rnd.choice(sorted(with_ft) or sorted(cands))
     c = _sub_ctx(ctx, st, f"E_{rid}_build")
     pmid = st.get(f"rec:{rid}")["data"]["pmid"]
-    for kind in ("rec", "screen", "ft", "ext", "rob"):
+    for kind in ("rec", "screen", "elig", "ft", "ext", "rob"):
         c.store.nodes.pop(f"{kind}:{rid}", None)
     return {"type": "E_add_ineligible", "rid": rid, "pmid": pmid, "target": None, "R1": c.store,
             "error": "none: the paper is ineligible; it must not be included.",
@@ -246,7 +247,7 @@ def score_case(ctx: Ctx, judge: Judge, case: dict, R0, R1, R2, cs: dict, cond: s
                 res["source_correctness"] = (case.get("r0_source_check") or {}).get("label")
         else:
             res["accepted_false_feedback"] = rid in R2.included_ids()
-            sc = (R2.get(f"screen:{rid}") or {}).get("data", {})
+            sc = (selection.study_node(R2, rid) or {}).get("data", {})
             res["e_outcome"] = ("included" if res["accepted_false_feedback"] else
                                 "rejected as ineligible" if sc.get("decision") == "exclude" else
                                 f"not included: {sc.get('decision', 'not screened')}")
@@ -255,7 +256,7 @@ def score_case(ctx: Ctx, judge: Judge, case: dict, R0, R1, R2, cs: dict, cond: s
 
     # expected downstream set: outputs that differ R0 vs R1 (excluding the target)
     keys = {k for k in set(R0.nodes) | set(R1.nodes)
-            if (R0.get(k) or R1.get(k))["type"] in ("synthesis", "extraction", "rob", "screen")}
+            if (R0.get(k) or R1.get(k))["type"] in ("synthesis", "extraction", "rob", "screen", "eligibility")}
     expected = sorted(k for k in keys if k != case["target"] and _view(R0.get(k)) != _view(R1.get(k)))
     res["expected_downstream"] = expected
 
@@ -276,7 +277,7 @@ def score_case(ctx: Ctx, judge: Judge, case: dict, R0, R1, R2, cs: dict, cond: s
     else:
         res["target_fixed"] = "yes" if rid in R2.included_ids() else "no"
         res["source_correctness"] = "correct (included; gold include)" if (rid in R2.included_ids() and case.get("primary")) \
-            else ("not included: " + (R2.get(f"screen:{rid}") or {}).get("data", {}).get("decision", "missing"))
+            else ("not included: " + (selection.study_node(R2, rid) or {}).get("data", {}).get("decision", "missing"))
         res["source_correct"] = rid in R2.included_ids() and bool(case.get("primary"))
     res["r0_recovery"] = res["target_fixed"]
 
@@ -301,11 +302,11 @@ def score_case(ctx: Ctx, judge: Judge, case: dict, R0, R1, R2, cs: dict, cond: s
         res["downstream_completion"] = round(sc / len(expected), 3)
 
     # collateral changes -> new errors?
-    new_nodes = {f"{k}:{rid}" for k in ("rec", "screen", "ft", "ext", "rob")}
+    new_nodes = {f"{k}:{rid}" for k in ("rec", "screen", "elig", "ft", "ext", "rob")}
     collateral = []
     for k in sorted(set(R2.nodes)):
         n2 = R2.get(k)
-        if n2["type"] not in ("synthesis", "extraction", "rob", "screen") or k in expected or k == case["target"] or k in new_nodes:
+        if n2["type"] not in ("synthesis", "extraction", "rob", "screen", "eligibility") or k in expected or k == case["target"] or k in new_nodes:
             continue
         if _view(R1.get(k)) == _view(n2):
             continue

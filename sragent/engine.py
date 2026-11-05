@@ -21,7 +21,7 @@ import copy
 import json
 from collections import defaultdict
 
-from . import graph
+from . import graph, selection
 from .context import Ctx
 from .store import study_of
 
@@ -72,14 +72,19 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
         pinned = graph.human_pinned(n)
         t = n["type"]
         rid = study_of(nid)
-        if t == "screen":
+        if t in ("screen", "eligibility"):
+            superseded = t == "screen" and (st.get(f"elig:{rid}") or {}).get("status") == "active"
             if n["data"].get("rule"):
                 items.append(_item(nid, t, "rederive", why, False, rid))      # rule exclusions follow the rules step
-            elif any(d.startswith("ft:") for d in deps) and not pinned:
+            elif superseded or (t == "eligibility" and deps <= {f"screen:{rid}"}):
+                # screened on its full text: the full-text node decides; a full-text node whose title/abstract
+                # node moved (a restored rule exclusion, a revised forward) has nothing to redo
+                items.append(_item(nid, t, "touch", why, pinned, rid))
+            elif t == "eligibility" and any(d.startswith("ft:") for d in deps) and not pinned:
                 items.append(_item(nid, t, "rescreen", why, False, rid))
             else:
                 crits = _changed_criteria(st, n, protocol) if ("protocol" in deps or any(d.startswith("crit:") for d in deps)) else []
-                stage = "title_abstract" if n["data"]["stage"] in ("title_abstract", "retrieval") else "full_text"
+                stage = "full_text" if t == "eligibility" else "title_abstract"
                 crits = [c for c in crits if not (stage == "title_abstract" and _crit(protocol, c).get("stage") == "full_text")]
                 if pinned:   # a person decided: the new criteria are assessed and shown beside the decision, which is kept
                     items.append(_item(nid, t, "reassess" if crits else "touch", why, True, rid, criteria=crits, stage=stage))
@@ -88,14 +93,14 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
         elif t == "extraction":
             if rid not in inc:
                 items.append(_item(nid, t, "retire", why, pinned, rid))
-            elif deps <= {f"screen:{rid}"}:
+            elif deps <= {f"screen:{rid}", f"elig:{rid}"}:
                 items.append(_item(nid, t, "touch", why, pinned, rid))       # the decision is still include: nothing to redo
             else:
                 items.append(_item(nid, t, "extract", why, pinned, rid))     # a person's edited values are kept
         elif t == "rob":
             if rid not in inc:
                 items.append(_item(nid, t, "retire", why, pinned, rid))
-            elif deps <= {f"screen:{rid}"}:
+            elif deps <= {f"screen:{rid}", f"elig:{rid}"}:
                 items.append(_item(nid, t, "touch", why, pinned, rid))
             elif pinned:
                 items.append(_item(nid, t, "keep", why, True, rid))          # confirmed by a person: flagged, kept
@@ -131,7 +136,7 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
     from . import state
     considered = set(state.considered(st) or [])
     for rid in sorted(inc):
-        if scope is not None and f"screen:{rid}" not in scope:
+        if scope is not None and not ({f"screen:{rid}", f"elig:{rid}"} & scope):
             continue
         back = False
         if not st.get(f"ext:{rid}") and f"ext:{rid}" not in {i["node"] for i in items}:
@@ -148,13 +153,13 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
     # active outputs of studies that are no longer included
     for n in st.by_type("extraction", active_only=True) + st.by_type("rob", active_only=True):
         rid = study_of(n["id"])
-        if rid not in inc and n["id"] not in {i["node"] for i in items} and (scope is None or f"screen:{rid}" in scope):
+        if rid not in inc and n["id"] not in {i["node"] for i in items} and (scope is None or {f"screen:{rid}", f"elig:{rid}"} & scope):
             items.append(_item(n["id"], n["type"], "retire", ["study no longer included"], graph.human_pinned(n), rid))
     for n in st.by_type("synthesis", active_only=True):
         gone = [c for c in n["data"].get("cites", []) if c not in inc]
-        if gone and n["id"] not in {i["node"] for i in items} and (scope is None or any(f"screen:{c}" in scope for c in gone)):
+        if gone and n["id"] not in {i["node"] for i in items} and (scope is None or any({f"screen:{c}", f"elig:{c}"} & scope for c in gone)):
             items.append(_item(n["id"], "synthesis", "revise", [f"cites excluded {', '.join(gone)}"], graph.human_pinned(n),
-                               None, sources=[f"screen:{c}" for c in gone]))
+                               None, sources=[selection.node_id(st, c) for c in gone]))
     return {"items": items, "cost": _cost(ctx, items),
             "summary": _summary(items)}
 
@@ -220,7 +225,7 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
         for i in p["items"]:    # the policy: what a person wants to see first is not applied
             if i["action"] in ("keep", "render", "touch"):
                 continue
-            mode = pol.get(i["type"], "auto")
+            mode = pol.get("screen" if i["type"] == "eligibility" else i["type"], "auto")   # update_policy.screen: both stages
             if mode == "propose":
                 deferred.setdefault(i["node"], i)
                 i["action"] = "keep"; i["manual"] = False; i["policy"] = "propose"
@@ -235,11 +240,11 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
         if not todo:
             break
         # 1. the screening rules (a changed rule set, a disabled rule): deterministic, first
-        if any(i["type"] == "screen" for i in todo) and st.get("cfg:screening_rules"):
+        if any(i["type"] in ("screen", "eligibility") for i in todo) and st.get("cfg:screening_rules"):
             rules.apply(ctx, protocol)
         # 2. screening: re-assess only the changed criteria; re-derive the rest
-        for i in [x for x in todo if x["type"] == "screen"]:
-            _screen(ctx, cs, i, protocol, tag)
+        for i in [x for x in todo if x["type"] in ("screen", "eligibility") and x["action"] != "touch"]:
+            _screen(ctx, cs, i, protocol, tag)   # a touch only marks the node current (below): a person's decision stays
         for i in [x for x in todo if x["action"] == "touch"]:
             st.touch(i["node"])
         # 3. statuses follow the included set (free)
@@ -294,8 +299,11 @@ def preview(ctx: Ctx, node_id: str) -> dict:
     a new version. No model call; the cost is an estimate."""
     import dataclasses
     st = ctx.store
+    asked = node_id
+    if node_id.startswith(("screen:", "elig:")):   # a study's eligibility: the node that holds its decision
+        node_id = selection.node_id(st, node_id.split(":", 1)[1])
     if not st.get(node_id):
-        return {"node": node_id, "items": [], "summary": {}, "cost": {"total_usd": 0}, "reach": {}, "lines": []}
+        return {"node": asked, "items": [], "summary": {}, "cost": {"total_usd": 0}, "reach": {}, "lines": []}
     sb = dataclasses.replace(ctx, store=st.clone())
     sb.store.nodes[node_id]["version"] += 1
     p = plan(sb, roots={node_id})
@@ -303,7 +311,7 @@ def preview(ctx: Ctx, node_id: str) -> dict:
     by_type = defaultdict(list)
     for i in items:
         by_type[i["type"]].append(i["node"])
-    return {"node": node_id, "items": items, "summary": _summary(items), "cost": _cost(ctx, items),
+    return {"node": asked, "items": items, "summary": _summary(items), "cost": _cost(ctx, items),
             "reach": {t: sorted(v) for t, v in by_type.items()},
             "lines": describe({"items": items})[:20]}
 
@@ -340,9 +348,9 @@ def _screen(ctx: Ctx, cs: dict, i: dict, protocol: dict, tag: str) -> None:
             d.pop("unclear_by_rule", None)
             if by_rule:
                 d["unclear_by_rule"] = by_rule
-        st.write(n["id"], "screen", d, depends_on=n["depends_on"], reason=f"{tag}: decision re-derived ({'; '.join(i['why'])[:160]})")
+        st.write(n["id"], n["type"], d, depends_on=n["depends_on"], reason=f"{tag}: decision re-derived ({'; '.join(i['why'])[:160]})")
     after = st.get(i["node"])["data"]
-    _record(cs, i["node"], before, after, i["action"], ntype="screen")
+    _record(cs, i["node"], before, after, i["action"], ntype=n["type"])
     screening.sync_awaiting_flags(ctx)
 
 
@@ -366,15 +374,15 @@ def _extract(ctx: Ctx, cs: dict, i: dict) -> None:
         fulltext.fetch_one(ctx, rid)
     old = st.get(f"ext:{rid}")
     before = copy.deepcopy(old["data"]) if old else None
-    sc = st.get(f"screen:{rid}")
+    sc = selection.decision_node(st, rid)
     screen_before = copy.deepcopy(sc["data"]) if sc else None
     extraction.extract_one(ctx, rid)
     new = st.get(f"ext:{rid}")
     if new is not None:   # absent when the eligibility re-check after a first extraction set the study aside
         _record(cs, f"ext:{rid}", before, new["data"], i["action"], ntype="extraction")
-    sc = st.get(f"screen:{rid}")
+    sc = selection.decision_node(st, rid)
     if screen_before and sc and screen_before.get("decision") != sc["data"].get("decision"):
-        _record(cs, sc["id"], screen_before, copy.deepcopy(sc["data"]), "eligibility_review", ntype="screen")
+        _record(cs, sc["id"], screen_before, copy.deepcopy(sc["data"]), "eligibility_review", ntype=sc["type"])
 
 
 def _rob(ctx: Ctx, cs: dict, i: dict) -> None:
@@ -402,7 +410,7 @@ def _synthesis(ctx: Ctx, cs: dict, items: list[dict], tag: str) -> None:
         gone = [c for c in n["data"].get("cites", []) if c not in inc]
         if gone:   # a cited study left the review: deterministic first, then the wording
             for rid in gone:
-                r = feedback._revise_dependent(ctx, cs, i["node"], f"screen:{rid}", {"included": True, "study": rid},
+                r = feedback._revise_dependent(ctx, cs, i["node"], selection.node_id(st, rid), {"included": True, "study": rid},
                                                {"included": False, "study": rid}, tp=tag)
                 n2 = st.get(i["node"])
                 if n2["status"] != "active":

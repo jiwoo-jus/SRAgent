@@ -43,9 +43,10 @@ def run(ctx: Ctx, judge: Judge, max_studies: int = 15) -> dict:
     inc = st.included_ids()
     out = {}
     by_src = defaultdict(list)
-    for kind, ntype in (("extraction", "extraction"), ("rob", "rob"), ("screening", "screen")):
+    for kind, ntypes in (("extraction", ("extraction",)), ("rob", ("rob",)), ("screening", ("screen", "eligibility"))):
         ev = []
-        for n in st.by_type(ntype):
+        ntype = ntypes[0]
+        for n in [x for t in ntypes for x in st.by_type(t)]:
             if ntype != "screen" and n["id"].split(":", 1)[1] not in inc:
                 continue
             for e in n["evidence"]:

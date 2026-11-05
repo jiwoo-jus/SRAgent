@@ -10,12 +10,15 @@
    "plan_revise": 1
   },
   "out_of_date": [
-   "screen:G01 reassess",
-   "screen:G02 reassess",
+   "elig:G01 reassess",
+   "elig:G02 reassess",
+   "elig:G06 reassess",
+   "screen:G01 touch",
+   "screen:G02 touch",
    "screen:G03 reassess",
    "screen:G04 reassess",
    "screen:G05 reassess",
-   "screen:G06 reassess",
+   "screen:G06 touch",
    "screen:G07 rederive",
    "search keep"
   ],

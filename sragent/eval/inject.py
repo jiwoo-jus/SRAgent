@@ -63,7 +63,8 @@ def inject_extraction(ctx: Ctx, rid: str, rnd: random.Random, used_fields=()) ->
 
 def inject_eligibility(ctx: Ctx, rid: str, structural: bool = True) -> dict | None:
     st = ctx.store
-    n = st.get(f"screen:{rid}")
+    from ..selection import decision_node
+    n = decision_node(st, rid)
     if not n or n["data"]["decision"] != "include":
         return None
     p = st.get("protocol")["data"]

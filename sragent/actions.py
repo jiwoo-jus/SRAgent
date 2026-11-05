@@ -62,11 +62,11 @@ def feedback_target(st, target: str) -> str | None:
         return None
     if target.startswith("study:"):
         rid = target.split(":", 1)[1]
-        for k in ("ext", "screen"):
-            n = st.get(f"{k}:{rid}")
-            if n and n["status"] == "active":
-                return n["id"]
-        return f"screen:{rid}"
+        n = st.get(f"ext:{rid}")
+        if n and n["status"] == "active":
+            return n["id"]
+        from .selection import node_id
+        return node_id(st, rid)
     return target
 
 
@@ -110,25 +110,20 @@ def edit(ctx: Ctx, op: dict) -> dict:
     sfx = f" Note: {note}" if note else ""
     if kind == "screen":
         rid = op["rid"]
-        n = st.get(f"screen:{rid}")
+        from .selection import view
         dec = op["decision"]
         if dec not in ("include", "exclude", "awaiting"):
             return {"ok": False, "message": f"unknown decision {dec}"}
         if dec == "include" and (st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext":
             return {"ok": False, "message": f"Final inclusion needs a full-text review; supply {rid}.pdf first."}
-        d = copy.deepcopy(n["data"]) if n else {"stage": "title_abstract", "criteria": []}
-        before = d.get("decision")
-        d["decision"] = dec
-        d["because"] = [op.get("criterion") or "human"] if dec == "exclude" else []
-        d["human_decision"] = {"decision": dec, "note": note, "reason": op.get("criterion"), "ts": time.time()}
-        if d.get("rule"):
-            d["rule_restored"] = {"rule": d.pop("rule"), "note": "manual decision"}
-        deps = n["depends_on"] if n else [f"rec:{rid}", "protocol"]
-        st.annotate(f"screen:{rid}", d, ntype="screen", depends_on=deps, actor="user",
-                    reason=f"manual eligibility decision: {before} -> {dec}.{sfx}")
-        for f in st.get(f"screen:{rid}")["flags"]:
+        from .stages.screening import person_decides
+        before = (view(st, rid) or {}).get("decision")
+        n = person_decides(st, rid, dec, [op.get("criterion") or "human"] if dec == "exclude" else [],
+                           {"decision": dec, "note": note, "reason": op.get("criterion"), "ts": time.time()},
+                           f"manual eligibility decision: {before} -> {dec}.{sfx}")
+        for f in n["flags"]:
             if f["status"] == "open" and f.get("source") in ("screening", None, "feedback") and "pending review" not in f["text"]:
-                st.resolve_flag(f"screen:{rid}", f["id"], f"human decided: {dec}", actor="user")
+                st.resolve_flag(n["id"], f["id"], f"human decided: {dec}", actor="user")
         msg = f"{rid}: {before} → {dec}"
         if before != dec and st.by_type("extraction"):
             msg += ". Extraction, risk of bias and synthesis follow via 'Update outputs' in the To-do list."
@@ -258,7 +253,12 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
     provenance.record(ctx, "human_judgment", f"rerun_request:{step}", rid=rid, note=note[:300])
     from .stages import extraction, fulltext, rob, screening
     st = ctx.store
-    nid = {"screen": f"screen:{rid}", "extract": f"ext:{rid}", "rob": f"rob:{rid}"}[step]
+    from .selection import elig_id, node_id, view
+    ft = st.get(f"ft:{rid}")
+    # screening is re-run at the stage the study is at: on its full text when it has one (elig:<rid>)
+    stage = "full_text" if (view(st, rid) or {}).get("stage") == "full_text" or (ft and ft["data"].get("kind") == "fulltext") \
+        else "title_abstract"
+    nid = {"screen": elig_id(rid) if stage == "full_text" else f"screen:{rid}", "extract": f"ext:{rid}", "rob": f"rob:{rid}"}[step]
     if step in ("extract", "rob") and rid not in st.included_ids():
         raise ValueError(f"{rid} is not included; re-run screening or change the decision first")
     if step == "rob" and not st.get(f"ext:{rid}"):
@@ -266,10 +266,8 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
     t0, usd0 = time.time(), ctx.hub.tracker.spent
     before_node = st.get(nid)
     before = copy.deepcopy(before_node["data"]) if before_node else None
-    screen_before = copy.deepcopy((st.get(f"screen:{rid}") or {}).get("data"))
-    ft = st.get(f"ft:{rid}")
-    stage = "full_text" if (before or {}).get("stage") == "full_text" or (ft and ft["data"].get("kind") == "fulltext") \
-        else "title_abstract"
+    dec_id = node_id(st, rid)
+    screen_before = copy.deepcopy((st.get(dec_id) or {}).get("data"))
     pstage = {"extract": "extract", "rob": "rob"}.get(step) or ("eligibility" if stage == "full_text" else "screen")
     llm = ctx.hub.agent_for(pstage)          # that stage's model (stage_models), or the model picked for this job
     cs = _new_cs("RR", kind="rerun", label=f"Re-run of {RERUN_STEPS[step].lower()}", rid=rid, step=step,
@@ -295,10 +293,10 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
         sb.stage = None        # revising dependent outputs is feedback work (stage_models.feedback)
     after_node = sb.store.get(nid)
     after = after_node["data"] if after_node else None
-    screen_after = (sb.store.get(f"screen:{rid}") or {}).get("data")
+    screen_after = (sb.store.get(dec_id) or {}).get("data")
     if step != "screen" and screen_before and screen_after and screen_before.get("decision") != screen_after.get("decision"):
         # extraction re-checked eligibility and changed the decision: that is part of what the reviewer accepts
-        cs["changes"].append({"node": f"screen:{rid}", "role": "dependent", "before": screen_before,
+        cs["changes"].append({"node": dec_id, "role": "dependent", "before": screen_before,
                               "after": copy.deepcopy(screen_after)})
     if before_node and before.get("human_decision"):
         cs["explanation"] = f"Note: this replaces your earlier manual decision ({before['human_decision']['decision']})."
