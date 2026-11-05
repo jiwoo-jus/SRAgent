@@ -14,7 +14,6 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     screens = st.by_type("screen")
     dec = Counter(n["data"]["decision"] for n in screens)
     ta = [n for n in screens if n["data"]["stage"] == "title_abstract"]
-    ft_stage = [n for n in screens if n["data"]["stage"] == "full_text"]
     inc = st.included_ids()
     fts = st.by_type("fulltext")
     n_full = sum(1 for n in fts if n["data"].get("kind") == "fulltext")
@@ -29,25 +28,41 @@ def steps(ctx: Ctx, todos: list[dict]) -> list[dict]:
     proto = st.get("protocol")
     human_dec = sum(1 for n in screens if n["data"].get("human_decision"))
 
+    ft_dec = [n for n in screens if n["data"]["stage"] == "full_text"]
+    fdec = Counter(n["data"]["decision"] for n in ft_dec)
+    retrieval = [n for n in screens if n["data"]["stage"] == "retrieval"]
+    sb = st.meta.get("snowball") or {}
+    chasing = ctx.cfg["pipeline"].get("citation_chasing", True)
+    rep = st.get("report")
+    # key -> (done, summary, run until); the keys and their order are stagespec.STAGES (+ feedback, across stages)
     info = {
-        "plan": (bool(proto), "approved" if st.meta.get("protocol_approved") else
-                 ("drafted by the agent (agent-only: used as drafted)" if provenance.mode(ctx) == "agent_only"
-                  else "drafted, waiting for your approval") if proto else "not started", "plan"),
+        "protocol": (bool(proto), "approved" if st.meta.get("protocol_approved") else
+                     ("drafted by the agent (agent-only: used as drafted)" if provenance.mode(ctx) == "agent_only"
+                      else "drafted, waiting for your approval") if proto else "not started", "protocol"),
         "search": (bool(s), f"{s.get('hits', 0)} PubMed hits; {s.get('n_identified', 0)} records, "
                    f"{s.get('n_duplicates', 0)} duplicates removed" if s else
                    (f"query confirmed by you ({conf_q.get('count')} PubMed hits); run up to stage 2 or later"
                     if conf_q.get("query") else "not started"), "search"),
-        "screen": (bool(screens) and not any(n["data"]["stage"] == "title_abstract" and n["data"]["decision"] != "exclude" for n in screens),
-                   f"{len(screens)} screened · {dec.get('include', 0)} included after full-text review · {dec.get('exclude', 0)} excluded · "
-                   f"{dec.get('awaiting', 0)} undecided · {dec.get('forward', 0)} waiting for full-text review · "
-                   f"{human_dec} decided by a person" if screens else "not started",
-                   "fulltext"),
-        "fulltext": (bool(fts), f"{len(fts)} forwarded studies · {n_full} with full text ({n_user} from your PDFs) · "
+        "screen": (bool(screens) and len(screens) >= len(st.by_type("record")),
+                   f"{len(screens)} screened · {len(ta)} decided at title/abstract · "
+                   f"{sum(1 for n in ta if n['data']['decision'] == 'exclude')} excluded there · "
+                   f"{dec.get('forward', 0)} waiting for full-text review · {human_dec} decided by a person"
+                   if screens else "not started", "screen"),
+        "retrieve": (bool(fts) and not retrieval, f"{len(fts)} forwarded studies · {n_full} with full text ({n_user} from your PDFs) · "
                      f"{dec.get('fulltext_unavailable', 0)} not retrieved (PDF requested) · {dec.get('parse_failed', 0)} unreadable"
-                     if fts else "not started", "fulltext"),
+                     if fts else "not started", "retrieve"),
+        "eligibility": (bool(ft_dec) and not fdec.get("awaiting") and not dec.get("forward"),
+                        f"{len(ft_dec)} screened on the full text · {fdec.get('include', 0)} included · "
+                        f"{fdec.get('exclude', 0)} excluded · {fdec.get('awaiting', 0)} undecided"
+                        if ft_dec else "not started", "eligibility"),
+        "snowball": (bool(sb) or not chasing,
+                     f"{len(sb.get('added') or [])} records found from {len(sb.get('seeds') or {})} included studies "
+                     f"({sb.get('rounds', 0)} round(s))" if sb else ("off (pipeline.citation_chasing)" if not chasing else "not started"),
+                     "snowball"),
         "extract": (bool(inc) and len(ext) == len(inc), f"{len(ext)}/{len(inc)} included studies extracted" if inc else "waits for screening", "extract"),
         "rob": (bool(robs) and len(robs) == len(inc), f"{len(robs)}/{len(inc)} drafted · {conf} confirmed by you" if inc else "waits for extraction", "rob"),
-        "synthesis": (bool(syn), f"{len(syn)} statements · {syn_flag} flagged by the self-check" if syn else "not written yet", "synthesize"),
+        "synthesis": (bool(syn), f"{len(syn)} statements · {syn_flag} flagged by the self-check" if syn else "not written yet", "synthesis"),
+        "report": (bool(rep), "report.md and report_evidence.html written" if rep else "not written yet", "report"),
         "feedback": (True, "flag anything in the report or the to-do list; proposals appear here", None),
     }
     ready = {"search": not s and bool(conf_q.get("query")),                               # query confirmed, not run yet

@@ -26,10 +26,6 @@ from .context import Ctx
 from .store import study_of
 
 MAX_ROUNDS = 4
-ORDER = ["rules", "screen", "status", "extraction", "rob", "synthesis", "integrate", "report"]
-STAGE_FOR = {"reassess": "screen", "rescreen": "fulltext", "extract": "extract", "assess": "rob",
-             "revise": "feedback", "integrate": "feedback", "retire": None, "rederive": None, "keep": None,
-             "render": None, "rules": None}
 
 
 # ---------------------------------------------------------------- the plan

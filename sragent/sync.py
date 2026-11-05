@@ -80,14 +80,6 @@ def pending_changes(ctx: Ctx) -> dict:
                       "kept": [i["node"] for i in p["items"] if i["action"] == "keep"], "lines": engine.describe(p)[:30]}}
 
 
-def update_synthesis(ctx: Ctx, tp: str = "sync", pc: dict | None = None) -> dict:
-    """Bring the review up to date (the update engine): screening re-assessed on changed criteria, the
-    outputs of studies that left or joined the review, and the synthesis revised statement by statement.
-    Returns the change set."""
-    from . import engine
-    return engine.execute(ctx, {"id": tp, "changes": []}, tag=tp, render=False)
-
-
 def sync_dependents(ctx: Ctx) -> dict:
     """'Update now': everything out of date after a person's decisions, applied on the live store."""
     from . import engine

@@ -10,17 +10,18 @@ The full documentation (data, workflow, inputs and outputs, evaluation design an
 
 | Step         | What it does                                                                                                                  | Output                              |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `plan`       | Turns the question and seed eligibility text into an editable protocol (PICO and atomic criteria)                             | `protocol.yaml`                     |
+| `protocol`   | Turns the question and seed eligibility text into an editable protocol (PICO and atomic criteria)                             | `protocol.yaml`                     |
 | `search`     | Loads records from SYNERGY, PubMed (the agent's query, or the one the team confirmed in the interface), or a JSONL file; removes duplicates | `rec:<rid>` nodes                   |
 | `screen`     | Judges each criterion with cited sentences, derives a decision by rule; final inclusion only after a full-text review         | `screen:<rid>`                      |
-| `fulltext`   | Gets full text from your files, Europe PMC, or a legal open-access copy, and screens it                                       | `ft:<rid>`                          |
+| `retrieve`   | Gets full text from your files, Europe PMC, or a legal open-access copy (no model calls)                                      | `ft:<rid>`                          |
+| `eligibility`| Screens each retrieved record on its full text; undecided ones wait for a person                                             | `screen:<rid>`                      |
 | `snowball`   | Follows references and citations of the included studies                                                                      | new `rec:<rid>` nodes               |
 | `extract`    | Extracts configured fields with source sentences and checks drug and disease terms against RxNorm, PubChem, ChEMBL, and MONDO | `ext:<rid>`                         |
 | `rob`        | Drafts quality judgments per domain with evidence                                                                             | `rob:<rid>`                         |
-| `synthesize` | Writes cited statements and checks each against the cited data                                                                | `syn:<id>`                          |
+| `synthesis`  | Writes cited statements and checks each against the cited data                                                                | `syn:<id>`                          |
 | `report`     | Builds the final report and an evidence view                                                                                  | `report.md`, `report_evidence.html` |
 
-Code for each step is in `sragent/stages/`. `sragent/pipeline.py` runs them in order, and each step resumes where it stopped. Results are stored in `store.json` (`sragent/store.py`).
+The list of stages is `sragent/stagespec.py`; earlier names (`plan`, `fulltext`, `synthesize`) are still accepted in run files and `--until`. Code for each step is in `sragent/stages/`. `sragent/pipeline.py` runs them in order, and each step resumes where it stopped. Results are stored in `store.json` (`sragent/store.py`).
 
 ## Configs: benchmark or real review
 

@@ -3,12 +3,13 @@ skips finished work, and can be left out with `pipeline.skip_stages`. `sragent r
 after that stage; the order is the registry's order."""
 from __future__ import annotations
 
+from . import stagespec
 from .context import Ctx
 from .stages import extraction, fulltext, planning, report, rob, screening, search, synthesis
 
 
-def _plan(ctx, state):
-    with ctx.at("plan"):
+def _protocol(ctx, state):
+    with ctx.at("protocol"):
         state["protocol"] = planning.plan(ctx)
     ctx.save()
 
@@ -32,9 +33,14 @@ def _screen(ctx, state):
                     f"{len([c for c in cs['changes'] if c['node'].startswith('screen:')])} decisions re-derived")
 
 
-def _fulltext(ctx, state):
-    with ctx.at("fulltext"):
-        screening.fulltext_review(ctx, state["protocol"])     # retrieve + screen every forwarded record on its full text
+def _retrieve(ctx, state):
+    with ctx.at("retrieve"):
+        screening.retrieve_all(ctx)                           # the full text of every forwarded record (no model calls)
+
+
+def _eligibility(ctx, state):
+    with ctx.at("eligibility"):
+        screening.eligibility_all(ctx, state["protocol"])     # every retrieved record screened on its full text
 
 
 def _snowball(ctx, state):
@@ -53,14 +59,14 @@ def _rob(ctx, state):
         state["changed"] += rob.rob_all(ctx)
 
 
-def _synthesize(ctx, state):
+def _synthesis(ctx, state):
     st = ctx.store
     considered = set(st.meta.get("synthesis_considered") or [])
     human_edited = any(n["data"].get("edited") for n in st.by_type("synthesis", active_only=True))
     if human_edited and (state["changed"] or considered != set(st.included_ids())):
         ctx.log("[pipeline] the synthesis has human edits; it is not re-written (use 'Update outputs' in the To-do list)")
     elif not st.by_type("synthesis", active_only=True):
-        with ctx.at("synthesize"):
+        with ctx.at("synthesis"):
             synthesis.synthesize(ctx)
     else:
         # an existing synthesis is updated, not re-written: only what the changes reach (the update engine)
@@ -77,19 +83,11 @@ def _report(ctx, state):
     report.write_reports(ctx)
 
 
-# key, label, what runs it; `llm`: the stage makes model calls (its model comes from stage_models)
-REGISTRY: list[dict] = [
-    {"key": "plan", "label": "Protocol", "run": _plan, "llm": True},
-    {"key": "search", "label": "Search", "run": _search, "llm": True},
-    {"key": "screen", "label": "Title/abstract screening", "run": _screen, "llm": True},
-    {"key": "fulltext", "label": "Full texts + full-text screening", "run": _fulltext, "llm": True},
-    {"key": "snowball", "label": "Citation chasing", "run": _snowball, "llm": True},
-    {"key": "extract", "label": "Data extraction", "run": _extract, "llm": True},
-    {"key": "rob", "label": "Risk of bias", "run": _rob, "llm": True},
-    {"key": "synthesize", "label": "Synthesis", "run": _synthesize, "llm": True},
-    {"key": "report", "label": "Report (whole review)", "run": _report, "llm": False},
-]
-STAGES = [s["key"] for s in REGISTRY]
+# what runs each stage of stagespec.STAGES (key, label, model: stagespec)
+_RUN = {"protocol": _protocol, "search": _search, "screen": _screen, "retrieve": _retrieve, "eligibility": _eligibility,
+        "snowball": _snowball, "extract": _extract, "rob": _rob, "synthesis": _synthesis, "report": _report}
+REGISTRY: list[dict] = [{"key": s.key, "label": s.label, "run": _RUN[s.key], "llm": s.llm} for s in stagespec.STAGES]
+STAGES = list(stagespec.KEYS)
 
 
 def enabled(ctx: Ctx) -> list[str]:
@@ -133,22 +131,23 @@ def _waiting_for_pdfs(ctx: Ctx) -> bool:
 
 
 def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
+    until = stagespec.run_until(until)        # an earlier key (plan, fulltext, synthesize) is accepted
     order = STAGES[: STAGES.index(until) + 1]
-    skip = set(ctx.cfg["pipeline"].get("skip_stages") or [])
+    run_now = set(enabled(ctx))
     state = {"protocol": None, "changed": 0}
     for stage in REGISTRY:
         key = stage["key"]
         if key not in order:
             break
-        if key in skip:
+        if key not in run_now:
             ctx.log(f"[pipeline] stage {key} skipped (pipeline.skip_stages)")
             continue
-        if key == "synthesize" and _waiting_for_pdfs(ctx):
+        if key == "synthesis" and _waiting_for_pdfs(ctx):
             return
         if key == "search" and _waiting_for_search(ctx):
             return
         stage["run"](ctx, state)
-        if key == "plan" and (stop_after_plan or until == "plan"):
+        if key == "protocol" and (stop_after_plan or until == "protocol"):
             ctx.log(f"[pipeline] protocol written to {ctx.run_dir / 'protocol.yaml'} — review/edit it, then run again.")
             return
     ctx.save()

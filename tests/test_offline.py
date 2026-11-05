@@ -262,7 +262,9 @@ def test_ui_app_state_and_estimate(tmp_path):
     (tmp_path / "local_endpoints.yaml").write_text(yaml.safe_dump({"endpoints": [{"url": "http://node:8000/v1"}]}))
     app = App(str(cfgp))
     s = app.state()
-    assert [x["key"] for x in s["steps"]][:3] == ["plan", "search", "screen"] and s["todos"]
+    assert [x["key"] for x in s["steps"]] == ["protocol", "search", "screen", "retrieve", "eligibility", "snowball",
+                                               "extract", "rob", "synthesis", "report", "feedback"] and s["todos"]
+    assert [x["key"] for x in s["registry"]] == [x["key"] for x in s["steps"]][:10]   # the Overview is the registry
     e = app.estimate({"action": "run", "until": "report", "agent": {"provider": "gemini", "model": "gemini-3.8-flash", "effort": "low"}})
     assert e["total_usd"] == 0  # everything already done
     m = app.models()
@@ -437,7 +439,7 @@ def test_citation_chasing(tmp_path, monkeypatch):
     from sragent.sources import openalex, pubmed
     from sragent.stages import snowball
     ctx = make_ctx(tmp_path)
-    pipeline.run(ctx, until="fulltext")
+    pipeline.run(ctx, until="eligibility")
     w = {"id": "https://openalex.org/W1", "referenced_works": ["https://openalex.org/W2", "https://openalex.org/W3"]}
     new = {"id": "https://openalex.org/W2", "title": "Emicizumab trough levels in a new cohort", "publication_year": 2019,
            "ids": {}, "doi": "https://doi.org/10.1/new", "abstract_inverted_index": {"Emicizumab": [0], "PK": [1]}}
@@ -500,15 +502,15 @@ def test_stage_models(tmp_path):
     from sragent import config_lock, pipeline
     from sragent.estimate import estimate_stages
     big = {"model": "mock-big", "reasoning_effort": "high", "pricing": {"input_per_m": 2.0, "output_per_m": 10.0}}
-    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"plan": big, "extract": {**big, "reasoning_effort": "medium"}}})
-    pipeline.run(ctx, until="fulltext")
+    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"protocol": big, "extract": {**big, "reasoning_effort": "medium"}}})
+    pipeline.run(ctx, until="eligibility")
     rows = [json.loads(line) for line in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
     by_tag = {}
     for r in rows:
         by_tag.setdefault(r["tag"].split("_rerun")[0], set()).add(r["model"])
     assert by_tag["plan"] == {"mock-big"} and by_tag["screen_title_abstract"] == {"mock"}
     rec = ctx.store.meta["config_lock"]["values"]
-    assert rec["stage_models.plan"]["model"] == "mock-big" and "stage_models.extract" not in rec   # not started yet
+    assert rec["stage_models.protocol"]["model"] == "mock-big" and "stage_models.extract" not in rec   # not started yet
 
     cfg = copy.deepcopy(ctx.cfg)                                    # a stage that has not started: free to change
     cfg["stage_models"]["extract"] = {**big, "reasoning_effort": "low"}
@@ -532,6 +534,41 @@ def test_stage_models(tmp_path):
     assert "mock-big (high effort): protocol" in report_markdown(c2)
 
 
+def test_earlier_stage_names_are_accepted(tmp_path):
+    """Stage keys of earlier versions (plan, fulltext, synthesize) still work in a run file, in --until and
+    skip_stages, and in an older review's recorded models: they are read as protocol, eligibility, synthesis."""
+    import copy
+
+    import pytest
+    from sragent import config_lock, pipeline, stagespec
+    from sragent.config import LLM_STAGES, stage_cfg
+    big = {"model": "mock-big", "reasoning_effort": "high", "pricing": {"input_per_m": 2.0, "output_per_m": 10.0}}
+    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"plan": big, "fulltext": big, "synthesize": big},
+                                        "pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
+                                                     "skip_stages": ["fulltext"]}})
+    assert set(ctx.cfg["stage_models"]) == {"protocol", "eligibility", "synthesis"} <= set(LLM_STAGES)
+    assert stage_cfg(ctx.cfg, "plan")["model"] == stage_cfg(ctx.cfg, "protocol")["model"] == "mock-big"
+    assert ctx.cfg["pipeline"]["skip_stages"] == ["retrieve", "eligibility"]      # fulltext was both stages
+    assert stagespec.run_until("synthesize") == "synthesis"
+    with pytest.raises(ValueError):
+        (tmp_path / "both").mkdir()
+        make_ctx(tmp_path / "both", extra_cfg={"stage_models": {"plan": big, "protocol": big}})
+    pipeline.run(ctx, until="protocol")
+    # an older review recorded its protocol model under the earlier key
+    lock = ctx.store.meta["config_lock"]["values"]
+    lock["stage_models.plan"] = lock.pop("stage_models.protocol")
+    ctx.save()
+    cfg = copy.deepcopy(ctx.cfg)
+    c2 = Ctx.create(cfg, mock_fn=mock_fn)                                       # same models: fine, and migrated
+    assert "stage_models.protocol" in c2.store.meta["config_lock"]["values"]
+    assert "stage_models.plan" not in c2.store.meta["config_lock"]["values"]
+    c2.save()
+    cfg["stage_models"]["protocol"] = {"reasoning_effort": "low"}
+    with pytest.raises(config_lock.ConfigChanged) as e:                          # still fixed under its new name
+        Ctx.create(cfg, mock_fn=mock_fn)
+    assert [c["key"] for c in e.value.changes] == ["stage_models.protocol"]
+
+
 def test_rescreen_keeps_records_waiting_for_full_text(tmp_path):
     """Re-applying a protocol never includes a record without a full-text review; it can still exclude it."""
     import copy
@@ -539,7 +576,7 @@ def test_rescreen_keeps_records_waiting_for_full_text(tmp_path):
     from sragent import pipeline
     from sragent.stages import screening
     ctx = make_ctx(tmp_path, fulltexts=("1001",))          # 1002 and 1003 have no full text
-    pipeline.run(ctx, until="fulltext")
+    pipeline.run(ctx, until="eligibility")
     st = ctx.store
     waiting = sorted(n["id"] for n in st.by_type("screen") if n["data"]["stage"] == "retrieval")
     assert waiting == ["screen:1002", "screen:1003"]
@@ -913,7 +950,7 @@ def test_removed_criteria_are_retired_and_protocol_edits_are_recorded(tmp_path):
     # in the agent-only condition an edited protocol.yaml is refused
     (tmp_path / "ao").mkdir()
     ao = make_ctx(tmp_path / "ao", extra_cfg={"pipeline": {"human_mode": "agent_only", "fulltext_unclear": "include"}})
-    pipeline.run(ao, until="plan")
+    pipeline.run(ao, until="protocol")
     p2 = yaml.safe_load(open(ao.run_dir / "protocol.yaml")); p2["criteria"].pop()
     yaml.safe_dump(p2, open(ao.run_dir / "protocol.yaml", "w"), sort_keys=False)
     import pytest
@@ -1503,7 +1540,7 @@ def test_a_protocol_revision_from_the_page_does_not_hold_the_interface(tmp_path)
     from sragent import pipeline
     from sragent.ui.server import App
     ctx = make_ctx(tmp_path)
-    pipeline.run(ctx, until="plan")
+    pipeline.run(ctx, until="protocol")
     cfgp = tmp_path / "ui.yaml"
     cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_")}
     cfg["models_file"] = "models.yaml"
@@ -1544,7 +1581,7 @@ def test_protocol_changed_with_the_review_team(tmp_path):
     from sragent import pipeline, todos
     from sragent.stages import planning
     ctx = make_ctx(tmp_path)
-    pipeline.run(ctx, until="plan")
+    pipeline.run(ctx, until="protocol")
     st = ctx.store
     t = next(x for x in todos.build(ctx) if x["kind"] == "protocol")
     assert t["criteria"] and all("id" in c and "text" in c for c in t["criteria"])
@@ -1566,7 +1603,7 @@ def test_protocol_changed_with_the_review_team(tmp_path):
     from sragent.provenance import NotAllowed
     ctx2 = make_ctx(tmp_path / "ao", extra_cfg={"pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
                                                               "human_mode": "agent_only", "fulltext_unclear": "include"}}) if (tmp_path / "ao").mkdir() or True else None
-    pipeline.run(ctx2, until="plan")
+    pipeline.run(ctx2, until="protocol")
     with pytest.raises(NotAllowed):
         planning.edit_criteria(ctx2, [{"id": "I1", "text": "x", "type": "inclusion"}])
 

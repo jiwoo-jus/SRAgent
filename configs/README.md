@@ -59,12 +59,12 @@ The rule: a cheap model for the high-volume work whose mistakes a later step cat
 
 | Where | Model, effort | Why |
 |---|---|---|
-| `plan`, `search` | Sonnet, high | one call each; the criteria and the query decide what the review can find |
+| `protocol`, `search` | Sonnet, high | one call each; the criteria and the query decide what the review can find |
 | `screen` (title/abstract), `snowball` | Haiku, medium | hundreds of calls, inclusive by design; a wrong forward is caught at full text |
-| `fulltext` | Haiku, high | decides inclusion; high effort costs a few cents more and stays ~10x cheaper than Sonnet (Sonnet medium is the upgrade if the budget allows: about $1.5 per 130 full texts) |
+| `eligibility` | Haiku, high | decides inclusion (full-text screening); high effort costs a few cents more and stays ~10x cheaper than Sonnet (Sonnet medium is the upgrade if the budget allows: about $1.5 per 130 full texts) |
 | `extract` | Sonnet, medium | the values the synthesis, the risk of bias and every revision rest on; the benchmark showed the largest quality gap between the two models here |
 | `rob` | Haiku, medium | drafts a person confirms |
-| `synthesize` | Sonnet, high | the conclusions; a handful of calls |
+| `synthesis` | Sonnet, high | the conclusions; a handful of calls |
 | `feedback` | Sonnet, medium | revisions and propagation: few calls, high stakes |
 | `roles.verifier` | GPT-6.1 Sol, medium | checks statements and feedback: a third family, independent of the writer (Claude) and the judge (Gemini) |
 | `roles.judge` | Gemini 3.1 Pro, low | evaluation; another family than the agent |
@@ -148,7 +148,7 @@ Defaults are in parentheses.
 | `concurrency` (4) | parallel requests from this process |
 | `fallbacks` | Claude only: `default` re-runs a declined request on another model (server-side refusal fallback) |
 
-**`stage_models` (run file)**: the agent's model and effort per pipeline stage, written over the agent role. Stages: `plan`, `search`, `screen` (title/abstract), `fulltext` (full-text screening), `snowball` (citation chasing, which screens the papers it finds), `extract`, `rob`, `synthesize` (writing and checking statements), and `feedback` (handling feedback, revising dependent outputs, updates after your decisions). The report makes no LLM calls. Each entry takes the role keys (`model`, `reasoning_effort`, `max_tokens`, ...); provider and price come from the catalog, so a model must be in it (or carry its own `pricing`). The web interface's Run page edits this section (Models per stage). A stage's model is fixed once that stage has started (rule 6); stages not yet started can be changed freely. A model picked in the web interface for one re-run or one piece of feedback applies to that job only. The report lists the model each stage ran with.
+**`stage_models` (run file)**: the agent's model and effort per pipeline stage, written over the agent role. Stages: `protocol`, `search`, `screen` (title/abstract), `eligibility` (full-text screening), `snowball` (citation chasing, which screens the papers it finds), `extract`, `rob`, `synthesis` (writing and checking statements), and `feedback` (handling feedback, revising dependent outputs, updates after your decisions). Full-text retrieval (`retrieve`) and the report make no model calls. The earlier keys `plan`, `fulltext` and `synthesize` are still read (as `protocol`, `eligibility`, `synthesis`); a run file may not use both names for one stage. Each entry takes the role keys (`model`, `reasoning_effort`, `max_tokens`, ...); provider and price come from the catalog, so a model must be in it (or carry its own `pricing`). The web interface's Run page edits this section (Models per stage). A stage's model is fixed once that stage has started (rule 6); stages not yet started can be changed freely. A model picked in the web interface for one re-run or one piece of feedback applies to that job only. The report lists the model each stage ran with.
 
 **`local` (run file, for `provider: local`)**: `endpoints_file` (`local_endpoints.yaml` in the project root), `poll_interval` (2 s), `retry_interval` (5 s), `probe_timeout` (5 s), `wait_timeout` (null = wait until cancelled). See GUIDE section 4.
 
@@ -178,7 +178,7 @@ Defaults are in parentheses.
 | `confirm_search` (false) | human-in-the-loop: the search runs only with a query the review team confirmed in the To-do list (Search strategy: the agent's query and five alternatives with their PubMed counts, changes asked in plain words, any query counted); without it the agent's query runs. The New-review form sets it for human-in-the-loop reviews |
 | `keep_fetched_files` (true) | what the agent fetched is kept in `fulltext/auto/` beside your PDFs: the parsed text (`<id>.txt`) and, for articles with a PMC id, the PDF from Europe PMC or NCBI (`<id>.pdf`, best effort). `sragent fetch-files` does it for an existing review |
 | `wait_for_pdfs` (false) | real reviews: the first synthesis is written only once every requested full text has been supplied or declared not obtainable, so it is written once on the settled set; the run stops before the synthesis and says what is missing (`needed_pdfs.csv`), and `sragent run` continues when the list is settled. A synthesis that exists is never held back; later PDFs still propagate through the update engine |
-| `skip_stages` ([]) | stages to leave out, e.g. `[rob]` or `[snowball]`; `plan`, `screen` and `report` cannot be skipped |
+| `skip_stages` ([]) | stages to leave out, e.g. `[rob]` or `[snowball]`; `protocol`, `screen` and `report` cannot be skipped (the earlier `fulltext` skips both `retrieve` and `eligibility`) |
 
 **`update_policy` (run file)**: how the update engine treats each kind of output when it is out of date (a dependency changed after it was computed): `screen`, `extraction`, `rob`, `synthesis`, each `auto` (brought up to date and applied: the default), `propose` (brought up to date in a sandbox and offered in the To-do list to accept or reject) or `manual` (only listed; a person decides). Example: `update_policy: {synthesis: propose}` keeps every change to the conclusions under your approval. Outputs a person decided, confirmed or edited are never overwritten whatever the policy.
 

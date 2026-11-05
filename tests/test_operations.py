@@ -361,7 +361,7 @@ def _setup(kind, tmp_path):
     if kind in ("planned", "searched"):
         from sragent import pipeline
         ctx = build(tmp_path)
-        pipeline.run(ctx, until="plan")
+        pipeline.run(ctx, until="protocol")
         return ctx
     return reviewed(tmp_path, AWAITING if kind == "awaiting" else FULLTEXTS)
 

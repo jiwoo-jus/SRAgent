@@ -293,8 +293,9 @@ def main(argv=None):
         p.add_argument("--run-dir", default=None, help="override run_dir")
 
     p = sub.add_parser("run"); common(p)
-    p.add_argument("--until", default="report",
-                   choices=["plan", "search", "screen", "fulltext", "snowball", "extract", "rob", "synthesize", "report"])
+    from .stagespec import KEYS, LEGACY
+    p.add_argument("--until", default="report", choices=list(KEYS) + list(LEGACY),
+                   help=f"stop after this stage: {', '.join(KEYS)} (earlier names {', '.join(LEGACY)} are accepted)")
     p.add_argument("--plan-only", action="store_true")
     p.add_argument("--fresh", action="store_true", help="ignore an existing store.json in run_dir")
     p.set_defaults(fn=cmd_run)

@@ -23,6 +23,8 @@ from typing import Any
 
 import yaml
 
+from . import stagespec   # the one list of stages
+
 DEFAULTS: dict[str, Any] = {
     "run_dir": None,              # None: runs/<the run file's path under configs/, without .yaml>
     "cache_dir": ".cache",
@@ -183,7 +185,10 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
     for k, v in (cfg.get("update_policy") or {}).items():
         if k not in ("screen", "extraction", "rob", "synthesis") or v not in ("auto", "propose", "manual"):
             raise ValueError(f"update_policy.{k}: {v!r}; keys are screen, extraction, rob, synthesis and values auto, propose or manual")
-    bad = [x for x in (p.get("skip_stages") or []) if x in ("plan", "screen", "report")]
+    # an earlier key is accepted; `fulltext` was retrieval and full-text screening together
+    p["skip_stages"] = [k for x in (p.get("skip_stages") or [])
+                        for k in (("retrieve", "eligibility") if x == "fulltext" else (stagespec.run_until(x),))]
+    bad = [x for x in p["skip_stages"] if x in ("protocol", "screen", "report")]
     if bad:
         raise ValueError(f"pipeline.skip_stages: {', '.join(bad)} cannot be skipped")
     if p["max_records"] and not is_benchmark(cfg):
@@ -264,23 +269,12 @@ def _with_model(cfg: dict, base: dict, ov: dict) -> dict:
 
 # ---------------------------------------------------------------- per-stage models
 
-LLM_STAGES = ("plan", "search", "screen", "fulltext", "snowball", "extract", "rob", "synthesize", "feedback")
-STAGE_LABELS = {"plan": "Protocol", "search": "Search", "screen": "Title/abstract screening",
-                "fulltext": "Full-text screening", "snowball": "Citation chasing", "extract": "Data extraction",
-                "rob": "Risk of bias", "synthesize": "Synthesis", "feedback": "Feedback, revisions and updates"}
+LLM_STAGES = stagespec.model_slots()          # the keys of stage_models
+STAGE_LABELS = {k: stagespec.label(k) for k in LLM_STAGES}
+stage_of_tag = stagespec.stage_of_tag
 EFFORTS = {"anthropic": ("low", "medium", "high", "xhigh", "max"), "openai": ("low", "medium", "high"),
            "gemini": ("low", "medium", "high")}
 _STAGE_KEYS = set(DEFAULTS["llm_defaults"]) | {"fallbacks"}
-
-
-def stage_of_tag(tag: str) -> str:
-    """The pipeline stage an LLM call belongs to, from its tag (used outside a pipeline stage)."""
-    t = tag or ""
-    for prefix, stage in (("screen_title_abstract", "screen"), ("screen_full_text", "fulltext"), ("extract", "extract"),
-                          ("rob", "rob"), ("synthesis", "synthesize"), ("plan", "plan"), ("search", "search")):
-        if t == prefix or t.startswith(prefix + "_"):
-            return stage
-    return "feedback"
 
 
 def _resolve_stage_models(cfg: dict) -> None:
@@ -288,11 +282,12 @@ def _resolve_stage_models(cfg: dict) -> None:
     sm = cfg.get("stage_models") or {}
     if not isinstance(sm, dict):
         raise ValueError("stage_models must map a stage to its settings, e.g. extract: {model: ..., reasoning_effort: medium}")
+    sm = cfg["stage_models"] = stagespec.canonical_keys(sm, "stage_models")   # plan -> protocol, fulltext -> eligibility, ...
     agent = role_cfg(cfg, "agent")
     catalog = cfg.get("_catalog") or {}
     for stage, ov in list(sm.items()):
         if stage not in LLM_STAGES:
-            hint = " (the report makes no LLM calls)" if stage == "report" else ""
+            hint = f" ({stagespec.label(stage).lower()} makes no model calls)" if stage in stagespec.BY_KEY else ""
             raise ValueError(f"stage_models.{stage}: unknown stage{hint}; use one of {', '.join(LLM_STAGES)}")
         if ov is None:
             sm[stage] = {}
@@ -320,7 +315,7 @@ def _resolve_stage_models(cfg: dict) -> None:
 def stage_cfg(cfg: dict, stage: str | None) -> dict:
     """LLM settings for the agent in one pipeline stage = the agent role overridden by stage_models[stage]."""
     agent = role_cfg(cfg, "agent")
-    ov = (cfg.get("stage_models") or {}).get(stage or "") or {}
+    ov = (cfg.get("stage_models") or {}).get(stagespec.canonical(stage) or "") or {}
     return _with_model(cfg, agent, ov) if ov else agent
 
 

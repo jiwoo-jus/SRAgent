@@ -21,6 +21,8 @@ import copy
 import json
 import time
 
+from . import stagespec
+
 LOCKED = (
     "topic.key", "topic.question", "topic.seed_eligibility", "topic.protocol_file", "topic.screening_rules",
     "topic.records", "topic.extraction_fields", "topic.rob_tool_name", "topic.rob_domains",
@@ -28,17 +30,29 @@ LOCKED = (
 )
 
 
-STAGE_STARTED = {   # a stage has started when its first output exists
-    "plan": lambda st: st.get("protocol") is not None,
-    "search": lambda st: st.get("search") is not None,
-    "screen": lambda st: bool(st.by_type("screen")),
-    "fulltext": lambda st: bool(st.by_type("fulltext")) or any(
-        n["data"].get("stage") in ("full_text", "retrieval") for n in st.by_type("screen")),
-    "snowball": lambda st: bool(st.meta.get("snowball")),
-    "extract": lambda st: bool(st.by_type("extraction")),
-    "rob": lambda st: bool(st.by_type("rob")),
-    "synthesize": lambda st: bool(st.by_type("synthesis")),
-}
+# a stage with a model has started when its first output exists (stagespec.STAGES)
+STAGE_STARTED = {s.key: s.started for s in stagespec.STAGES if s.llm}
+
+
+def canonical_values(values: dict | None) -> dict:
+    """Recorded values with earlier stage keys translated (stage_models.plan -> stage_models.protocol, ...)."""
+    out = {}
+    for k, v in (values or {}).items():
+        if k.startswith("stage_models."):
+            k = "stage_models." + stagespec.canonical(k.split(".", 1)[1])
+        out.setdefault(k, v)
+    return out
+
+
+def _migrate(store) -> dict | None:
+    """The lock of an older review, its stage keys renamed in place. Returns the recorded values."""
+    lock = store.meta.get("config_lock")
+    if lock and lock.get("values"):
+        canon = canonical_values(lock["values"])
+        if canon != lock["values"]:
+            lock["values"] = canon
+        return lock["values"]
+    return None
 
 
 def stage_model(cfg: dict, stage: str) -> dict:
@@ -87,6 +101,7 @@ def locked_values(cfg: dict, stages=()) -> dict:
 
 
 def diff(recorded: dict, cfg: dict) -> list[dict]:
+    recorded = canonical_values(recorded)
     stages = [k.split(".", 1)[1] for k in recorded if k.startswith("stage_models.")]
     now = locked_values(cfg, stages)
     keys = [k for k in LOCKED if k in recorded] + [f"stage_models.{s}" for s in STAGE_STARTED if f"stage_models.{s}" in recorded]
@@ -95,7 +110,7 @@ def diff(recorded: dict, cfg: dict) -> list[dict]:
 
 def check(cfg: dict, store, run_dir=None) -> None:
     """Raise ConfigChanged when a started review's config no longer matches what it started with."""
-    rec = (store.meta.get("config_lock") or {}).get("values")
+    rec = _migrate(store)
     if rec:
         ch = diff(rec, cfg)
         if ch:
@@ -105,6 +120,7 @@ def check(cfg: dict, store, run_dir=None) -> None:
 def record_if_new(cfg: dict, store) -> None:
     """Called on every save: the first save of a review records its settings, and the first save after a
     stage has started records that stage's model."""
+    _migrate(store)
     lock = store.meta.get("config_lock")
     if not lock:
         lock = store.meta["config_lock"] = {"recorded": time.time(), "values": locked_values(cfg)}
@@ -119,7 +135,7 @@ def accept(ctx, reason: str, actor: str = "user") -> list[dict]:
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("give a reason for changing the review's settings; it is recorded and shown in the report")
-    rec = (ctx.store.meta.get("config_lock") or {}).get("values")
+    rec = _migrate(ctx.store)
     if not rec:
         return []
     ch = diff(rec, ctx.cfg)
@@ -166,7 +182,7 @@ def models_by_stage(cfg: dict, store) -> list[tuple[str, str]]:
     """[(stages, "model (effort)")] grouped: the model each started stage ran with (as recorded when it
     started), else the configured one."""
     from .config import STAGE_LABELS
-    rec = (store.meta.get("config_lock") or {}).get("values") or {}
+    rec = canonical_values((store.meta.get("config_lock") or {}).get("values"))
     groups: dict[str, list[str]] = {}
     for st in STAGE_STARTED:
         m = rec.get(f"stage_models.{st}") or stage_model(cfg, st)

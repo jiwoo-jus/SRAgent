@@ -327,7 +327,7 @@ def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, lim
     import time
     from ..evidence import resolve, joined
     checker = ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub.agent_for(
-        "fulltext" if stage == "full_text" else "screen")
+        "eligibility" if stage == "full_text" else "screen")
     brief = "; ".join(f"{a.get('id')}={a.get('assessment')}" + (f" ({a['reason'][:80]})" if a.get("reason") else "")
                       for a in assessments if isinstance(a, dict))
     out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY.format(
@@ -420,7 +420,7 @@ def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: lis
                 if st.get(f"{kind}:{rid}") and st.get(f"{kind}:{rid}")["status"] == "active":
                     st.set_status(f"{kind}:{rid}", "excluded", reason="study no longer included after the second reading")
         return rec["outcome"]
-    with ctx.at("fulltext"):
+    with ctx.at("eligibility"):
         outcomes = ctx.map(one, todo)
     sync_awaiting_flags(ctx)
     ctx.save()
@@ -477,8 +477,9 @@ def _mark_retrieval(ctx: Ctx, rid: str, status: str, reason: str):
               current=False)
 
 
-def review_one(ctx: Ctx, protocol: dict, rid: str, refetch: bool = False) -> str:
-    """Full-text review of one forwarded record: retrieve, then screen on the full text only."""
+def retrieve_one(ctx: Ctx, rid: str, refetch: bool = False) -> tuple[str, bool]:
+    """Stage 4 for one forwarded record: its full text (a person's file, else an open-access copy). No model calls.
+    Returns (kind of text now held, fetched now); a record without a usable full text is marked for retrieval."""
     from . import fulltext
     st = ctx.store
     ft = (st.get(f"ft:{rid}") or {}).get("data")
@@ -487,33 +488,82 @@ def review_one(ctx: Ctx, protocol: dict, rid: str, refetch: bool = False) -> str
         ft = fulltext.fetch_one(ctx, rid)
         fetched = True
     if ft.get("kind") == "fulltext":
-        sc = st.get(f"screen:{rid}")["data"]
-        if fetched or not (sc["stage"] == "full_text" and sc.get("source_kind") == "fulltext"):
-            screen_one(ctx, protocol, rid, "full_text")
-        return st.get(f"screen:{rid}")["data"]["decision"]
+        return "fulltext", fetched
     if ft.get("parse_failed"):
         _mark_retrieval(ctx, rid, "parse_failed", f"the supplied file {ft.get('local_file')} has no usable text")
-        return "parse_failed"
+        return "parse_failed", fetched
     _mark_retrieval(ctx, rid, "fulltext_unavailable", "no open-access full text found; PDF requested")
-    return "fulltext_unavailable"
+    return "fulltext_unavailable", fetched
 
 
-def fulltext_review(ctx: Ctx, protocol: dict) -> dict:
-    """Every record forwarded from title/abstract gets a full-text review (retrieve + screen)."""
+def eligibility_one(ctx: Ctx, protocol: dict, rid: str, fetched: bool = False) -> str:
+    """Stage 5 for one record with a full text: screened on it (again only when the text is new to the decision)."""
+    sc = ctx.store.get(f"screen:{rid}")["data"]
+    if fetched or not (sc["stage"] == "full_text" and sc.get("source_kind") == "fulltext"):
+        screen_one(ctx, protocol, rid, "full_text")
+    return ctx.store.get(f"screen:{rid}")["data"]["decision"]
+
+
+def review_one(ctx: Ctx, protocol: dict, rid: str, refetch: bool = False) -> str:
+    """Full-text review of one forwarded record: retrieve, then screen on the full text only (one study: an added
+    PDF, a re-run)."""
+    kind, fetched = retrieve_one(ctx, rid, refetch)
+    return eligibility_one(ctx, protocol, rid, fetched) if kind == "fulltext" else kind
+
+
+def _forwarded(st) -> list[str]:
+    return [n["id"].split(":", 1)[1] for n in st.by_type("screen") if needs_fulltext_review(st, n["id"].split(":", 1)[1])]
+
+
+def retrieve_all(ctx: Ctx) -> dict:
+    """Stage 4: the full text of every record forwarded from title/abstract (no model calls); the PDFs still
+    needed are listed in needed_pdfs.csv."""
     from collections import Counter
     from . import fulltext
     st = ctx.store
-    todo = [n["id"].split(":", 1)[1] for n in st.by_type("screen") if needs_fulltext_review(st, n["id"].split(":", 1)[1])]
-    ctx.log(f"[screen] full-text review of {len(todo)} forwarded records")
-    out = ctx.map(lambda rid: review_one(ctx, protocol, rid), todo)
+    todo = _forwarded(st)
+    ctx.log(f"[retrieve] full texts of {len(todo)} forwarded records")
+    out = ctx.map(lambda rid: retrieve_one(ctx, rid)[0], todo)
+    fulltext.write_needed_pdfs(ctx)
+    ctx.save()
+    c = Counter(out)
+    ctx.log(f"[retrieve] {dict(c)}")
+    return {"outcomes": dict(c)}
+
+
+def eligibility_all(ctx: Ctx, protocol: dict) -> dict:
+    """Stage 5: every forwarded record that has its full text is screened on it; then the screening flags, the
+    rules and the list of PDFs still needed follow the decisions."""
+    from collections import Counter
+    from . import fulltext
+    st = ctx.store
+    todo = [rid for rid in _forwarded(st) if ((st.get(f"ft:{rid}") or {}).get("data") or {}).get("kind") == "fulltext"]
+    ctx.log(f"[eligibility] full-text screening of {len(todo)} records")
+    out = ctx.map(lambda rid: eligibility_one(ctx, protocol, rid), todo)
     sync_awaiting_flags(ctx)
     from .. import rules
     rules.apply(ctx, protocol)
     fulltext.write_needed_pdfs(ctx)
     ctx.save()
     c = Counter(out)
-    ctx.log(f"[screen] full-text review outcomes: {dict(c)}; included now {len(st.included_ids())}")
+    ctx.log(f"[eligibility] outcomes: {dict(c)}; included now {len(st.included_ids())}")
     return {"outcomes": dict(c), "included": len(st.included_ids())}
+
+
+def fulltext_review(ctx: Ctx, protocol: dict) -> dict:
+    """Stages 4 and 5 together: every record forwarded from title/abstract retrieved, then screened on its full text."""
+    r = retrieve_all(ctx)
+    e = eligibility_all(ctx, protocol)
+    return {"outcomes": _merge_outcomes(r, e), "included": e["included"]}
+
+
+def _merge_outcomes(r: dict, e: dict) -> dict:
+    """One outcome per record: its eligibility decision, else its retrieval status."""
+    out = dict(e["outcomes"])
+    for k, n in r["outcomes"].items():
+        if k != "fulltext":
+            out[k] = out.get(k, 0) + n
+    return out
 
 
 SCREEN_FLAG_SOURCES = ("screening", "screening_unclear")

@@ -271,7 +271,7 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
     ft = st.get(f"ft:{rid}")
     stage = "full_text" if (before or {}).get("stage") == "full_text" or (ft and ft["data"].get("kind") == "fulltext") \
         else "title_abstract"
-    pstage = {"extract": "extract", "rob": "rob"}.get(step) or ("fulltext" if stage == "full_text" else "screen")
+    pstage = {"extract": "extract", "rob": "rob"}.get(step) or ("eligibility" if stage == "full_text" else "screen")
     llm = ctx.hub.agent_for(pstage)          # that stage's model (stage_models), or the model picked for this job
     cs = _new_cs("RR", kind="rerun", label=f"Re-run of {RERUN_STEPS[step].lower()}", rid=rid, step=step,
                  target=nid, note=note, model=llm.name,

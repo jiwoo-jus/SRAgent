@@ -227,7 +227,7 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     first = next((a for a in sc["data"].get("criteria", []) if a.get("id") == cid), {})
     text, kind = st.text_of(rid)
     limit = int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
-    checker = ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub.agent_for("fulltext")
+    checker = ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub.agent_for("eligibility")
     out = checker.chat(ctx.msgs(prompts.ELIGIBILITY_VERIFY.format(
         cid=cid, ctype=crit.get("type", "inclusion"), ctext=crit.get("text", ""),
         screen_assessment=first.get("assessment", "not assessed"),

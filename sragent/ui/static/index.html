@@ -449,8 +449,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const trunc = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 let S = null, M = null, tab = "steps", showSnoozed = false, lastJobId = null;
 const answers = {};            // todo id -> {option, text, extra}
-const STAGES = [["plan","Protocol"],["search","Search"],["screen","Title/abstract screening"],["fulltext","Full texts + full-text screening"],["snowball","Citation chasing"],
-                ["extract","Data extraction"],["rob","Risk of bias"],["synthesize","Synthesis"],["report","Report (whole review)"]];
+let STAGES = [];               // [key, label] of every stage, in order: the server's registry (sragent/stagespec.py)
 const VIEWS = ["steps","todo","studies","pdfs","run","activity","configs"];
 const TITLES = {steps:["Overview","Where the review stands and the next thing to do"], todo:["To-do","Decisions and checks waiting for you"],
   studies:["Studies","Every record, its status and the evidence behind it"], pdfs:["Full texts","PDFs that would help the agent, and how to add them"],
@@ -583,6 +582,7 @@ async function refresh(force){
   }
   S = st; NOCFG = null;
   if (!S || !S.run) return;
+  if (S.registry) STAGES = S.registry.map(x => [x.key, x.label]);
   renderChrome();
   const j = S.job.current;
   if (lastJobId !== (j ? j.id : null)) {
@@ -663,7 +663,7 @@ function goNext(){
 }
 function goTodoGroup(group){ show("todo"); setTimeout(() => scrollToId("g-" + (group || "")), 60); }
 function goTodoStep(step){
-  if (step === "fulltext") return show("pdfs");
+  if (step === "retrieve") return show("pdfs");
   show("todo"); setTimeout(() => { const el = document.querySelector(`#v-todo [data-step="${step}"]`); if (el) el.scrollIntoView({behavior:"smooth", block:"start"}); }, 60);
 }
 
@@ -751,7 +751,7 @@ function renderTodo(fromPoll){
       <button class="btn" onclick="answerNow('sync','later')">Later</button>
       <span class="hint grow">Extracts and assesses newly included studies and revises only the affected synthesis statements (a few cents with Gemini Flash).</span><span id="m-sync" class="msg"></span></div></div></div>`);
   const ft = k("fulltexts")[0];
-  if (ft) parts.push(`<div class="grp" id="g-fulltexts" data-step="fulltext">${grpHead("Full texts", ft.files.length, "Supplying these PDFs lets the agent finish the full-text review.")}${pdfPanel(ft, true)}</div>`);
+  if (ft) parts.push(`<div class="grp" id="g-fulltexts" data-step="retrieve">${grpHead("Full texts", ft.files.length, "Supplying these PDFs lets the agent finish the full-text review.")}${pdfPanel(ft, true)}</div>`);
   parts.push(gen("edits", "Your edits", k("manual_edit"), "Outputs that depend on something you edited. Decide whether the agent should propose updates."));
   parts.push(gen("flags", "Points the agent flagged", k("flag"), "Self-check and evidence flags. Say it is fine, or ask the agent to fix it."));
   parts.push(robTable(k("rob").filter(t => !t.optional)));
@@ -790,7 +790,7 @@ function protocolCard(t){
       ${r.changed && (r.changed.changed||[]).concat(r.changed.added||[], r.changed.removed||[]).length ? `<span class="xs mut">(changed ${esc((r.changed.changed||[]).join(", "))}${(r.changed.added||[]).length ? "; added " + esc(r.changed.added.join(", ")) : ""}${(r.changed.removed||[]).length ? "; removed " + esc(r.changed.removed.join(", ")) : ""})</span>` : ""}</div>`).join("");
   const opts = t.options.map(o => `<button class="choice ${a.option===o.value?"on":""}" onclick="pick('${t.id}','${o.value}')"><span class="rd"></span>${esc(o.label)}</button>`).join("");
   const hint = (t.options.find(o => o.value === a.option) || {}).hint;
-  return `<div class="card tcard" id="c-protocol" data-step="plan">
+  return `<div class="card tcard" id="c-protocol" data-step="protocol">
     <div class="card-h"><h3>${esc(t.title)}</h3>${t.pending ? badge("queued until the job finishes","info") : ""}
       ${PC.edit ? "" : `<button class="btn sm ghost" onclick="pcEditStart()">${ic("edit","sm")} Edit criteria</button>`}</div>
     <div class="card-b"><div class="q">${esc(t.question)}</div>
@@ -1019,7 +1019,7 @@ function eligTable(items){
       <div class="dec">${seg}${reason}
         <div class="xs mut"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--acc);margin-right:5px;vertical-align:1px"></span>Suggested: <b style="color:var(--fg-2)">${esc(sugL)}</b> · ${esc(t.suggest.why)}</div></div></div>`;
   }).join("");
-  return `<div class="grp" id="g-eligibility" data-step="screen">${grpHead("Eligibility", items.length, `The agent could not decide these. A suggestion is pre-selected for each; change any you disagree with, then save once. "Need full text" moves the study to the Full texts list.`)}
+  return `<div class="grp" id="g-eligibility" data-step="eligibility">${grpHead("Eligibility", items.length, `The agent could not decide these. A suggestion is pre-selected for each; change any you disagree with, then save once. "Need full text" moves the study to the Full texts list.`)}
     <div class="card"><div class="card-b flush">${rows}</div>
     <div class="card-f"><button class="btn primary" onclick="saveElig()">Save ${items.length} decision${items.length>1?"s":""}</button>
       <span class="hint">${nChanged ? `${nChanged} changed from the suggestion` : "All as suggested"}</span><span id="eligmsg" class="msg"></span></div></div></div>`;
@@ -1220,7 +1220,7 @@ function noteFor(sel){
 function runWarn(){
   const el = $("#runwarn"); if (!el) return;
   const a = runOpts;
-  el.innerHTML = (a.action==="run" && a.until!=="plan" && S && S.steps[0].status==="needs you") ? `<div class="callout warn">${ic("warn")}<div>The protocol is not approved yet. You can still run, but screening follows the current criteria.
+  el.innerHTML = (a.action==="run" && a.until!=="protocol" && S && S.steps[0].status==="needs you") ? `<div class="callout warn">${ic("warn")}<div>The protocol is not approved yet. You can still run, but screening follows the current criteria.
      <button class="link" onclick="goTodoGroup('protocol')">Review the protocol</button></div></div>` : "";
 }
 function renderRun(){

@@ -23,11 +23,11 @@ from .context import Ctx
 from .store import criteria_by_id, record_of
 from .stages import fulltext
 
-STEPS = [
-    ("plan", "1. Protocol"), ("search", "2. Search"), ("screen", "3. Screening"),
-    ("fulltext", "4. Full texts"), ("extract", "5. Data extraction"), ("rob", "6. Risk of bias"),
-    ("synthesis", "7. Synthesis"), ("feedback", "8. Feedback & revisions"),
-]
+from . import stagespec
+
+# the To-do groups: one per stage (stagespec.STAGES), then feedback and revisions (across stages)
+STEPS = [(s.key, f"{s.order}. {s.label}") for s in stagespec.STAGES] + \
+        [(stagespec.FEEDBACK, f"{len(stagespec.STAGES) + 1}. Feedback & revisions")]
 STEP_OF_TYPE = {"screen": "screen", "extraction": "extract", "rob": "rob", "synthesis": "synthesis"}
 
 
@@ -57,7 +57,7 @@ def build(ctx: Ctx) -> list[dict]:
     approved = bool(st.meta.get("protocol_approved")) or provenance.mode(ctx) == "agent_only"
     if st.get("protocol"):
         todos.append({
-            "id": "protocol", "step": "plan", "kind": "protocol", "priority": 0,
+            "id": "protocol", "step": "protocol", "kind": "protocol", "priority": 0,
             "approved": approved, "optional": approved,
             "title": "Approve the review protocol" if not approved else "Protocol (approved)",
             "question": "Do these eligibility criteria match what you want to review?" if not approved else
@@ -150,7 +150,7 @@ def build(ctx: Ctx) -> list[dict]:
         else:
             suggest = {"option": "pdf", "why": "needs the full text to decide" if has_abs else "no abstract; needs the full text"}
         todos.append({
-            "id": f"elig:{rid}", "step": "screen", "kind": "eligibility", "priority": 1, "rid": rid,
+            "id": f"elig:{rid}", "step": "eligibility", "kind": "eligibility", "priority": 1, "rid": rid,
             "title": (r.get("title") or "(no title)")[:200],
             "meta": f"{_study_label(st, rid)} · {r.get('journal', '')} {r.get('year', '')} · "
                     f"{', '.join(r.get('pub_types') or [])}",
@@ -169,7 +169,7 @@ def build(ctx: Ctx) -> list[dict]:
     if wanted:
         present = [x for x in wanted if x["present"]]
         todos.append({
-            "id": "fulltexts", "step": "fulltext", "kind": "fulltexts", "priority": 2,
+            "id": "fulltexts", "step": "retrieve", "kind": "fulltexts", "priority": 2,
             "title": f"Full texts that would help ({len(wanted)}; {len(present)} already added)",
             "question": "Add the PDFs you can get, then process them.",
             "context": [f"Folder: {fulltext.fulltext_dir(ctx)}  (list also in needed_pdfs.csv)"] +
@@ -651,7 +651,7 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
             return {"text": "Agent-only mode: run the review; the agent makes every decision.", "go": "run", "until": "report"}
         return {"text": "Agent-only mode: the review is complete. Read the report.", "go": "report"}
     if not st.get("protocol"):
-        return {"text": "Start the review: draft the protocol (one cheap LLM call).", "go": "run", "until": "plan"}
+        return {"text": "Start the review: draft the protocol (one cheap LLM call).", "go": "run", "until": "protocol"}
     if "protocol" in by:
         return {"text": "Check and approve the eligibility criteria.", "go": "todo", "group": "protocol"}
     if not st.get("search") and ctx.cfg["pipeline"].get("confirm_search") and \
@@ -661,9 +661,9 @@ def next_action(ctx: Ctx, todos: list[dict], job_running: bool, new_files: int) 
     if not st.get("search") and ((st.meta.get("search_strategy") or {}).get("confirmed") or {}).get("query"):
         c = st.meta["search_strategy"]["confirmed"]
         return {"text": f"Run the search with your confirmed query ({c.get('count')} PubMed hits), then screening.",
-                "go": "run", "until": "fulltext"}
+                "go": "run", "until": "eligibility"}
     if not st.get("search") or not st.by_type("screen"):
-        return {"text": "Run search and screening.", "go": "run", "until": "fulltext"}
+        return {"text": "Run search and screening.", "go": "run", "until": "eligibility"}
     if "changeset" in by or "disagreement" in by or "clarify" in by:
         n = len(by.get("changeset", [])) + len(by.get("disagreement", [])) + len(by.get("clarify", []))
         return {"text": f"Review {n} answer{'s' if n > 1 else ''} from the agent to your feedback.", "go": "todo", "group": "feedback"}

@@ -23,6 +23,7 @@ from urllib.parse import unquote, parse_qs, urlparse
 
 import yaml
 
+from .. import stagespec
 from ..config import EFFORTS, LLM_STAGES, STAGE_LABELS, is_benchmark, load_config, load_secrets, role_cfg, stage_cfg
 from ..config_lock import ConfigChanged
 from ..context import Ctx
@@ -674,7 +675,7 @@ class App:
                 return {"ok": False, "message": "say what to change"}
 
             def draft(sb):
-                with sb.at("plan"):
+                with sb.at("protocol"):
                     return planning.draft_revision(sb, ins)
 
             def apply(live, sb, dr):
@@ -941,6 +942,7 @@ class App:
                         "human_mode": self.human_mode(),
                         "spent_usd": round(self.spent(), 4), "topic": ctx.topic.get("question", "")},
                 "steps": steps(ctx, tlist), "todos": tlist, "job": self.job_view(),
+                "registry": [{"key": s.key, "label": s.label, "llm": s.llm} for s in stagespec.STAGES],
                 "fulltext": {"dir": str(fulltext_dir(ctx)), "needed": needed_pdfs(ctx) if ctx.store.get("protocol") else [],
                              "new_files": nf}}
 

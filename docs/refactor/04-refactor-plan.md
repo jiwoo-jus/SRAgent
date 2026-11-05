@@ -380,6 +380,8 @@ None of these change the human-in-the-loop contract: proposals, pinned decisions
 
 Phase 0 status (2026-11-05): `tests/test_operations.py` pins 63 entry points under the operation each will become (snapshots in `tests/golden/ops/`: result, decision log, provenance, flags opened/closed, proposals, model calls by tag, what is out of date afterwards); `test_every_operation_is_accounted_for` checks that every operation of §4 is covered, marked new, or marked as a gap (snowball run, model settings, stop/cancel).
 
+Phase 1 status (2026-11-05): `sragent/stagespec.py` is the one list of stages (ten: protocol, search, screen, retrieve, eligibility, snowball, extract, rob, synthesis, report). The pipeline order and `--until` choices, `config.LLM_STAGES` / `STAGE_LABELS` / `stage_of_tag`, `config_lock.STAGE_STARTED`, `todos.STEPS`, the Overview rows and the browser's stage list (`/api/state` → `registry`) are derived from it. `fulltext` is split into `retrieve` (no model calls) and `eligibility`; `plan` → `protocol`, `synthesize` → `synthesis`. Earlier keys are accepted in run files (`stage_models`, `skip_stages`), `--until`, and in the models recorded in older reviews (renamed in place on load). Model-call tags are unchanged (usage history). Removed: `engine.ORDER`, `engine.STAGE_FOR`, `sync.update_synthesis`. Addresses 03: I37, I39, I50 (in part: the phantom `evidence_check` flag source remains), I40 and I52 (in part: snowball and report now have Overview rows). Left for later phases: separate `elig:<rid>` nodes (phase 2), `feedback` as a model slot until `model_for(stage, role)` (phase 5).
+
 Order matters: 1 before everything (names), 2 before 4 (the preview needs the graph), 3 before 4
 (pages call operations), 5 can run in parallel with 4, 6 last.
 

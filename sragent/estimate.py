@@ -29,9 +29,9 @@ DEFAULTS = {
     "feedback": (12000, 1200, 4000),
 }
 # estimate rows -> pipeline stage whose model does that work (stage_models)
-ROW_STAGE = {"plan": "plan", "search": "search", "screen_title_abstract": "screen", "screen_full_text": "fulltext",
-             "extract": "extract", "rob": "rob", "synthesis": "synthesize", "synthesis_verify": "synthesize",
-             "synthesis_repair": "synthesize", "screen_verify": "fulltext", "rob_verify": "rob", "feedback": "feedback"}
+ROW_STAGE = {"plan": "protocol", "search": "search", "screen_title_abstract": "screen", "screen_full_text": "eligibility",
+             "extract": "extract", "rob": "rob", "synthesis": "synthesis", "synthesis_verify": "synthesis",
+             "synthesis_repair": "synthesis", "screen_verify": "eligibility", "rob_verify": "rob", "feedback": "feedback"}
 ROB_FLAG_RATE = 1.0     # share of risk-of-bias drafts with a reason for a second look (aspirin review, Haiku: 40 of 40 had the agent's own doubts)
 FORWARD_RATE = 0.56     # share of records forwarded past title/abstract (v2)
 INCLUDE_RATE = 0.09     # share of records finally included (v2)
@@ -68,9 +68,10 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
     """Number of LLM calls per stage still needed to finish the pipeline up to `until`."""
     from .pipeline import STAGES
     st = ctx.store
-    order = STAGES[: STAGES.index(until) + 1]
+    from .stagespec import run_until
+    order = STAGES[: STAGES.index(run_until(until)) + 1]
     calls = defaultdict(int)
-    if "plan" in order and not st.get("protocol"):
+    if "protocol" in order and not st.get("protocol"):
         calls["plan"] = 1
     n_records = len(st.by_type("record"))
     if not st.get("search"):
@@ -95,10 +96,10 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
     forwarded_known = [n for n in st.by_type("screen") if n["data"]["stage"] == "title_abstract"
                        and n["data"]["decision"] in ("include", "uncertain", "forward")]
     waiting = sum(1 for n in st.by_type("screen") if n["data"]["stage"] == "retrieval")   # no full text yet: no call
-    if "fulltext" in order:
+    if "eligibility" in order:
         calls["screen_full_text"] = int((len(forwarded_known) + calls["screen_title_abstract"] * FORWARD_RATE) * RETRIEVED_RATE)
     vs = ctx.cfg["pipeline"].get("verify_screening") or "off"
-    if vs in ("full_text", "all") and "fulltext" in order:
+    if vs in ("full_text", "all") and "eligibility" in order:
         calls["screen_verify"] = calls.get("screen_full_text", 0)
     if vs == "all" and "screen" in order:
         calls["screen_verify"] = calls.get("screen_verify", 0) + int(calls.get("screen_title_abstract", 0) * (1 - FORWARD_RATE))
@@ -123,13 +124,13 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
         lens = [n["data"].get("chars") or 0 for n in st.by_type("fulltext") if n["data"].get("kind") == "fulltext"]
         avg_parts = max(1, -(-int(statistics.mean(lens)) // budget)) if lens else 1
         calls["extract"] += n_inc_future * (avg_parts + (1 if avg_parts > 1 else 0))
-        if "fulltext" in order or n_new:   # eligibility doubts raised at extraction re-screen the record on its full text
+        if "eligibility" in order or n_new:   # eligibility doubts raised at extraction re-screen the record on its full text
             calls["screen_full_text"] += math.ceil((n_new + n_inc_future) * RECHECK_RATE)
     if "rob" in order:
         calls["rob"] = sum(1 for r in inc if not st.get(f"rob:{r}")) + n_inc_future
         if (ctx.cfg["pipeline"].get("verify_rob") or "off") == "flagged":
             calls["rob_verify"] = math.ceil(calls["rob"] * ROB_FLAG_RATE)
-    if "synthesize" in order:
+    if "synthesis" in order:
         if not st.by_type("synthesis", active_only=True):
             calls["synthesis"] = 1
             calls["synthesis_verify"] = N_STATEMENTS
