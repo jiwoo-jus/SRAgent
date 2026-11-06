@@ -122,7 +122,10 @@ def dependents_fine(ctx, node: str, note: str = "") -> dict:
 @operation("flag.answer", "review", "human")
 def flag_answer(ctx, node: str, flag: str, option: str, text: str = "") -> dict:
     """Answer an open flag (a self-check result, an unrecognised term, an eligibility doubt): ok closes it, fix asks
-    the agent (a feedback job; the result is a proposal)."""
+    the agent (a feedback job; the result is a proposal), rescreen (an eligibility doubt) screens the study again on its
+    full text with both agents' reasons (a job; the result is a proposal). Excluding a doubted study is
+    eligibility.decide."""
+    from . import submit
     st = ctx.store
     n = st.get(node)
     f = next((x for x in (n or {}).get("flags", []) if x["id"] == flag), None)
@@ -131,6 +134,14 @@ def flag_answer(ctx, node: str, flag: str, option: str, text: str = "") -> dict:
     if option == "ok":
         st.resolve_flag(node, flag, f"human: fine as is. {text}".strip(), actor="user")
         return {"message": "flag closed"}
+    if option == "rescreen":
+        rv = n["data"].get("eligibility_review") or {}
+        claim, ver = rv.get("claim") or {}, rv.get("verifier") or {}
+        note = (f"After extraction, data extraction said exclude for {claim.get('criterion')}: {claim.get('why', '')} "
+                f"The verifier said {ver.get('verdict')}: {ver.get('explanation', '')}" + (f" Reviewer: {text}" if text else "")).strip()
+        st.resolve_flag(node, flag, "screened again on the full text; the answer comes back as a proposal", actor="user")
+        return {"message": "the full-text screener reads the study again; its answer comes back as a proposal",
+                "job": submit("eligibility.recompute", {"rid": node.split(":", 1)[1], "note": note})}
     fb = f"{text} (context: {f['text'][:300]})" if text else f"Please check and fix: {f['text']}"
     st.resolve_flag(node, flag, "sent to the agent as feedback", actor="user")
     return {"message": "the agent will propose a revision; it appears here for your approval",

@@ -59,7 +59,8 @@ def operation(name: str, stage: str, kind: str, reach: bool = False, category: s
                 except provenance.NotAllowed as e:
                     return {"ok": False, "message": str(e)}
             try:
-                res = fn(ctx, *a, **kw)
+                with ctx.store.because(op=name):
+                    res = fn(ctx, *a, **kw)
             except ValueError as e:
                 res = {"ok": False, "message": str(e)}
             res = res if isinstance(res, dict) else {"ok": True, "result": res}
@@ -136,17 +137,43 @@ def preview(ctx, name: str, args: dict | None = None) -> dict:
     import shutil
     import tempfile
     from pathlib import Path
-    from .. import engine
+    from .. import engine, impact
     op = get(name)
     args = dict(args or {})
     st = ctx.store
     base = {(i["node"], i["action"]) for i in engine.plan(ctx)["items"]}
+    if name == "update_all":   # the update engine's whole plan: what it will do to each out-of-date output, and the cost
+        p = engine.plan(ctx)
+        items = [i for i in p["items"] if i["action"] not in ("render", "current")]
+        by_type: dict[str, list] = {}
+        for i in items:
+            if i["action"] != "kept":
+                by_type.setdefault(i["type"], []).append(i["node"])
+        return {"op": name, "kind": op.kind, "runs_as_job": True, "ok": True, "changes": [], "items": items,
+                "summary": engine._summary(items), "cost": engine._cost(ctx, items), "reach": {t: sorted(v) for t, v in by_type.items()},
+                "kept": [i["node"] for i in items if i["action"] == "kept"], "lines": engine.describe({"items": items})[:30],
+                "stages": impact.table(ctx, st, items=items, apply_items=True)}
+    if name == "retrieve.process_added_files":
+        from ..stages.fulltext import new_local_files
+        files = new_local_files(ctx)
+        return {"op": name, "kind": op.kind, "runs_as_job": True, "ok": True, "changes": [f"ft:{r}" for r in files],
+                "items": [], "summary": {}, "cost": {}, "reach": {}, "kept": [], "lines": [], "stages": [],
+                "message": f"{len(files)} new or changed file(s): {', '.join(files[:20])}" if files else "no new files in the full-text folder"}
     if op.kind == "llm" and not name.endswith(".rerun_all"):
         rid = args.get("rid")
-        node = args.get("node") or ({"extract": f"ext:{rid}", "rob": f"rob:{rid}"}.get(op.stage) or
-                                    (f"elig:{rid}" if st.get(f"elig:{rid}") else f"screen:{rid}") if rid else None)
+        target = args.get("target") if name == "feedback" else None
+        if target:                                   # study:<rid> or an output: the output the agent will look at
+            from ..actions import feedback_target
+            target = feedback_target(st, target) or target
+        if target and target.startswith(("screen:", "elig:")):
+            from ..selection import node_id
+            target = node_id(st, target.split(":", 1)[1])
+        node = args.get("node") or target or ({"extract": f"ext:{rid}", "rob": f"rob:{rid}"}.get(op.stage) or
+                                              (f"elig:{rid}" if st.get(f"elig:{rid}") else f"screen:{rid}") if rid else None)
         pv = engine.preview(ctx, node) if node else {"items": [], "summary": {}, "cost": {}, "reach": {}, "lines": []}
-        return {"op": name, "kind": op.kind, "runs_as_job": True, "changes": [node] if node else [], **pv}
+        return {"op": name, "kind": op.kind, "runs_as_job": True, "changes": [node] if node else [], **pv,
+                "stages": impact.table(ctx, st, changed=[node] if node else [], items=pv["items"],
+                                       apply_note="the model's new answer, shown to you as a proposal to accept or reject")}
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         for f in ("protocol.yaml",):
@@ -160,10 +187,12 @@ def preview(ctx, name: str, args: dict | None = None) -> dict:
         d = sb_store.diff(st)
         p = engine.plan(sb)
         new = [i for i in p["items"] if (i["node"], i["action"]) not in base and i["action"] != "render"]
+        changed = sorted(set(d["new"]) | set(d["changed"]))
+        stages = impact.table(ctx, st, sb_store, changed, new)
     by_type: dict[str, list] = {}
     for i in new:
         by_type.setdefault(i["type"], []).append(i["node"])
     return {"op": name, "kind": op.kind, "runs_as_job": op.kind == "llm", "ok": res.get("ok", True), "message": res.get("message", ""),
-            "changes": sorted(set(d["new"]) | set(d["changed"])), "items": new, "summary": engine._summary(new),
+            "changes": changed, "stages": stages, "items": new, "summary": engine._summary(new),
             "cost": engine._cost(ctx, new), "reach": {t: sorted(v) for t, v in by_type.items()},
             "kept": [i["node"] for i in new if i["action"] == "kept"], "lines": engine.describe({"items": new})[:30]}

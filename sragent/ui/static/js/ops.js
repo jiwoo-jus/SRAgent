@@ -7,27 +7,43 @@ async function loadOps(){
   return OPS;
 }
 function closeModal(){ const m = $("#modal"); if (m) m.remove(); }
+/* the change, stage by stage: where each stage it reaches stands now, what applying changes, and what then changes
+   when the outputs are brought up to date. Resolves false (cancelled), "apply", or "apply+update". */
+function impactTable(p){
+  const rows = p.stages || [];
+  if (!rows.length) return `<p class="small mut">No stage changes.</p>`;
+  const upd = rows.some(r => r.update.length);
+  const li = xs => xs.length ? `<ul class="plain">${xs.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : `<span class="mut">no change</span>`;
+  return `<div class="tw" style="border:1px solid var(--line);border-radius:10px"><table class="impact"><thead><tr><th>Stage</th><th>Now</th>
+      <th>${p.runs_as_job && !upd ? "When it runs" : "When you apply"}</th>${upd ? `<th>Then, when you update outputs</th>` : ""}</tr></thead><tbody>
+    ${rows.map(r => `<tr><td class="nowrap"><b>${esc(r.label)}</b></td><td class="mut nowrap">${esc(r.now)}</td><td>${li(r.apply)}</td>
+      ${upd ? `<td>${li(r.update)}${r.usd ? `<div class="xs mut">about ${usd(r.usd)}</div>` : ""}</td>` : ""}</tr>`).join("")}
+    </tbody></table></div><p class="xs mut" style="margin:6px 0 0">Stages not listed are not changed.</p>`;
+}
 function previewDialog(name, args, label){
   return new Promise(async resolve => {
     closeModal();
     const box = document.createElement("div");
     box.id = "modal"; box.className = "modal";
-    box.innerHTML = `<div class="modal-c card"><div class="card-h"><h2>${esc(label || name)}</h2></div><div class="card-b"><span class="mut">Working out what this reaches…</span></div></div>`;
+    box.innerHTML = `<div class="modal-c card" style="max-width:860px"><div class="card-h"><h2>${esc(label || name)}</h2></div><div class="card-b"><span class="mut">Working out what this changes…</span></div></div>`;
     document.body.appendChild(box);
     const p = await api("/api/preview", {name, args});
-    const reach = Object.entries(p.reach || {}).map(([t, ids]) => `<li><b>${ids.length} ${esc(t)}</b> <span class="mut small">${esc(ids.slice(0, 8).join(", "))}${ids.length > 8 ? " …" : ""}</span></li>`).join("");
+    const later = (p.stages || []).some(r => r.update.length) && name !== "update_all";
     const cost = (p.cost || {}).total_usd;
     const body = !p.ok && p.message ? `<div class="callout warn">${esc(p.message)}</div>` : `
-      ${p.runs_as_job ? `<p class="small">Runs as a job with model calls; the result is shown for you to accept or reject where it changes something you decided.</p>` : ""}
-      <p class="small">${p.changes && p.changes.length ? `Changes <b>${p.changes.length}</b> output(s): <span class="mut">${esc(p.changes.slice(0, 10).join(", "))}${p.changes.length > 10 ? " …" : ""}</span>` : "Changes nothing stored yet."}</p>
-      ${reach ? `<p class="small" style="margin-bottom:4px">Then out of date, to bring up to date:</p><ul class="small" style="margin-top:0">${reach}</ul>` : `<p class="small mut">Nothing else becomes out of date.</p>`}
-      ${(p.kept || []).length ? `<p class="small">Kept because you decided or edited them: ${esc(p.kept.join(", "))}</p>` : ""}
-      ${cost ? `<p class="small">Bringing them up to date costs about ${usd(cost)}.</p>` : ""}`;
+      ${!(p.stages || []).length && p.message ? `<p class="small">${esc(p.message)}</p>` : ""}
+      ${impactTable(p)}
+      ${(p.kept || []).length ? `<p class="small" style="margin-top:10px">Kept as they are, because you decided or edited them: ${esc(p.kept.join(", "))}.</p>` : ""}
+      <p class="small" style="margin-top:10px">${p.runs_as_job ? "Runs as a job with model calls. " : ""}${cost ? `Model calls: about ${usd(cost)}.` : "No model calls."}
+        ${later ? "Applying changes only the “When you apply” column; the rest waits until you update outputs (or choose “Apply and update outputs”)." : ""}</p>`;
     box.querySelector(".card-b").innerHTML = body;
     const f = document.createElement("div"); f.className = "card-f";
-    f.innerHTML = `<button class="btn" data-a="no">Cancel</button><span class="grow"></span><button class="btn primary" data-a="yes" ${p.ok === false ? "disabled" : ""}>${p.runs_as_job ? "Start" : "Apply"}</button>`;
+    const dis = p.ok === false ? "disabled" : "";
+    f.innerHTML = `<button class="btn" data-a="no">Cancel</button><span class="grow"></span>
+      ${later && !p.runs_as_job ? `<button class="btn" data-a="apply+update" ${dis}>Apply and update outputs</button>` : ""}
+      <button class="btn primary" data-a="apply" ${dis}>${p.runs_as_job ? "Start" : "Apply"}</button>`;
     box.querySelector(".modal-c").appendChild(f);
-    f.addEventListener("click", e => { const a = e.target.closest("button")?.dataset.a; if (!a) return; closeModal(); resolve(a === "yes"); });
+    f.addEventListener("click", e => { const a = e.target.closest("button")?.dataset.a; if (!a) return; closeModal(); resolve(a === "no" ? false : a); });
     box.addEventListener("click", e => { if (e.target === box) { closeModal(); resolve(false); } });
   });
 }
@@ -35,10 +51,20 @@ async function runOp(name, args, label, extra){   // extra: {agent} a model pick
   await loadOps();
   const o = OPS[name] || {};
   args = args || {};
-  if (o.reach) { if (!(await previewDialog(name, args, label))) return null; }
+  // feedback sent with a comment or by "fix" on a flag: what the agent's revision could reach
+  const pv = name === "comment" && args.send ? ["feedback", {text: args.text, target: args.target}]
+           : name === "flag.answer" && args.option === "fix" ? ["feedback", {text: args.text || "", target: args.node}]
+           : name === "flag.answer" && args.option === "rescreen" ? ["eligibility.recompute", {rid: args.node.split(":")[1]}]
+           : o.reach ? [name, args] : null;
+  let choice = "apply";
+  if (pv) { choice = await previewDialog(pv[0], pv[1], label); if (!choice) return null; }
   else if (o.kind === "llm" && !confirm(`${label || name}: runs as a job with model calls. Start it?`)) return null;
   const r = await api("/api/op", {name, args, ...(extra || {})});
   toast(r.message || r.error || (r.ok ? "Done" : "Failed"), !r.ok);
+  if (r.ok && choice === "apply+update") {         // the update was previewed with the change: no second question
+    const u = await api("/api/op", {name: "update_all", args: {}});
+    toast(u.message || u.error || "Update queued", !u.ok);
+  }
   await refresh(true);
   if (tab === "stage" && STG.key) openStage(STG.key, true);
   return r;

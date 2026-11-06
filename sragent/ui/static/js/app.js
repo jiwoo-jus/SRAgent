@@ -340,9 +340,10 @@ function protocolCard(t){
 function provenanceMode(){ return (S && S.run && S.run.human_mode) || ""; }
 /* the eligibility review after extraction: the extraction's claim, the verifier's verdict, the outcome */
 function reviewBox(r){
-  const OUT = {excluded:["Excluded: both agents agree the study is not eligible","bad"], pending_disagreement:["Undecided: the two agents disagree; your call","warn"],
-    kept_human_decision:["Your decision is kept; the review is recorded","info"], include_by_policy_disagreement:["Included by the pipeline rule although the agents disagree","warn"],
-    exclude_by_policy_disagreement:["Excluded by the pipeline rule although the agents disagree","warn"]};
+  const OUT = {excluded:["Excluded: both agents say the study is not eligible","bad"],
+    stays_included:["Stays included: the verifier finds it eligible (two readings against one)","ok"],
+    asks_you:["Both agents say exclude; your inclusion stands until you answer (Needs you)","warn"],
+    kept_human_decision:["Your decision is kept","info"]};
   const o = OUT[r.outcome] || [r.outcome, ""];
   return `<div style="margin-top:8px;padding:10px 12px;border:1px solid var(--line);border-radius:10px">
     <div class="xs" style="font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)">Eligibility review after extraction</div>
@@ -692,17 +693,33 @@ function ruledList(){
 }
 async function restoreRule(rid){ await runOp("screen.restore_rule_exclusion", {rids:[rid]}, `Restore ${rid} (undo the rule exclusion)`); }
 
+/* the study an item is about: its rid, else the study of the output it names (screen:/elig:/ft:/ext:/rob:<rid>) */
+function studyOf(t){
+  if (t.rid) return t.rid;
+  const m = String(t.target || t.id || "").match(/(?:^|:)(?:screen|elig|ft|ext|rob|rec):([^:]+)/);
+  return m ? m[1] : null;
+}
 /* generic card for the few remaining items (protocol, proposals, flags, out-of-date outputs) */
+/* who said what about an item (an eligibility doubt: you, data extraction, the verifier), with their reasons */
+function overviewBlock(rows){
+  if (!rows || !rows.length) return "";
+  const B = {include:"ok", exclude:"bad"};
+  return `<div class="tw" style="border:1px solid var(--line);border-radius:10px;margin:10px 0 14px"><table class="who"><tbody>${rows.map(r => `<tr>
+    <td class="nowrap" style="width:1%"><b>${esc(r.who)}</b></td><td class="nowrap" style="width:1%">${badge(r.says || "?", B[r.says] || "")}</td>
+    <td>${esc(r.why || "")}${r.quote ? `<div class="wq">“${esc(r.quote)}”</div>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
+}
 function card(t){
   const a = answers[t.id] || (answers[t.id] = {option:null, text:"", extra:{}});
-  const opts = t.options.map(o => `<button class="choice ${a.option===o.value?"on":""}" onclick="pick('${t.id}','${o.value}')"><span class="rd"></span>${esc(o.label)}</button>`).join("");
-  const hint = (t.options.find(o => o.value === a.option) || {}).hint;
+  const wide = t.options.some(o => o.hint);   // each answer says what it does: one per line
+  const opts = t.options.map(o => `<button class="choice ${wide ? "wide" : ""} ${a.option===o.value?"on":""}" onclick="pick('${t.id}','${o.value}')"><span class="rd"></span>
+    <span>${esc(o.label)}${o.hint ? `<span class="ch-h">${esc(o.hint)}</span>` : ""}</span></button>`).join("");
   const free = t.free_text ? `<textarea style="margin-top:12px" placeholder="${esc(t.free_text)}" oninput="answers['${t.id}'].text=this.value">${esc(a.text)}</textarea>` : "";
   return `<div class="card tcard" id="c-${esc(t.id)}" data-step="${esc(t.step||"")}">
     <div class="card-h"><h3>${esc(t.title)}</h3>${t.pending ? badge("queued until the job finishes","info") : ""}
+      ${studyOf(t) ? `<a class="btn sm" href="#/studies/${encodeURIComponent(studyOf(t))}">Open study ${ic("arrowR","sm")}</a>` : ""}
       ${t.link ? `<a class="btn sm ghost" href="${U(t.link)}" target="_blank">Open in report ${ic("ext","sm")}</a>` : ""}</div>
-    <div class="card-b"><div class="q">${esc(t.question)}</div>${ctxBlock(t.context)}
-      <div class="choices">${opts}</div>${hint ? `<div class="hint" style="margin-top:8px">${esc(hint)}</div>` : ""}${free}</div>
+    <div class="card-b"><div class="q">${esc(t.question)}</div>${overviewBlock(t.overview)}${ctxBlock(t.context)}
+      <div class="choices ${wide ? "col" : ""}">${opts}</div>${free}</div>
     <div class="card-f"><button class="btn primary" ${a.option?"":"disabled"} onclick="submitTodo('${t.id}')">Submit</button>
       ${a.option ? "" : `<span class="hint">Choose an answer first</span>`}<span id="m-${esc(t.id)}" class="msg"></span></div></div>`;
 }
@@ -1104,10 +1121,15 @@ function renderStudy(){
     : `<div class="row" style="margin-top:10px"><button class="btn" onclick="studyComment(false)">Save as a comment</button><span id="cmsg" class="msg"></span></div><div style="margin-top:10px">${AGENT_ONLY_NOTE}</div>`}</div>`, "", "s-com"));
   // history
   out.push(sec(`History <span class="cnt">${d.history.length}</span>`, `<div class="tw" style="margin:-16px -18px"><table><thead><tr><th>When</th><th>Output</th><th>What</th><th>Who</th><th>Why</th></tr></thead><tbody>
-     ${d.history.slice().reverse().map(h => `<tr><td class="small nowrap">${fmtT(h.ts)}</td><td class="small mono">${esc(h.node)}</td>
-       <td class="small">${esc(h.op)}: ${esc(h.changes.join("; "))}</td><td class="small">${badge(h.actor, h.actor==="user"?"info":"")}</td><td class="small mut">${esc(h.reason)}</td></tr>`).join("")}</tbody></table></div>`, "", "s-hist"));
+     ${d.history.slice().reverse().map(h => `<tr${h.seq != null ? ` id="h-${h.seq}"` : ""}><td class="small nowrap">${fmtT(h.ts)}${h.seq != null ? `<div class="mut mono">#${h.seq}</div>` : ""}</td><td class="small mono">${esc(h.node)}</td>
+       <td class="small">${esc(h.op)}: ${esc(h.changes.join("; "))}${h.operation ? `<div class="mut">by ${esc(h.operation)}</div>` : ""}</td><td class="small">${badge(h.actor, h.actor==="user"?"info":"")}</td><td class="small mut">${esc(h.reason)}${histBecause(h)}</td></tr>`).join("")}</tbody></table></div>`, "", "s-hist"));
   $("#v-studies").innerHTML = out.join("");
   studyEst();
+}
+/* the change that set this one off (the cause chain): a link to its row when it is in this table */
+function histBecause(h){
+  if (!(h.because || []).length) return "";
+  return `<div class="small" style="margin-top:3px">because ${h.because.map(b => `<a href="javascript:void 0" onclick="const r=document.getElementById('h-${b.seq}'); if(r){r.scrollIntoView({block:'center'}); r.style.background='var(--warn-bg,#fff6db)'}">#${b.seq}</a> ${esc(b.text)}`).join("; ")}</div>`;
 }
 function impactNode(){ const E = ST.edit || {}; if (!ST.d) return null; return E.kind === "syn" ? E.node : E.kind ? `${E.kind}:${ST.d.rid}` : null; }
 function impactLine(){
@@ -1226,9 +1248,9 @@ function renderActivity(){
   if (ACT.sub === "changes") body = `<div class="card"><div class="card-h"><div class="toolbar grow"><div class="seg">${[["","Everyone"],["agent","Agent"],["user","You"],["rule","Rules"]].map(([v,l]) => `<button class="${ACT.actor===v?"on":""}" onclick="ACT.actor='${v}';loadActivity()">${l}</button>`).join("")}</div>
       <div class="search">${ic("search")}<input placeholder="Filter by output id or reason (e.g. ext:30157389), then Enter" value="${esc(ACT.q)}" onchange="ACT.q=this.value;loadActivity()"></div>
       <a class="btn sm" href="${U(`/export/history.csv`)}">${ic("download","sm")} All (CSV)</a></div></div>
-      <div class="card-b flush tw"><table><thead><tr><th>When</th><th>Output</th><th>What</th><th>Who</th><th>Why</th></tr></thead><tbody>${H.changelog.map(h => `<tr><td class="small nowrap">${fmtT(h.ts)}</td>
+      <div class="card-b flush tw"><table><thead><tr><th>When</th><th>Output</th><th>What</th><th>Who</th><th>Why</th></tr></thead><tbody>${H.changelog.map(h => `<tr${h.seq != null ? ` id="h-${h.seq}"` : ""}><td class="small nowrap">${fmtT(h.ts)}${h.seq != null ? `<div class="mut mono">#${h.seq}</div>` : ""}</td>
       <td class="small mono nowrap">${(h.node.split(":")[1]||"").match(/^[0-9d]/) ? `<button class="link small mono" onclick="openStudy('${esc(h.node.split(":")[1])}')">${esc(h.node)}</button>` : esc(h.node)}</td>
-      <td class="small">${esc(h.op)}: ${esc(h.changes.join("; ").slice(0,300))}</td><td class="small">${badge(h.actor, h.actor==="user"?"info":"")}</td><td class="small mut">${esc(h.reason.slice(0,200))}</td></tr>`).join("")}</tbody></table>
+      <td class="small">${esc(h.op)}: ${esc(h.changes.join("; ").slice(0,300))}${h.operation ? `<div class="mut">by ${esc(h.operation)}</div>` : ""}</td><td class="small">${badge(h.actor, h.actor==="user"?"info":"")}</td><td class="small mut">${esc(h.reason.slice(0,200))}${histBecause(h)}</td></tr>`).join("")}</tbody></table>
       ${H.changelog.length ? "" : none("No changes match.")}
       ${H.changelog_total>H.changelog.length?`<p class="small mut" style="padding:10px 18px;margin:0;border-top:1px solid var(--line)">Showing the latest ${H.changelog.length} of ${H.changelog_total}; download the CSV for all.</p>`:""}</div></div>`;
   if (ACT.sub === "usage") { const tot = H.llm_by_tag.reduce((a,u) => a + u.usd, 0);
@@ -1655,7 +1677,10 @@ document.addEventListener("keydown", e => {
   if (e.key === "/" && tab === "studies" && !ST.rid && !["INPUT","TEXTAREA","SELECT"].includes((document.activeElement||{}).tagName)) { e.preventDefault(); const q = $("#studyq"); if (q) q.focus(); }
   if (e.key === "Escape") toggleSide(false);
 });
-applyTheme();
-route();
-refresh(true);
-setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 3000);
+// start once every module (ops, stage, needs, settings) is loaded: a reload on a stage page needs stage.js
+document.addEventListener("DOMContentLoaded", () => {
+  applyTheme();
+  route();
+  refresh(true);
+  setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 3000);
+});

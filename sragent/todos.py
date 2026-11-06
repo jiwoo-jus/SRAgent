@@ -132,10 +132,6 @@ def build(ctx: Ctx) -> list[dict]:
             why = f"screener says {'exclude' if d.get('because') else 'include'}, the verifier says {sv.get('decision')}"
             suggest = {"option": "include" if sv.get("decision") == "include" else "exclude",
                        "criterion": (d.get("because") or [None])[0], "why": "the two agents disagree after full-text screening; read both and decide"}
-        elif rv.get("outcome") == "pending_disagreement":
-            unclear = unclear or [a for a in d.get("criteria", []) if a.get("id") in (d.get("because") or [])]
-            why = f"{rv['claim']['criterion']}: extraction says exclude, the verifier says include"
-            suggest = {"option": "include", "why": "two agents disagree after extraction; read both and decide"}
         elif not_met:
             suggest = {"option": "exclude", "criterion": not_met[0], "why": f"agent: {not_met[0]} fails"}
         elif read_full and not rv and not sv:   # the paper was read in full and is still unclear: a judgment, not a missing file
@@ -193,20 +189,30 @@ def build(ctx: Ctx) -> list[dict]:
                 continue
             step = STEP_OF_TYPE.get(n["type"], "feedback")
             what = n["data"].get("text") if n["type"] == "synthesis" else ""
+            overview = None
             if f["source"] == "synthesis_verify":
                 q = f"The self-check thinks statement {n['data'].get('id')} may misstate or overstate the evidence. What should happen?"
-                opts = [{"value": "fix", "label": "Ask the agent to revise it"}, {"value": "ok", "label": "It is fine, keep it"}]
+                opts = [{"value": "fix", "label": "Ask the agent to revise it",
+                         "hint": "The agent rewrites the statement against the studies it cites, with your comment. The revision comes "
+                                 "back here as a proposal to accept or reject. One model call."},
+                        {"value": "ok", "label": "It is fine, keep it",
+                         "hint": "The statement stays as written; the self-check's concern is closed and your comment recorded."}]
             elif f["source"] == "eligibility_doubt":
-                q = "Data extraction read the whole paper and doubts that this study is eligible. Keep it included?"
-                opts = [{"value": "ok", "label": "Keep it (the doubt is wrong)"},
-                        {"value": "fix", "label": "Ask the agent to screen it again"}]
+                q, overview, opts = _doubt_item(st, n)
             elif f["source"] == "term_validation":
                 q = "A term was not found in RxNorm / PubChem / ChEMBL / MONDO. Is the extracted value right?"
-                opts = [{"value": "ok", "label": "It is fine (e.g. a drug class)"},
-                        {"value": "fix", "label": "Correct it (describe below)"}]
+                opts = [{"value": "ok", "label": "It is fine (e.g. a drug class)",
+                         "hint": "The value stays as extracted; the term is recorded as checked by you."},
+                        {"value": "fix", "label": "Correct it (describe below)",
+                         "hint": "The agent re-checks the value with your description and proposes the correction for you to accept. "
+                                 "One model call."}]
             else:
                 q = "This value has no source location. Is it right?"
-                opts = [{"value": "ok", "label": "It is right"}, {"value": "fix", "label": "Ask the agent to re-check it"}]
+                opts = [{"value": "ok", "label": "It is right",
+                         "hint": "The value stays as extracted, recorded as checked by you."},
+                        {"value": "fix", "label": "Ask the agent to re-check it",
+                         "hint": "The agent looks for the sentence that supports the value and proposes a correction or its "
+                                 "source for you to accept. One model call."}]
             rid = n["id"].split(":", 1)[1] if ":" in n["id"] else ""
             label = {"synthesis_verify": f"Statement {n['data'].get('id', '')} may overstate the evidence",
                      "term_validation": f"Unrecognised term in study {rid}",
@@ -215,8 +221,8 @@ def build(ctx: Ctx) -> list[dict]:
             todos.append({
                 "id": f"flag:{n['id']}:{f['id']}", "step": step, "kind": "flag", "priority": 3,
                 "title": label,
-                "question": q, "context": [x for x in [what, f["text"]] if x],
-                "options": opts, "free_text": "Your comment (sent to the agent if you choose to fix)",
+                "question": q, "context": [] if overview else [x for x in [what, f["text"]] if x], "overview": overview,
+                "options": opts, "free_text": "Your comment (kept with your answer; the agent gets it when it is asked to act)",
                 "link": f"/report#{n['id'] if n['type'] in ('synthesis', 'screen') else 'ext:' + rid}"})
 
     # -- manual edits whose dependents are out of date with them (derived from the graph: attention.py)
@@ -291,7 +297,7 @@ def build(ctx: Ctx) -> list[dict]:
                 continue
             if cs.get("status") == "needs_clarification":
                 todos.append({
-                    "id": f"clarify:{cs['id']}", "step": "feedback", "kind": "clarify", "priority": 0,
+                    "id": f"clarify:{cs['id']}", "step": "feedback", "kind": "clarify", "priority": 0, "target": cs.get("target"),
                     "title": "The agent needs a clarification about your feedback",
                     "question": cs.get("clarification_question") or "What exactly should change?",
                     "context": [f"Your feedback: {cs['feedback']}"],
@@ -312,6 +318,7 @@ def build(ctx: Ctx) -> list[dict]:
                 lines[1] = cs.get("explanation", "")
             todos.append({
                 "id": f"cs:{cs['id']}", "step": "feedback", "kind": "changeset", "priority": 0,
+                "target": cs.get("target") or next((c["node"] for c in cs.get("changes", []) if c.get("role") == "target"), None),
                 "title": f"{what} ({len(cs['changes'])} output{'s' if len(cs['changes']) != 1 else ''})",
                 "question": "Apply these changes?",
                 "context": lines,
@@ -386,6 +393,39 @@ def log_answer(ctx: Ctx, answer: dict, status: str):
         f.write(json.dumps({**answer, "status": status, "ts": time.time()}) + "\n")
 
 
+def _doubt_item(st, n: dict) -> tuple[str, list[dict], list[dict]]:
+    """An eligibility doubt that reached a person: both agents say the study fails a criterion and the person included
+    it. The question, who said what (the overview), and the three answers, each saying what it does."""
+    from .store import criteria_by_id
+    rid = n["id"].split(":", 1)[1]
+    d = n["data"]
+    rv = d.get("eligibility_review") or {}
+    claim, ver = rv.get("claim") or {}, rv.get("verifier") or {}
+    cid = claim.get("criterion") or ""
+    c = criteria_by_id(st).get(cid) or {}
+    ctext = c.get("text", "")
+    hd = d.get("human_decision") or {}
+    cites = [s["data"].get("id") or s["id"] for s in st.by_type("synthesis", active_only=True) if rid in s["data"].get("cites", [])]
+    fails = ("meets exclusion criterion " if c.get("type") == "exclusion" else "fails inclusion criterion ") + cid + \
+        (f" ({ctext})" if ctext else "")
+    q = (f"Both agents say this study {fails}. You included it. What should happen?" if ver.get("verdict") == "exclude" else
+         f"Data extraction says this study {fails}; the verifier finds it eligible, as you did. What should happen?")
+    overview = [{"who": "You", "says": "include", "why": hd.get("note") or hd.get("reason") or ""},
+                {"who": "Data extraction (read the whole paper)", "says": "exclude", "why": claim.get("why", "")},
+                {"who": f"Verifier ({ver.get('by', '')})", "says": ver.get("verdict", ""), "why": ver.get("explanation", ""),
+                 "quote": (ver.get("quote") or "")[:500]}]
+    opts = [{"value": "ok", "label": "Keep it included",
+             "hint": "Your decision stands. The question is closed and your comment is recorded with it. Nothing else changes."},
+            {"value": f"exclude:{cid}", "label": f"Exclude it ({cid})",
+             "hint": "The study leaves the review: its data extraction and risk of bias are set aside"
+                     + (f", and {len(cites)} synthesis statement(s) citing it ({', '.join(cites[:4])}) are revised" if cites else
+                        "; no synthesis statement cites it") + ". You see every change before it is applied."},
+            {"value": "rescreen", "label": "Screen it again on the full text",
+             "hint": "The full-text screener reads the paper again, with both agents' reasons and your comment. Its answer comes "
+                     "back here as a proposal; your inclusion stands until you accept it. One model call."}]
+    return q, overview, opts
+
+
 def to_operation(answer: dict) -> tuple[str, dict] | None:
     """The operation a To-do answer {todo_id, option, text, extra} stands for (sragent/ops), with its arguments;
     None for an answer that only starts a job."""
@@ -410,6 +450,8 @@ def to_operation(answer: dict) -> tuple[str, dict] | None:
         return "update_all", {}
     if tid.startswith("flag:"):
         node, fid = tid[5:].rsplit(":", 1)        # node ids contain a colon themselves (syn:S4)
+        if opt and opt.startswith("exclude:"):   # an eligibility doubt answered by excluding the study
+            return "eligibility.decide", {"rid": node.split(":", 1)[1], "decision": "exclude", "criterion": opt.split(":", 1)[1], "note": text}
         return "flag.answer", {"node": node, "flag": fid, "option": opt, "text": text}
     if tid.startswith("clarify:"):
         return "feedback.clarify", {"changeset": tid.split(":", 1)[1], "option": opt, "text": text}

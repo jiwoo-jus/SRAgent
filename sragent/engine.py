@@ -68,6 +68,7 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
         if scope is not None and not ({r["dep"] for r in reasons} & scope) and nid not in scope:
             continue
         deps = {r["dep"] for r in reasons}
+        k = len(items)
         why = [f"{r['dep']} {r['why']}" for r in reasons]
         pinned = graph.human_pinned(n)
         t = n["type"]
@@ -115,6 +116,8 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
             items.append(_item(nid, t, "render", why, False, None))
         elif t in ("protocol", "search", "criterion"):
             items.append(_item(nid, t, "kept", why, False, None, manual=True))   # re-planning is a person's call
+        for it in items[k:]:
+            it.setdefault("deps", sorted(deps))
     # extraction items or risk-of-bias domains added to the config after an output was made: the new setting node
     # is not among the output's dependencies yet, so it is not "stale", but the output is incomplete
     planned = {i["node"] for i in items}
@@ -128,9 +131,9 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
             names = ", ".join(x.split(":", 1)[1] for x in new)
             pinned = graph.human_pinned(n)
             if t == "rob" and pinned:
-                items.append(_item(n["id"], t, "kept", [f"new domain(s) {names}; confirmed by you, so kept"], True, rid))
+                items.append(_item(n["id"], t, "kept", [f"new domain(s) {names}; confirmed by you, so kept"], True, rid, deps=new))
             else:
-                items.append(_item(n["id"], t, action, [f"new item(s) {names}"], pinned, rid))   # a person's edited values are kept
+                items.append(_item(n["id"], t, action, [f"new item(s) {names}"], pinned, rid, deps=new))   # a person's edited values are kept
     # outputs that are missing (not stale: they do not exist yet)
     has_syn = bool(st.by_type("synthesis", active_only=True))
     from . import state
@@ -139,27 +142,30 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
         if scope is not None and not ({f"screen:{rid}", f"elig:{rid}"} & scope):
             continue
         back = False
+        dec = [selection.node_id(st, rid)]       # the decision that includes it
         if not st.get(f"ext:{rid}") and f"ext:{rid}" not in {i["node"] for i in items}:
-            items.append(_item(f"ext:{rid}", "extraction", "recompute", ["included, not extracted"], False, rid))
+            items.append(_item(f"ext:{rid}", "extraction", "recompute", ["included, not extracted"], False, rid, deps=dec))
         elif st.get(f"ext:{rid}") and st.get(f"ext:{rid}")["status"] != "active" and \
                 f"ext:{rid}" not in {i["node"] for i in items}:
-            items.append(_item(f"ext:{rid}", "extraction", "reactivate", ["included again"], False, rid))
+            items.append(_item(f"ext:{rid}", "extraction", "reactivate", ["included again"], False, rid, deps=dec))
             back = True   # a study included again: the statements that cited it must get it back (history)
         if st.get(f"ext:{rid}") and not st.get(f"rob:{rid}") and f"rob:{rid}" not in {i["node"] for i in items}:
-            items.append(_item(f"rob:{rid}", "rob", "recompute", ["included, not assessed"], False, rid))
+            items.append(_item(f"rob:{rid}", "rob", "recompute", ["included, not assessed"], False, rid, deps=[f"ext:{rid}"]))
         if has_syn and (rid not in considered or back):
             items.append(_item(f"syn:+{rid}", "synthesis", "revise",
-                               ["included again, dropped from the synthesis" if back else "included, not in the synthesis"], False, rid))
+                               ["included again, dropped from the synthesis" if back else "included, not in the synthesis"], False, rid,
+                               deps=dec + [f"ext:{rid}"]))
     # active outputs of studies that are no longer included
     for n in st.by_type("extraction", active_only=True) + st.by_type("rob", active_only=True):
         rid = study_of(n["id"])
         if rid not in inc and n["id"] not in {i["node"] for i in items} and (scope is None or {f"screen:{rid}", f"elig:{rid}"} & scope):
-            items.append(_item(n["id"], n["type"], "retire", ["study no longer included"], graph.human_pinned(n), rid))
+            items.append(_item(n["id"], n["type"], "retire", ["study no longer included"], graph.human_pinned(n), rid,
+                               deps=[selection.node_id(st, rid)]))
     for n in st.by_type("synthesis", active_only=True):
         gone = [c for c in n["data"].get("cites", []) if c not in inc]
         if gone and n["id"] not in {i["node"] for i in items} and (scope is None or any({f"screen:{c}", f"elig:{c}"} & scope for c in gone)):
             items.append(_item(n["id"], "synthesis", "revise", [f"cites excluded {', '.join(gone)}"], graph.human_pinned(n),
-                               None, sources=[selection.node_id(st, c) for c in gone]))
+                               None, sources=[selection.node_id(st, c) for c in gone], deps=[selection.node_id(st, c) for c in gone]))
     return {"items": items, "cost": _cost(ctx, items),
             "summary": _summary(items)}
 
@@ -176,8 +182,15 @@ RESULTS = ("kept", "current")
 
 
 def _item(node, ntype, action, why, pinned, rid, **extra) -> dict:
+    """One planned step. `deps`: the inputs whose change made it necessary; the change it writes is recorded as
+    caused by their last change (the study page follows a chain of changes back through them)."""
     assert action in VERBS + RESULTS, action
     return {"node": node, "type": ntype, "action": action, "why": why, "pinned": pinned, "rid": rid, **extra}
+
+
+def _because(st, i: dict):
+    """The changes an item writes, recorded as caused by the last change of each input that made it out of date."""
+    return st.because([st.last_change(d) for d in i.get("deps") or []])
 
 
 def _summary(items: list[dict]) -> dict:
@@ -250,7 +263,8 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
             rules.apply(ctx, protocol)
         # 2. screening: re-assess only the changed criteria; re-derive the rest
         for i in [x for x in todo if x["type"] in ("screen", "eligibility") and x["action"] != "current"]:
-            _screen(ctx, cs, i, protocol, tag)   # a touch only marks the node current (below): a person's decision stays
+            with _because(st, i):
+                _screen(ctx, cs, i, protocol, tag)   # a touch only marks the node current (below): a person's decision stays
         for i in [x for x in todo if x["action"] == "current"]:
             st.touch(i["node"])
         # 3. statuses follow the included set (free)
@@ -258,9 +272,11 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
         # 4. extraction, then risk of bias, for the stale and the missing
         inc = set(st.included_ids())
         for i in [x for x in todo if x["type"] == "extraction" and x["action"] in ("recompute", "reactivate") and x["rid"] in inc]:
-            _extract(ctx, cs, i)
+            with _because(st, i):
+                _extract(ctx, cs, i)
         for i in [x for x in todo if x["type"] == "rob" and x["action"] == "recompute" and x["rid"] in inc and st.get(f"ext:{x['rid']}")]:
-            _rob(ctx, cs, i)
+            with _because(st, i):
+                _rob(ctx, cs, i)
         # 5. the synthesis: revise the statements the changes reach, integrate new studies, check what changed
         _synthesis(ctx, cs, [x for x in todo if x["type"] == "synthesis"], tag)
     if deferred:
@@ -366,7 +382,8 @@ def _statuses(ctx: Ctx, cs: dict) -> None:
         rid = study_of(n["id"])
         want = "active" if rid in inc else "excluded"
         if n["status"] in ("active", "excluded") and n["status"] != want:
-            st.set_status(n["id"], want, reason="follows the eligibility decision")
+            with st.because([st.last_change(selection.node_id(st, rid))]):   # caused by the decision it follows
+                st.set_status(n["id"], want, reason="follows the eligibility decision")
             _record(cs, n["id"], {"status": "excluded" if want == "active" else "active"}, {"status": want},
                     "reactivate" if want == "active" else "retire", status_only=True)
 
@@ -415,16 +432,17 @@ def _synthesis(ctx: Ctx, cs: dict, items: list[dict], tag: str) -> None:
         gone = [c for c in n["data"].get("cites", []) if c not in inc]
         if gone:   # a cited study left the review: deterministic first, then the wording
             for rid in gone:
-                r = feedback._revise_dependent(ctx, cs, i["node"], selection.node_id(st, rid), {"included": True, "study": rid},
-                                               {"included": False, "study": rid}, tp=tag)
-                n2 = st.get(i["node"])
-                if n2["status"] != "active":
-                    break
-                if r is None and rid in n2["data"].get("cites", []):     # the model did not drop it: do it ourselves
-                    d = dict(n2["data"])
-                    d["cites"] = [c for c in d["cites"] if c != rid]
-                    feedback.apply_revised(ctx, i["node"], d, reason=f"{tag}: {rid} is no longer included")
-                    _record(cs, i["node"], n2["data"], st.get(i["node"])["data"], "revise", ntype="synthesis")
+                with st.because([st.last_change(selection.node_id(st, rid))]):   # caused by the decision that excluded it
+                    r = feedback._revise_dependent(ctx, cs, i["node"], selection.node_id(st, rid), {"included": True, "study": rid},
+                                                   {"included": False, "study": rid}, tp=tag)
+                    n2 = st.get(i["node"])
+                    if n2["status"] != "active":
+                        break
+                    if r is None and rid in n2["data"].get("cites", []):     # the model did not drop it: do it ourselves
+                        d = dict(n2["data"])
+                        d["cites"] = [c for c in d["cites"] if c != rid]
+                        feedback.apply_revised(ctx, i["node"], d, reason=f"{tag}: {rid} is no longer included")
+                        _record(cs, i["node"], n2["data"], st.get(i["node"])["data"], "revise", ntype="synthesis")
             touched.add(i["node"])
             continue
         # an upstream output of a cited study changed: one revision per statement, with the change that
@@ -435,15 +453,17 @@ def _synthesis(ctx: Ctx, cs: dict, items: list[dict], tag: str) -> None:
             src = srcs[0]
             rec = (n.get("dep_versions") or {}).get(src["id"])
             old = next((h["data"] for h in src["history"] if h["version"] == rec), None) if rec else None
-            feedback._revise_dependent(ctx, cs, i["node"], src["id"], old or {}, src["data"], tp=tag)
-            if st.get(i["node"])["status"] == "active":
-                st.touch(i["node"])
+            with _because(st, i):
+                feedback._revise_dependent(ctx, cs, i["node"], src["id"], old or {}, src["data"], tp=tag)
+                if st.get(i["node"])["status"] == "active":
+                    st.touch(i["node"])
             touched.add(i["node"])
     for i in [x for x in items if x["action"] == "revise" and x["node"].startswith("syn:+")]:   # a study to take in
         rid = i["rid"]
         if rid in inc and st.get(f"ext:{rid}") and st.get(f"ext:{rid}")["status"] == "active":
             before = {n["id"] for n in st.by_type("synthesis", active_only=True)}
-            feedback._include_study(ctx, cs, rid, tp=tag, integrate=True)
+            with _because(st, i):
+                feedback._include_study(ctx, cs, rid, tp=tag, integrate=True)
             touched |= {c["node"] for c in cs["changes"] if c["node"].startswith("syn:")} - before | \
                 {n["id"] for n in st.by_type("synthesis", active_only=True)} - before
     from . import state

@@ -72,8 +72,6 @@ def status_of(st, rid: str) -> tuple[str, str, str]:
         sv = d.get("screen_verify") or {}
         if sv.get("outcome") == "pending_disagreement":
             return "pending", "undecided: screener and verifier disagree", f"screener: {because or 'include'}; verifier: {sv.get('decision')} ({sv.get('explanation', '')[:120]})"
-        if d.get("decided_by") == "extraction+verifier":
-            return "pending", "undecided: agents disagree after extraction", f"extraction says exclude ({because}); the verifier says include"
         return "pending", "undecided after full-text review", "unclear: " + because
     if d["decision"] == "fulltext_unavailable":
         no = rid in state.unavailable(st)
@@ -183,12 +181,25 @@ def _ntype(st, nid):
     return n["type"] if n else nid.split(":", 1)[0]
 
 
-def node_history(st, node_ids: list[str]) -> list[dict]:
+def _cause_text(e: dict) -> str:
+    """One change, described as the cause of another: which output, what happened, why."""
+    what = {"create": "created", "update": "changed", "status": f"set {e.get('after')}"}.get(e["op"], e["op"].replace("_", " "))
+    why = str(e.get("reason") or "").split(". Note:")[0][:160]
+    return f"{e['node']} {what}" + (f" ({why})" if why else "")
+
+
+def node_history(st, node_ids: list[str], effects: bool = False) -> list[dict]:
+    """The change log of these outputs. Each entry names the operation that made it and, when another change set it
+    off (a decision that made an extraction out of date, say), that change: `because`, so a chain can be followed.
+    effects=True: also the changes to other outputs that these set off, and what those set off in turn."""
     ids = set(node_ids)
+    by_seq = {e.get("seq", i): e for i, e in enumerate(st.changelog)}
+    mine: set = set()
     out = []
-    for e in st.changelog:
-        if e["node"] not in ids:
+    for i, e in enumerate(st.changelog):
+        if e["node"] not in ids and not (effects and mine & set(e.get("caused_by") or [])):
             continue
+        mine.add(e.get("seq", i))
         t = _ntype(st, e["node"])
         if e["op"] in ("create", "update"):
             what = diff_summary(t, e.get("before"), e.get("after"))
@@ -202,8 +213,11 @@ def node_history(st, node_ids: list[str]) -> list[dict]:
             what = [e["op"].replace("_", " ")]
         else:
             what = [e["op"]]
+        causes = [by_seq[c] for c in e.get("caused_by") or [] if c in by_seq]
         out.append({"ts": e["ts"], "node": e["node"], "op": e["op"], "actor": e["actor"],
-                    "reason": str(e.get("reason") or "")[:600], "changes": what})
+                    "reason": str(e.get("reason") or "")[:600], "changes": what, "seq": e.get("seq"),
+                    "operation": e.get("operation"), "caused_by": e.get("caused_by") or [],
+                    "because": [{"seq": c.get("seq"), "node": c["node"], "text": _cause_text(c)} for c in causes]})
     return out
 
 
@@ -293,7 +307,7 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
     out["flags"] = _flags_of(st, rid)
     out["comments"] = _comments(st, {f"study:{rid}"} | set(nodes))
     out["proposals"] = _changesets(ctx, rid)
-    out["history"] = node_history(st, nodes)
+    out["history"] = node_history(st, nodes, effects=True)   # with what its changes set off (statements, say)
     out["nodes"] = nodes
     return out
 

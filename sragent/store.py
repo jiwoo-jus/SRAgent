@@ -21,6 +21,7 @@ decision as well as the synthesis).
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import os
 import threading
@@ -67,6 +68,9 @@ class ReviewStore:
         self.run_dir = Path(run_dir) if run_dir else None
         self.nodes: dict[str, dict] = {}
         self.changelog: list[dict] = []
+        self._cause: list[dict] = []          # the cause of the changes being written (because())
+        self._last: dict[str, int] = {}       # node id -> seq of its last create / update / status change
+        self._seq_base = 0                     # a copy (clone) numbers its entries after the original's
         self.meta: dict[str, Any] = {}
         self._lock = threading.Lock()   # flag ids and the changelog are written from parallel stage workers
         self._children: dict[str, set] = {}   # reverse index of depends_on
@@ -225,8 +229,33 @@ class ReviewStore:
                 self._log("resolve_flag", node_id, actor, resolution, flag_id, None)
 
     def _log(self, op, node_id, actor, reason, before, after):
-        self.changelog.append({"ts": time.time(), "op": op, "node": node_id, "actor": actor,
-                               "reason": reason, "before": before, "after": after})
+        """One change-log entry. `seq` is its place in the log; `operation` the operation that made it and `caused_by`
+        the entries whose changes made it necessary (because()): a change that set off others can be followed."""
+        e = {"ts": time.time(), "op": op, "node": node_id, "actor": actor, "reason": reason, "before": before,
+             "after": after, "seq": self._seq_base + len(self.changelog)}
+        if self._cause:
+            name = next((c["op"] for c in reversed(self._cause) if c["op"]), None)
+            by = next((c["by"] for c in reversed(self._cause) if c["by"]), None)
+            if name:
+                e["operation"] = name
+            if by:
+                e["caused_by"] = by
+        self.changelog.append(e)
+        if op in ("create", "update", "status"):
+            self._last[node_id] = e["seq"]
+
+    @contextlib.contextmanager
+    def because(self, by: Iterable[int | None] = (), op: str | None = None):
+        """Changes written inside are recorded as made by operation `op` and caused by the change-log entries `by`."""
+        self._cause.append({"by": sorted({b for b in by if b is not None}), "op": op})
+        try:
+            yield
+        finally:
+            self._cause.pop()
+
+    def last_change(self, node_id: str | None) -> int | None:
+        """seq of the node's last create / update / status entry (what a dependent's change is caused by)."""
+        return self._last.get(node_id) if node_id else None
 
     def get(self, node_id: str) -> dict | None:
         return self.nodes.get(node_id)
@@ -296,6 +325,9 @@ class ReviewStore:
         if cl.exists():
             s.changelog = [json.loads(l) for l in cl.read_text().splitlines() if l.strip()]
         s._flushed = len(s.changelog)
+        for i, e in enumerate(s.changelog):   # older entries have no seq: their place in the log is it
+            if e.get("op") in ("create", "update", "status"):
+                s._last[e.get("node")] = e.get("seq", i)
         s.reindex()
         return s
 
@@ -303,6 +335,8 @@ class ReviewStore:
         s = ReviewStore(self.run_dir)
         s.nodes = copy.deepcopy(self.nodes)
         s.meta = copy.deepcopy(self.meta)
+        s._last = dict(self._last)
+        s._seq_base = self._seq_base + len(self.changelog)
         s.reindex()
         return s
 

@@ -14,6 +14,21 @@ def _pipeline(ctx, until: str, fresh: bool = False) -> dict:
     return {"message": f"ran up to {until}" + (" (fresh model answers)" if fresh else "")}
 
 
+def settle_study_flags(st, rid: str, why: str) -> list[str]:
+    """A person settled where a study stands (its eligibility, or that its full text cannot be had): the open flags
+    about its eligibility on either decision node are closed with that reason (the agent's disagreement with your
+    feedback, an eligibility doubt raised after extraction). Returns the flags closed."""
+    closed = []
+    for nid in (f"screen:{rid}", f"elig:{rid}"):
+        n = st.get(nid)
+        for f in (n or {}).get("flags", []):
+            disagreement = f.get("source") == "feedback" and "-> agent:" in f.get("text", "")
+            if f["status"] == "open" and (disagreement or f.get("source") == "eligibility_doubt"):
+                st.resolve_flag(nid, f["id"], why, actor="user")
+                closed.append(f"{nid}:{f['id']}")
+    return closed
+
+
 # ---------------------------------------------------------------- 3 · title/abstract screening
 @operation("screen.run", "screen", "llm")
 def screen_run(ctx, fresh: bool = False) -> dict:
@@ -94,9 +109,13 @@ def declare_unobtainable(ctx, rids: list[str], note: str = "") -> dict:
     """Full texts that cannot be obtained: they stop being requested (the studies stay not retrieved)."""
     from .. import state
     done = [rid for rid in rids if ctx.store.get(f"rec:{rid}")]
+    closed = []
     for rid in done:
         state.set_pdf_request(ctx.store, rid, wanted=False, unavailable=True)
-    return {"ok": bool(done) or not rids, "message": f"marked {len(done)} as not obtainable", "count": len(done)}
+        closed += settle_study_flags(ctx.store, rid, "settled by you: the full text cannot be obtained, so the study is "
+                                                     "reported as not retrieved")
+    return {"ok": bool(done) or not rids, "message": f"marked {len(done)} as not obtainable"
+            + (f"; {len(closed)} open question(s) about it closed" if closed else ""), "count": len(done), "closed": closed}
 
 
 @operation("retrieve.decide_without", "retrieve", "human")
@@ -152,6 +171,8 @@ def decide(ctx, rid: str, decision: str, criterion: str | None = None, note: str
         if f["status"] == "open" and f.get("source") in ("screening", "screening_unclear", None, "feedback", "eligibility_doubt") \
                 and "pending review" not in f.get("text", ""):
             st.resolve_flag(n["id"], f["id"], f"decided by a person: {decision}", actor="user")
+    if decision in ("include", "exclude"):     # 'awaiting' leaves the question open
+        settle_study_flags(st, rid, f"settled by your eligibility decision: {decision}")
     msg = f"{rid}: {before} → {decision}"
     if before != decision and st.by_type("extraction"):
         msg += ". Extraction, risk of bias and synthesis follow with 'Update outputs'."

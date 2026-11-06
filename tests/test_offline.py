@@ -1233,10 +1233,10 @@ def test_full_text_unclear_on_a_reported_criterion_is_not_met():
 
 
 def test_extraction_doubt_is_settled_by_a_second_agent(tmp_path):
-    """The upward check: extraction claims the study is not eligible; the verifier decides on the paper. Agreement:
-    excluded by "extraction + verifier", outputs set aside, the old screening flag settled. Disagreement: the study
-    becomes undecided (pending) for the person, with both claims recorded and shown; nothing stays included on a
-    split decision."""
+    """The upward check: extraction claims the study is not eligible; the verifier decides on the paper. It agrees:
+    excluded by "extraction + verifier", outputs set aside, the old screening flag settled. It disagrees: the study
+    stays included (two readings against one), recorded, no question for a person. A person's inclusion is asked
+    about only when both agents say exclude."""
     from sragent import pipeline, todos
     from sragent.stages import extraction
     from sragent.studies import status_of
@@ -1267,25 +1267,41 @@ def test_extraction_doubt_is_settled_by_a_second_agent(tmp_path):
     assert "1001" not in st.included_ids() and st.get("ext:1001")["status"] == "excluded"
     assert not [f for f in SN(st, "1001")["flags"] if f["status"] == "open"]
     assert status_of(st, "1001")[1] == "excluded (extraction + verifier)"
-    # 1002: the verifier disagrees -> pending, for the person, with both claims; not included
+    # 1002: the verifier disagrees with the doubt -> stays included, the extraction stored; nothing for a person
     d2 = SC(st, "1002")
-    assert d2["decision"] == "awaiting" and d2["eligibility_review"]["outcome"] == "pending_disagreement"
-    assert "1002" not in st.included_ids() and st.get("ext:1002")["status"] == "excluded"
-    assert status_of(st, "1002")[0] == "pending" and "disagree" in status_of(st, "1002")[1]
-    t = next(x for x in todos.build(ctx) if x["kind"] == "eligibility" and x["rid"] == "1002")
-    assert t["review"]["claim"]["criterion"] == "I2" and t["suggest"]["option"] == "include"
-    assert "disagree" in t["suggest"]["why"] and "the verifier says include" in t["why"]
+    assert d2["decision"] == "include" and d2["eligibility_review"]["outcome"] == "stays_included"
+    assert "1002" in st.included_ids() and st.get("ext:1002")["status"] == "active"
+    assert not [f for f in SN(st, "1002")["flags"] if f["status"] == "open"]
+    assert not [x for x in todos.build(ctx) if x["kind"] in ("eligibility", "flag") and "1002" in x["id"]]
     rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
     assert sum(r["tag"] == "eligibility_verify" for r in rows) == 2
-    # a person's decision stands: the review is recorded and flagged, nothing changes
-    set_fulltext_decision(st, "1003", human_decision={"decision": "include", "ts": 0})
-    ctx.hub.mock_fn = lambda m, mode: doubting(m, mode) if "study id 1003" not in m[-1]["content"] else json.dumps({**json.loads(mock_fn(m, mode)), "eligibility_doubt": {"criterion": "I2", "why": "monkeys"}})
-    ctx.hub._clients.clear()
-    with ctx.at("extract"):
-        extraction.extract_all(ctx, only=["1003"])
+
+    def doubt_on(rid, why):
+        ctx.hub.mock_fn = lambda m, mode: doubting(m, mode) if f"study id {rid}" not in m[-1]["content"] else \
+            json.dumps({**json.loads(mock_fn(m, mode)), "eligibility_doubt": {"criterion": "I2", "why": why}})
+        ctx.hub._clients.clear()
+        with ctx.at("extract"):
+            extraction.extract_all(ctx, only=[rid])
+    # a person's inclusion and a verifier who finds it eligible: settled, recorded, no question
+    set_fulltext_decision(st, "1004", human_decision={"decision": "include", "ts": 0})
+    doubt_on("1004", "monkeys VERIFIER_DISAGREES")
+    assert SC(st, "1004")["eligibility_review"]["outcome"] == "stays_included"
+    assert not [f for f in SN(st, "1004")["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
+    # both agents say exclude, a person included it: the decision stands and the person is asked, with three answers
+    set_fulltext_decision(st, "1003", human_decision={"decision": "include", "ts": 0, "note": "relevant mechanism"})
+    doubt_on("1003", "monkeys")
     d3 = SC(st, "1003")
-    assert d3["decision"] == "include" and d3["eligibility_review"]["outcome"] == "kept_human_decision"
-    assert [f for f in SN(st, "1003")["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt"]
+    assert d3["decision"] == "include" and d3["eligibility_review"]["outcome"] == "asks_you" and "1003" in st.included_ids()
+    f = next(f for f in SN(st, "1003")["flags"] if f["status"] == "open" and f["source"] == "eligibility_doubt")
+    t = next(x for x in todos.build(ctx) if x["id"] == f"flag:{SN(st, '1003')['id']}:{f['id']}")
+    assert [o["value"] for o in t["options"]] == ["ok", "exclude:I2", "rescreen"] and all(o["hint"] for o in t["options"])
+    assert [r["says"] for r in t["overview"]] == ["include", "exclude", "exclude"] and t["overview"][0]["why"] == "relevant mechanism"
+    assert todos.to_operation({"todo_id": t["id"], "option": "exclude:I2"}) == \
+        ("eligibility.decide", {"rid": "1003", "decision": "exclude", "criterion": "I2", "note": ""})
+    from sragent import ops
+    r = ops.run(ctx, "flag.answer", {"node": SN(st, "1003")["id"], "flag": f["id"], "option": "rescreen", "text": "check the species"})
+    assert r["ok"] and r["job"]["op"] == "eligibility.recompute" and "the verifier said exclude" in r["job"]["args"]["note"].lower()
+    assert "check the species" in r["job"]["args"]["note"] and SC(st, "1003")["decision"] == "include"
 
 
 def test_first_extraction_set_aside_by_the_eligibility_check_does_not_crash(tmp_path):

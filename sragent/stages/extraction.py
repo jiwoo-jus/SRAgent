@@ -210,16 +210,21 @@ DOUBT_SOURCE = "eligibility_doubt"
 
 def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     """Extraction read the whole paper and claims the study is not eligible (the upward check). A second agent, the
-    verifier role (else the full-text screening model), decides on the paper. Agreement: the study is excluded, by
-    "extraction + verifier", its outputs set aside. Disagreement: the study becomes undecided (pending), for a person
-    (in agent-only mode the fulltext_unclear policy applies, flagged). Both claims, the verdict, the evidence and the
-    outcome are recorded on the screening node (`eligibility_review`) and shown on the study page.
-    Returns 'exclude', 'pending' or 'kept'."""
+    verifier role (else the full-text screening model), reads the paper with that claim and the screening's assessment,
+    and settles it:
+
+      the verifier says include                  the study stays included (two readings against one); recorded, no question
+      the verifier says exclude, the agent decided   excluded by "extraction + verifier"; its outputs are set aside
+      the verifier says exclude, a person decided    both agents disagree with a person: the decision stands until the
+                                                      person answers the question (keep, exclude, or screen again)
+
+    Both claims, the verdict, its evidence and the outcome are recorded on the decision node (`eligibility_review`) and
+    shown on the study page. Returns 'exclude' or 'kept'."""
     import time
     from ..evidence import joined, packed, resolve
+    from ..selection import decision_node
     from .screening import SCREEN_FLAG_SOURCES, human_decided
     st = ctx.store
-    from ..selection import decision_node
     sc = decision_node(st, rid)          # the full-text decision that included the study
     if not sc:
         return "kept"
@@ -240,53 +245,41 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
               "verifier": {"by": checker.name, "verdict": verdict, "explanation": str(out.get("explanation") or ""),
                            "evidence": [sp.get("sid") for sp in spans if sp.get("sid")], "quote": joined(spans)}}
     d = dict(sc["data"])
-    if human_decided(d):     # a person decided this inclusion: it stands; the review is recorded for them
-        review["outcome"] = "kept_human_decision"
+    person = human_decided(d)
+    if verdict == "include":
+        review["outcome"] = "stays_included"
         d["eligibility_review"] = review
-        st.annotate(sc["id"], d, reason=f"eligibility review after extraction ({cid}): your decision stands")
-        if not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in st.get(sc["id"])["flags"]):
-            st.flag(sc["id"], f"After extraction, two agents reviewed this inclusion you decided ({cid}): extraction says exclude "
-                             f"({why[:160]}); the verifier says {verdict}. Your decision is kept; please check.", actor="agent", source=DOUBT_SOURCE)
-        return "kept"
-    crits = []
-    for a in d.get("criteria", []):
-        a = dict(a)
-        if a.get("id") == cid and verdict == "exclude":
-            a.update({"assessment": "met" if crit.get("type") == "exclusion" else "not_met", "reported": True,
-                      "reason": f"after extraction, confirmed by the verifier: {review['verifier']['explanation'][:200]}",
-                      "evidence": review["verifier"]["evidence"], "reviewed_after_extraction": True})
-        crits.append(a)
-    agent_only = ctx.cfg["pipeline"].get("human_mode") == "agent_only"
-    if verdict == "exclude":
+        reason = f"eligibility reviewed after extraction ({cid}): the verifier finds it eligible, so it stays included"
+        outcome = "kept"
+    elif person:
+        review["outcome"] = "asks_you"
+        d["eligibility_review"] = review
+        reason = f"eligibility reviewed after extraction ({cid}): both agents say exclude; your inclusion stands until you answer"
+        outcome = "kept"
+    else:
         review["outcome"] = "excluded"
+        crits = [dict(a, **({"assessment": "met" if crit.get("type") == "exclusion" else "not_met", "reported": True,
+                             "reason": f"after extraction, confirmed by the verifier: {review['verifier']['explanation'][:200]}",
+                             "evidence": review["verifier"]["evidence"], "reviewed_after_extraction": True}
+                            if a.get("id") == cid else {})) for a in d.get("criteria", [])]
         d.update({"criteria": crits, "decision": "exclude", "because": [cid], "decided_by": "extraction+verifier",
                   "eligibility_review": review})
         d.pop("unclear_by_rule", None)
         reason = f"excluded after extraction: the verifier agreed with the extraction's doubt on {cid}"
         outcome = "exclude"
-    else:
-        policy = ctx.cfg["pipeline"].get("fulltext_unclear", "await") if agent_only else "await"
-        decision = {"include": "include", "exclude": "exclude"}.get(policy, "awaiting")
-        review["outcome"] = "pending_disagreement" if decision == "awaiting" else f"{decision}_by_policy_disagreement"
-        d.update({"decision": decision, "because": [cid], "decided_by": "extraction+verifier", "eligibility_review": review})
-        if decision != "awaiting":
-            d["unclear_by_rule"] = policy
-        reason = f"two agents disagree after extraction on {cid}: extraction says exclude, the verifier says include; " + \
-                 ("a person decides" if decision == "awaiting" else f"pipeline.fulltext_unclear: {policy}")
-        outcome = "pending" if decision == "awaiting" else ("exclude" if decision == "exclude" else "kept")
-    st.annotate(sc["id"], d, reason=reason)
-    for f in st.get(sc["id"])["flags"]:
+    with st.because([st.last_change(f"ext:{rid}")]):   # the extraction's doubt set off this review
+        st.annotate(sc["id"], d, reason=reason)
+    for f in st.get(sc["id"])["flags"]:   # earlier screening notices and doubts: settled by this review
         if f["status"] == "open" and f.get("source") in SCREEN_FLAG_SOURCES + (DOUBT_SOURCE,):
             st.resolve_flag(sc["id"], f["id"], f"eligibility reviewed after extraction: {review['outcome']}", actor="agent")
-    if outcome in ("exclude", "pending"):
+    if outcome == "exclude":
         for kind_ in ("ext", "rob"):
             nid = f"{kind_}:{rid}"
             if st.get(nid) and st.get(nid)["status"] == "active":
-                st.set_status(nid, "excluded", reason=f"study {'excluded' if outcome == 'exclude' else 'undecided'} after the eligibility review")
-    if outcome == "kept" and not any(f["status"] == "open" and f.get("source") == DOUBT_SOURCE for f in st.get(sc["id"])["flags"]):
-        st.flag(sc["id"], f"Two agents disagree after extraction ({cid}): extraction says exclude ({why[:160]}); the verifier says "
-                         f"include ({review['verifier']['explanation'][:160]}). Included by pipeline.fulltext_unclear; check this inclusion.",
-                actor="agent", source=DOUBT_SOURCE)
+                with st.because([st.last_change(sc["id"])]):   # set aside by the decision just made
+                    st.set_status(nid, "excluded", reason="study excluded after the eligibility review")
+    if review["outcome"] == "asks_you":
+        st.flag(sc["id"], f"After extraction, two agents say this study fails {cid}; you included it.", actor="agent", source=DOUBT_SOURCE)
     ctx.log(f"[extract] {rid}: eligibility doubt on {cid}; verifier says {verdict}; outcome {review['outcome']}")
     return outcome
 
@@ -314,8 +307,7 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
         mode = f"{len(parts)} parts"
         doubt = next((d for d in (_doubt(st, o.get("eligibility_doubt")) for o in outs) if d), None)
     if doubt:
-        outcome = recheck_eligibility(ctx, rid, doubt)
-        if outcome in ("exclude", "pending"):   # not included any more: the extraction is kept aside, not stored as active
+        if recheck_eligibility(ctx, rid, doubt) == "exclude":   # not included any more: no active extraction is stored
             return {}
     fields, evidence = postprocess(ctx, rid, raw_fields, text, src_node)
     kept = keep_human_edits(st.get(f"ext:{rid}"), fields)

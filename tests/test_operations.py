@@ -782,3 +782,84 @@ def test_every_operation_is_accounted_for():
             assert hasattr(test_golden, f"test_golden_{how.split(':', 1)[1]}"), (op, how)
         elif kind == "offline":
             assert hasattr(test_offline, how.split(":", 1)[1]) or how.split(":", 1)[1] in globals(), (op, how)
+
+
+# ---------------------------------------------------------------- the four gaps after phase 4
+def test_a_decision_settles_the_open_questions_about_the_study(tmp_path):
+    """The agent's disagreement with your feedback, or an eligibility doubt, on a study is closed when you settle
+    where the study stands: you decide include/exclude, or declare its full text unobtainable ('awaiting' does not)."""
+    from sragent import ops
+    ctx = reviewed(tmp_path, AWAITING)
+    st = ctx.store
+    f1 = st.flag("screen:G03", "please exclude: not readable -> agent: insufficient_evidence", actor="agent", source="feedback")
+    f2 = st.flag("screen:G02", "please exclude -> agent: keeps include", actor="agent", source="feedback")
+    plain = st.flag("screen:G02", "a plain comment", actor="user", source="feedback")
+    assert ops.run(ctx, "eligibility.decide", {"rid": "G03", "decision": "awaiting"})["ok"]
+    assert next(f for f in st.get("screen:G03")["flags"] if f["id"] == f1["id"])["status"] == "open"
+    r = ops.run(ctx, "retrieve.declare_unobtainable", {"rids": ["G03"]})
+    assert r["ok"] and r["closed"] == [f"screen:G03:{f1['id']}"] and "1 open question" in r["message"]
+    assert ops.run(ctx, "eligibility.decide", {"rid": "G02", "decision": "exclude", "criterion": "E1"})["ok"]
+    flags = {f["id"]: f["status"] for f in st.get("screen:G02")["flags"]}
+    assert flags[f2["id"]] == "resolved" and flags[plain["id"]] == "open"
+
+
+def test_update_feedback_and_new_files_are_previewed(tmp_path):
+    """'Update now', a comment sent to the agent and 'process the new files' show what they reach before they run."""
+    from sragent import ops
+    from sragent.stages import fulltext
+    ctx = reviewed(tmp_path)
+    st = ctx.store
+    assert ops.preview(ctx, "update_all", {})["items"] == []
+    ops.run(ctx, "eligibility.decide", {"rid": "G01", "decision": "exclude", "criterion": "E1"})
+    before = {n["id"]: n["version"] for n in st.nodes.values()}
+    pv = ops.preview(ctx, "update_all", {})
+    acts = {(i["node"], i["action"]) for i in pv["items"]}
+    assert {("ext:G01", "retire"), ("rob:G01", "retire")} <= acts and pv["lines"] and "synthesis" in pv["reach"]
+    fb = ops.preview(ctx, "feedback", {"text": "the dose is wrong", "target": "study:G02"})
+    assert fb["changes"] and fb["changes"][0].startswith(("screen:", "elig:", "ext:")) and fb["reach"]
+    (fulltext.fulltext_dir(ctx) / "G04.txt").write_text("## Methods\n" + "Emicizumab in 20 patients. " * 30)
+    pf = ops.preview(ctx, "retrieve.process_added_files", {})
+    assert pf["changes"] == ["ft:G04"] and "G04" in pf["message"]
+    assert {n["id"]: n["version"] for n in st.nodes.values()} == before          # previews change nothing
+
+
+def test_a_change_records_the_change_that_set_it_off(tmp_path):
+    """An exclusion retires the study's extraction and risk of bias and the statements that cited only it; each of
+    those entries names the operation and the exclusion as its cause, and the study page's history follows the chain."""
+    from sragent import ops, studies
+    ctx = reviewed(tmp_path)
+    st = ctx.store
+    assert ops.run(ctx, "eligibility.decide", {"rid": "G01", "decision": "exclude", "criterion": "E1"})["ok"]
+    dec = st.last_change("elig:G01")
+    assert st.changelog[dec]["operation"] == "eligibility.decide" and "caused_by" not in st.changelog[dec]
+    assert ops.run(ctx, "update_all", {})["ok"]
+    after = {e["node"]: e for e in st.changelog[dec + 1:] if e["op"] == "status"}
+    for nid in ("ext:G01", "rob:G01"):
+        assert after[nid]["caused_by"] == [dec] and after[nid]["operation"] == "update_all", nid
+    syn = [e for e in st.changelog[dec + 1:] if e["node"].startswith("syn:") and e.get("caused_by") == [dec]]
+    assert syn, "the statements revised for the exclusion name it as their cause"
+    d = studies.study_detail(ctx, "G01")
+    rows = {(h["node"], h["op"]): h for h in d["history"]}
+    assert rows[("ext:G01", "status")]["because"][0]["seq"] == dec
+    assert any(h["node"].startswith("syn:") for h in d["history"])           # what it set off elsewhere is shown too
+    st.save()
+    from sragent.store import ReviewStore
+    again = ReviewStore.load(st.run_dir / "store.json")
+    assert again.last_change("elig:G01") == dec and again.changelog[dec + 1]["seq"] == dec + 1
+
+
+def test_the_preview_lists_the_stages_a_change_reaches(tmp_path):
+    """The preview is a table of the stages a change reaches: where each stands now, what applying changes, and what
+    then changes when the outputs are updated (for 'Update now', applying is the update)."""
+    from sragent import ops
+    ctx = reviewed(tmp_path)
+    rows = {r["stage"]: r for r in ops.preview(ctx, "eligibility.decide", {"rid": "G01", "decision": "exclude", "criterion": "E1"})["stages"]}
+    assert list(rows) == ["eligibility", "extract", "rob", "synthesis"]
+    assert rows["eligibility"]["now"] == "2 included" and rows["eligibility"]["apply"] == ["2 → 1 included", "G01: include → exclude"]
+    assert rows["extract"]["apply"] == [] and rows["extract"]["update"] == ["1 set aside (G01)"]
+    assert rows["synthesis"]["update"][0].startswith("2 revised by the model")
+    ops.run(ctx, "eligibility.decide", {"rid": "G01", "decision": "exclude", "criterion": "E1"})
+    up = {r["stage"]: r for r in ops.preview(ctx, "update_all", {})["stages"]}
+    assert up["extract"]["apply"] == ["1 set aside (G01)"] and not up["extract"]["update"]
+    rs = {r["stage"]: r for r in ops.preview(ctx, "eligibility.recompute", {"rid": "G02"})["stages"]}
+    assert "proposal" in rs["eligibility"]["apply"][0]

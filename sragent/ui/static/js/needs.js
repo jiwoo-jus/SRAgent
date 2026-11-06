@@ -18,7 +18,7 @@ function renderNeeds(fromPoll){
     return `<div class="card"><div class="card-h"><h2>${esc(label[k] || k)}</h2><span class="cnt warn">${items.length}</span><span class="grow"></span>
         <a class="btn sm" href="#/stage/${k}">Open the stage ${ic("arrowR","sm")}</a></div>
       <div class="card-b flush tw"><table><tbody>${items.map(t => `<tr><td style="white-space:normal">${esc(t.title)}<div class="small mut">${esc(trunc(t.question || "", 160))}</div></td>
-        <td class="r"><a class="btn sm ghost" href="#/stage/${k}${t.rid ? "?rid=" + encodeURIComponent(t.rid) : ""}">Decide ${ic("arrowR","sm")}</a></td></tr>`).join("")}</tbody></table></div></div>`;
+        <td class="r nowrap">${studyOf(t) ? `<a class="btn sm ghost" href="#/studies/${encodeURIComponent(studyOf(t))}">Open study</a> ` : ""}<a class="btn sm" href="#/stage/${k}${t.rid ? "?rid=" + encodeURIComponent(t.rid) : ""}">Decide ${ic("arrowR","sm")}</a></td></tr>`).join("")}</tbody></table></div></div>`;
   }).join("");
   const fb = T.filter(t => ["changeset", "clarify", "disagreement"].includes(t.kind));
   el.innerHTML = nextBanner() + stageCards +
