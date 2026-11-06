@@ -213,7 +213,7 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     st = ctx.store
     text, src_node = screen_source(st, rid, stage)
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
-    out = ctx.agent.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(protocol, stage),
+    out = ctx.writer.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(protocol, stage),
                                                         synonyms=synonyms_text(protocol),
                                                         record=packed(text, limit), stage=stage.replace("_", "/"),
                                                         stage_rule=prompts.SCREEN_STAGE_RULE[stage])),
@@ -274,7 +274,7 @@ def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str
         return n["data"]
     text, src_node = screen_source(st, rid, stage)
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
-    out = ctx.agent.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(sub, stage), synonyms=synonyms_text(protocol),
+    out = ctx.writer.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(sub, stage), synonyms=synonyms_text(protocol),
                                                         record=packed(text, limit), stage=stage.replace("_", "/"),
                                                         stage_rule=prompts.SCREEN_STAGE_RULE[stage])),
                          tag=f"screen_{stage}{tag_suffix}")
@@ -321,20 +321,27 @@ def _verify_wanted(ctx: Ctx, stage: str, decision: str) -> bool:
 
 def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, limit, assessments: list[dict],
                   decision: str, because: list[str], by_rule) -> tuple[dict, str, list[str], str | None]:
-    """A second agent (roles.verifier, else the stage's model) reads the record and decides independently.
+    """A second agent (the stage's verifier) reads the record and decides independently.
     Agreement: recorded. Disagreement: a title/abstract exclusion is forwarded to the full text (the full text is
     the better judge); a full-text decision becomes undecided for a person (agent-only: the fulltext_unclear
     policy applies, flagged). Both readings are kept on the screening node (`screen_verify`)."""
     import time
     from ..evidence import resolve, joined
-    checker = ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub.agent_for(
-        "eligibility" if stage == "full_text" else "screen")
-    brief = "; ".join(f"{a.get('id')}={a.get('assessment')}" + (f" ({a['reason'][:80]})" if a.get("reason") else "")
-                      for a in assessments if isinstance(a, dict))
-    out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY.format(
-        criteria=criteria_text(protocol, stage), synonyms=synonyms_text(protocol), record=packed(text, limit),
-        stage=stage.replace("_", "/"), assessments=brief, decision=decision, because=", ".join(because) or "-",
-        stage_rule=prompts.SCREEN_STAGE_RULE[stage])), tag=f"screen_verify_{stage}")
+    checker = ctx.hub.model("eligibility" if stage == "full_text" else "screen", "verifier")
+    common = dict(criteria=criteria_text(protocol, stage), synonyms=synonyms_text(protocol), record=packed(text, limit),
+                  stage=stage.replace("_", "/"), stage_rule=prompts.SCREEN_STAGE_RULE[stage])
+    blind = bool(ctx.cfg["pipeline"].get("verify_screening_blind"))
+    if blind:   # the verifier does not see the screener's answer; the readings are compared here
+        out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY_BLIND.format(**common)), tag=f"screen_verify_{stage}")
+        first = {a.get("id"): a.get("assessment") for a in assessments if isinstance(a, dict)}
+        out["differs_on"] = [a for a in out.get("assessments") or []
+                             if isinstance(a, dict) and a.get("id") in first and a.get("assessment") != first[a["id"]]]
+        out.pop("agree", None)
+    else:
+        brief = "; ".join(f"{a.get('id')}={a.get('assessment')}" + (f" ({a['reason'][:80]})" if a.get("reason") else "")
+                          for a in assessments if isinstance(a, dict))
+        out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY.format(**common, assessments=brief, decision=decision,
+                                                                 because=", ".join(because) or "-")), tag=f"screen_verify_{stage}")
     own = str(out.get("decision") or "").lower()
     own = {"include": "include", "exclude": "exclude"}.get(own, "uncertain")
     agree = bool(out.get("agree")) if "agree" in out else own == decision
@@ -347,7 +354,7 @@ def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, lim
     differs = [d for d in (out.get("differs_on") or []) if isinstance(d, dict) and d.get("id")]
     for d in differs:
         d["evidence"] = [sp.get("sid") for sp in resolve(d.get("evidence") or [], text).get("spans", []) if sp.get("sid")]
-    rec = {"by": checker.name, "decision": own, "agree": agree, "explanation": str(out.get("explanation") or "")[:400],
+    rec = {"by": checker.name, "blind": blind, "decision": own, "agree": agree, "explanation": str(out.get("explanation") or "")[:400],
            "differs_on": differs, "ts": time.strftime("%Y-%m-%d %H:%M")}
     if decision == "awaiting":   # the screener could not decide: the verifier's reading decides, or it stays with a person
         if own in ("include", "exclude"):

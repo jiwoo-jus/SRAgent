@@ -126,7 +126,7 @@ def inject_synthesis(ctx: Ctx, sid: str) -> dict | None:
     n = ctx.store.get(sid)
     if not n:
         return None
-    out = ctx.agent.chat(ctx.msgs(prompts.INJECT_OVERGEN.format(text=n["data"]["text"])), tag="inject")
+    out = ctx.writer.chat(ctx.msgs(prompts.INJECT_OVERGEN.format(text=n["data"]["text"])), tag="inject")
     new = out.get("text")
     if not new or new.strip() == n["data"]["text"].strip():
         return None

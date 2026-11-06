@@ -28,7 +28,7 @@ def rob_one(ctx: Ctx, rid: str) -> dict:
     text, kind = st.text_of(rid)
     src_node = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
     ext_brief = _ext_brief(st, rid)
-    out = ctx.agent.chat(ctx.msgs(prompts.ROB.format(domains=_domains(ctx), extraction=ext_brief, kind=kind,
+    out = ctx.writer.chat(ctx.msgs(prompts.ROB.format(domains=_domains(ctx), extraction=ext_brief, kind=kind,
                                                      rid=rid, text=packed(text, _budget(ctx)))), tag="rob")
     evidence = []
     doms = [d for d in out.get("domains", []) if isinstance(d, dict)]
@@ -102,8 +102,7 @@ def _verify(ctx: Ctx, rid: str, data: dict, evidence: list, text: str, kind: str
     the draft's (the agent's are kept beside them), or, when it cannot settle them either, the draft goes to a person.
     The record of both readings is kept on the node (`rob_verify`)."""
     import time
-    from .synthesis import checker
-    chk = checker(ctx)
+    chk = ctx.hub.model("rob", "verifier")
     draft = "\n".join(f"- {d.get('domain')}: {d.get('judgment')} ({(d.get('rationale') or '')[:400]}) "
                       f"[{', '.join(map(str, d.get('evidence') or []))}]" for d in data["domains"]) + f"\noverall: {data['overall']}"
     reasons = "\n".join(f"- {r['text']}" for r in data["reasons"])

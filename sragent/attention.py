@@ -110,14 +110,3 @@ def open_flags(st, n: dict, derived: dict[str, list[dict]] | None = None) -> lis
     """A node's open stored flags and its derived notes."""
     d = by_node(st) if derived is None else derived
     return [f for f in n["flags"] if f["status"] == "open"] + d.get(n["id"], [])
-
-
-def settle_legacy(st) -> int:
-    """Schema 5: flags of these kinds stored by earlier versions are resolved (the notes are derived now)."""
-    k = 0
-    for n in st.nodes.values():
-        for f in n["flags"]:
-            if f["status"] == "open" and f.get("source") in SOURCES:
-                f.update({"status": "resolved", "resolution": "derived from the graph since schema 5", "by": "system"})
-                k += 1
-    return k

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mock_llm import mock_fn  # noqa: E402
 
-from sragent.config import load_config  # noqa: E402
+from sragent.config import load_config, model_for  # noqa: E402
 from sragent.context import Ctx  # noqa: E402
 from sragent.llm import parse_json  # noqa: E402
 from sragent.store import ReviewStore  # noqa: E402
@@ -63,11 +63,12 @@ def make_ctx(tmp_path, fulltexts=("1001", "1002", "1003"), extra_cfg: dict | Non
     for r in RECORDS:   # the full texts a person supplied (no network in tests)
         if r["rid"] in fulltexts:
             (fdir / f"{r['rid']}.txt").write_text(f"## Title\n{r['title']}\n## Methods\n" + (r["abstract"] + " ") * 25)
-    cfg = load_config(ROOT / "configs/benchmark/emicizumab_pk/topic.yaml", {
+    from sragent.config import deep_merge
+    cfg = load_config(ROOT / "configs/benchmark/emicizumab_pk/topic.yaml", deep_merge({
         "run_dir": str(tmp_path / "run"), "cache_dir": str(tmp_path / "cache"), "budget_usd": 1.0,
-        "llm_defaults": {"provider": "mock", "model": "mock", "concurrency": 1},
+        "llm_defaults": {"concurrency": 1}, "models": {"default": {"writer": {"provider": "mock", "model": "mock"}}},
         "pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False},
-        "topic": {"records": {"source": "file", "file": str(recf)}}, **(extra_cfg or {})})
+        "topic": {"records": {"source": "file", "file": str(recf)}}}, extra_cfg or {}))
     ctx = Ctx.create(cfg, mock_fn=mock_fn)
     ctx.quiet = True
     return ctx
@@ -272,6 +273,36 @@ def test_todos_answers_and_user_files(tmp_path):
     assert (fdir / "needed_pdfs.csv").exists()
 
 
+def test_settings_model_table_saves_cells_and_keeps_started_stages_fixed(tmp_path):
+    """Settings: one row per stage with a cell per role; saving writes models: into the run file; a cell of a stage
+    that has started is refused."""
+    import yaml
+    from sragent import pipeline
+    from sragent.ui.configs import Library
+    from sragent.ui.server import App
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx, until="screen")
+    run = tmp_path / "configs" / "review" / "t" / "run.yaml"
+    run.parent.mkdir(parents=True)
+    (tmp_path / "configs" / "models.yaml").write_text((ROOT / "configs/models.yaml").read_text())
+    cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_") and k != "topic"}
+    cfg.update({"models_file": "../../models.yaml", "topic": ctx.cfg["topic"]})
+    run.write_text(yaml.safe_dump(cfg))
+    app, lib = App(str(run)), Library(tmp_path / "configs")
+    rows = {r["stage"]: r for r in app.model_rows()}
+    assert list(rows)[0] == "default" and set(rows["eligibility"]["cells"]) == {"writer", "verifier"}
+    assert set(rows["extract"]["cells"]) == {"writer"} and rows["screen"]["started"] and not rows["extract"]["started"]
+    keep = {"default.writer": {"provider": "mock", "model": "mock"}}
+    r = app.save_models({**keep, "extract.writer": {"provider": "openai", "model": "gpt-6.1-sol", "reasoning_effort": "high"},
+                         "rob.verifier": {"provider": "openai", "model": "gpt-6.1-sol"}}, lib)
+    assert r["ok"], r
+    written = yaml.safe_load(run.read_text())["models"]
+    assert written["extract"] == {"writer": {"model": "gpt-6.1-sol", "reasoning_effort": "high"}}   # provider from the catalog
+    assert written["rob"] == {"verifier": "gpt-6.1-sol"} and written["default"]["writer"] == {"model": "mock", "provider": "mock"}
+    r = app.save_models({**keep, "screen.writer": {"reasoning_effort": "high"}}, lib)
+    assert not r["ok"] and "models.screen.writer" in r["message"]
+
+
 def test_ui_app_state_and_estimate(tmp_path):
     import yaml
     from sragent import pipeline
@@ -298,15 +329,15 @@ def test_ui_app_state_and_estimate(tmp_path):
     assert m["local"]["endpoints"] == 1 and m["local"]["models"] == ["auto"]
     job = yaml.safe_load(app._write_job_config({"action": "rerun", "agent": {"provider": "local", "model": "auto"}}).read_text())
     assert job["local"]["endpoints_file"] == str((tmp_path / "local_endpoints.yaml").resolve())
-    assert job["job_agent"]["provider"] == "local"     # a model picked for one re-run: this job only
+    assert job["job_model"]["provider"] == "local"     # a model picked for one re-run: this job's writers only
     with app.lock:                                     # the worker cannot take these jobs while the lock is held
         app.submit({"action": "run", "until": "report", "agent": {"provider": "local", "model": "auto"}, "extra_budget": 3})
         later = app.submit({"action": "rerun", "rid": "1001", "step": "extract"})   # no model picked for this job
         app.queue.clear()
     assert "agent" not in later and later["extra_budget"] == 3   # the last Run-page model does not carry over
-    assert "job_agent" not in yaml.safe_load(app._write_job_config(later).read_text())
+    assert "job_model" not in yaml.safe_load(app._write_job_config(later).read_text())
     job = yaml.safe_load(app._write_job_config({"action": "run", "agent": {"provider": "local", "model": "auto"}}).read_text())
-    assert "job_agent" not in job and "agent" not in (job.get("roles") or {})   # pipeline jobs follow stage_models
+    assert "job_model" not in job                      # pipeline jobs follow models.<stage>.<role>
     r = app.op({"name": "protocol.approve", "args": {}})
     assert r["ok"]
 
@@ -521,79 +552,49 @@ def test_config_lock(tmp_path):
     assert "Table D0." in report_html(c2)
 
 
-def test_stage_models(tmp_path):
-    """Each stage uses its own model and effort; a stage's model is fixed once that stage has started."""
+def test_models_per_stage_and_role(tmp_path):
+    """Each stage uses its own cells (models.<stage>.<role>); every call is booked to its stage and role; a stage's cells
+    are fixed once it has started; a verifier with no cell of its own is the default writer."""
     import copy
 
     import pytest
     from sragent import config_lock, pipeline
+    from sragent.config import model_for
     from sragent.estimate import estimate_stages
     big = {"model": "mock-big", "reasoning_effort": "high", "pricing": {"input_per_m": 2.0, "output_per_m": 10.0}}
-    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"protocol": big, "extract": {**big, "reasoning_effort": "medium"}}})
+    ctx = make_ctx(tmp_path, extra_cfg={"models": {"protocol": {"writer": big}, "extract": {"writer": {**big, "reasoning_effort": "medium"}},
+                                                   "synthesis": {"writer": big}}})
+    assert model_for(ctx.cfg, "synthesis", "verifier")["model"] == "mock"         # checked by another model than its writer
     pipeline.run(ctx, until="eligibility")
     rows = [json.loads(line) for line in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
-    by_tag = {}
-    for r in rows:
-        by_tag.setdefault(r["tag"].split("_rerun")[0], set()).add(r["model"])
-    assert by_tag["plan"] == {"mock-big"} and by_tag["screen_title_abstract"] == {"mock"}
+    cells = {(r["stage"], r["role"]): r["model"] for r in rows}
+    assert cells[("protocol", "writer")] == "mock-big" and cells[("screen", "writer")] == "mock"
     rec = ctx.store.meta["config_lock"]["values"]
-    assert rec["stage_models.protocol"]["model"] == "mock-big" and "stage_models.extract" not in rec   # not started yet
+    assert rec["models.protocol.writer"]["model"] == "mock-big" and "models.extract.writer" not in rec   # not started yet
+    assert rec["models.screen.verifier"]["model"] == "mock"                       # the verifier cell is fixed with its stage
 
     cfg = copy.deepcopy(ctx.cfg)                                    # a stage that has not started: free to change
-    cfg["stage_models"]["extract"] = {**big, "reasoning_effort": "low"}
-    cfg["stage_models"]["rob"] = {"reasoning_effort": "medium"}
+    cfg["models"]["extract"] = {"writer": {**big, "reasoning_effort": "low"}}
+    cfg["models"]["rob"] = {"writer": {"reasoning_effort": "medium"}}
     c2 = Ctx.create(cfg, mock_fn=mock_fn)
     c2.quiet = True
-    est = estimate_stages({"extract": 2, "rob": 2}, cfg)
-    assert {r["stage"]: (r["model"], r["effort"]) for r in est["rows"]} == {"extract": ("mock-big", "low"), "rob": ("mock", "medium")}
+    est = estimate_stages({"extract": 2, "rob": 2, "rob_verify": 1}, cfg)
+    assert {r["stage"]: (r["model"], r["effort"]) for r in est["rows"]} == \
+        {"extract": ("mock-big", "low"), "rob": ("mock", "medium"), "rob_verify": ("mock", "default")}
     pipeline.run(c2)
     rows = [json.loads(line) for line in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
-    assert {r["model"] for r in rows if r["tag"] == "extract"} == {"mock-big"}
-    assert {r["model"] for r in rows if r["tag"] == "rob"} == {"mock"}
-    assert c2.store.meta["config_lock"]["values"]["stage_models.extract"]["reasoning_effort"] == "low"
+    assert {r["model"] for r in rows if r["stage"] == "extract"} == {"mock-big"}
+    assert {r["model"] for r in rows if r["stage"] == "rob"} == {"mock"}
+    assert c2.store.meta["config_lock"]["values"]["models.extract.writer"]["reasoning_effort"] == "low"
 
-    cfg3 = copy.deepcopy(cfg)                                       # a started stage: fixed
-    cfg3["stage_models"]["screen"] = {"reasoning_effort": "high"}
-    with pytest.raises(config_lock.ConfigChanged) as e:
-        Ctx.create(cfg3, mock_fn=mock_fn)
-    assert [c["key"] for c in e.value.changes] == ["stage_models.screen"]
+    for stage, role in (("screen", "writer"), ("screen", "verifier")):   # a started stage: both cells fixed
+        cfg3 = copy.deepcopy(cfg)
+        cfg3["models"]["screen"] = {role: {"reasoning_effort": "high"}}
+        with pytest.raises(config_lock.ConfigChanged) as e:
+            Ctx.create(cfg3, mock_fn=mock_fn)
+        assert [c["key"] for c in e.value.changes] == [f"models.{stage}.{role}"]
     from sragent.stages.report import report_markdown
     assert "mock-big (high effort): protocol" in report_markdown(c2)
-
-
-def test_earlier_stage_names_are_accepted(tmp_path):
-    """Stage keys of earlier versions (plan, fulltext, synthesize) still work in a run file, in --until and
-    skip_stages, and in an older review's recorded models: they are read as protocol, eligibility, synthesis."""
-    import copy
-
-    import pytest
-    from sragent import config_lock, pipeline, stagespec
-    from sragent.config import LLM_STAGES, stage_cfg
-    big = {"model": "mock-big", "reasoning_effort": "high", "pricing": {"input_per_m": 2.0, "output_per_m": 10.0}}
-    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"plan": big, "fulltext": big, "synthesize": big},
-                                        "pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False,
-                                                     "skip_stages": ["fulltext"]}})
-    assert set(ctx.cfg["stage_models"]) == {"protocol", "eligibility", "synthesis"} <= set(LLM_STAGES)
-    assert stage_cfg(ctx.cfg, "plan")["model"] == stage_cfg(ctx.cfg, "protocol")["model"] == "mock-big"
-    assert ctx.cfg["pipeline"]["skip_stages"] == ["retrieve", "eligibility"]      # fulltext was both stages
-    assert stagespec.run_until("synthesize") == "synthesis"
-    with pytest.raises(ValueError):
-        (tmp_path / "both").mkdir()
-        make_ctx(tmp_path / "both", extra_cfg={"stage_models": {"plan": big, "protocol": big}})
-    pipeline.run(ctx, until="protocol")
-    # an older review recorded its protocol model under the earlier key
-    lock = ctx.store.meta["config_lock"]["values"]
-    lock["stage_models.plan"] = lock.pop("stage_models.protocol")
-    ctx.save()
-    cfg = copy.deepcopy(ctx.cfg)
-    c2 = Ctx.create(cfg, mock_fn=mock_fn)                                       # same models: fine, and migrated
-    assert "stage_models.protocol" in c2.store.meta["config_lock"]["values"]
-    assert "stage_models.plan" not in c2.store.meta["config_lock"]["values"]
-    c2.save()
-    cfg["stage_models"]["protocol"] = {"reasoning_effort": "low"}
-    with pytest.raises(config_lock.ConfigChanged) as e:                          # still fixed under its new name
-        Ctx.create(cfg, mock_fn=mock_fn)
-    assert [c["key"] for c in e.value.changes] == ["stage_models.protocol"]
 
 
 def test_rescreen_keeps_records_waiting_for_full_text(tmp_path):
@@ -626,8 +627,8 @@ def test_reply_that_is_not_one_object_is_asked_again(tmp_path):
     and such a reply is never served from the cache."""
     from sragent.llm import LLM, CostTracker, DiskCache
     replies = iter(['["only the issues"]', '{"support": "supported", "issues": []}'])
-    cfg = load_config(None, {"llm_defaults": {"provider": "mock", "model": "mock"}})
-    llm = LLM(cfg, "agent", CostTracker(1), DiskCache(tmp_path / "c.sqlite"), mock_fn=lambda m, mode: next(replies))
+    cfg = load_config(None, {"models": {"default": {"writer": {"provider": "mock", "model": "mock"}}}})
+    llm = LLM(cfg, model_for(cfg, None), CostTracker(1), DiskCache(tmp_path / "c.sqlite"), mock_fn=lambda m, mode: next(replies))
     assert llm.chat([{"role": "user", "content": "check"}], tag="t") == {"support": "supported", "issues": []}
 
 
@@ -787,14 +788,14 @@ def test_store_save_is_atomic_and_flag_ids_are_unique(tmp_path, monkeypatch):
 
 def test_llm_refusal_is_paid_once_and_cache_failures_do_not_cost_a_call(tmp_path, monkeypatch):
     from sragent.llm import LLM, CostTracker, DiskCache, Refused
-    cfg = load_config(None, {"llm_defaults": {"provider": "mock", "model": "mock", "max_retries": 3}})
+    cfg = load_config(None, {"llm_defaults": {"max_retries": 3}, "models": {"default": {"writer": {"provider": "mock", "model": "mock"}}}})
     calls = []
     def refuse(self, msgs, json_out, max_tokens, temperature):
         calls.append(1)
         raise Refused("declined", pin=120, pout=5)
     monkeypatch.setattr(LLM, "_call", refuse)
     tr = CostTracker(1.0)
-    llm = LLM(cfg, "agent", tr, None, mock_fn=lambda m, mode: "{}")
+    llm = LLM(cfg, model_for(cfg, None), tr, None, mock_fn=lambda m, mode: "{}")
     llm.c["pricing"] = {"input_per_m": 1000.0, "output_per_m": 1000.0}
     import pytest
     with pytest.raises(Refused):
@@ -802,13 +803,13 @@ def test_llm_refusal_is_paid_once_and_cache_failures_do_not_cost_a_call(tmp_path
     assert len(calls) == 1 and tr.spent > 0 and tr.calls == 1                 # not retried, still paid and recorded
     monkeypatch.undo()
     n = []
-    llm = LLM(cfg, "agent", CostTracker(1.0), DiskCache(tmp_path / "c.sqlite"),
+    llm = LLM(cfg, model_for(cfg, None), CostTracker(1.0), DiskCache(tmp_path / "c.sqlite"),
               mock_fn=lambda m, mode: (n.append(1), '{"ok": true}')[1])
     monkeypatch.setattr(llm.cache, "set", lambda k, v: (_ for _ in ()).throw(RuntimeError("database is locked")))
     assert llm.chat([{"role": "user", "content": "x"}], tag="t") == {"ok": True} and len(n) == 1
     # the budget is checked before every paid call, retries included
     tr = CostTracker(0.0)
-    llm = LLM(cfg, "agent", tr, None, mock_fn=lambda m, mode: "{}")
+    llm = LLM(cfg, model_for(cfg, None), tr, None, mock_fn=lambda m, mode: "{}")
     from sragent.llm import BudgetExceeded
     with pytest.raises(BudgetExceeded):
         llm.chat([{"role": "user", "content": "x"}])
@@ -845,16 +846,14 @@ def test_synthesis_is_checked_by_another_model_and_absence_claims_see_every_stud
     from sragent import pipeline
     from sragent.stages import synthesis
     big = {"model": "mock-writer", "reasoning_effort": "high", "pricing": {"input_per_m": 1, "output_per_m": 1}}
-    ctx = make_ctx(tmp_path, extra_cfg={"stage_models": {"synthesize": big}})
+    ctx = make_ctx(tmp_path, extra_cfg={"models": {"synthesis": {"writer": big}}})
     pipeline.run(ctx)
     rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
     assert {r["model"] for r in rows if r["tag"] == "synthesis"} == {"mock-writer"}
-    assert {r["model"] for r in rows if r["tag"] == "synthesis_verify"} == {"mock"}      # the agent, not the writer
-    with ctx.at("synthesize"):
-        assert synthesis.checker(ctx).model == "mock"
-    ctx.cfg["roles"]["verifier"] = {"model": "mock-checker", "pricing": {"input_per_m": 1, "output_per_m": 1}}
+    assert {(r["model"], r["role"]) for r in rows if r["tag"] == "synthesis_verify"} == {("mock", "verifier")}   # not the writer
+    ctx.cfg["models"]["default"]["verifier"] = {"provider": "mock", "model": "mock-checker", "pricing": {"input_per_m": 1, "output_per_m": 1}}
     ctx.hub._clients.clear()
-    assert synthesis.checker(ctx).model == "mock-checker"
+    assert ctx.hub.model("synthesis", "verifier").model == "mock-checker"
     cites = ["1001"]
     plain = synthesis.statement_evidence(ctx, cites, "Trough levels were 52 ug/mL in adults.")
     absent = synthesis.statement_evidence(ctx, cites, "Clearance was not reported in any study.")
@@ -934,33 +933,6 @@ def test_edges_carry_versions_and_a_changed_setting_makes_only_its_dependents_st
     from sragent.stages import extraction
     extraction.extract_one(ctx, "1002")
     assert "ext:1002" not in graph.stale(st)
-
-
-def test_old_store_is_migrated_once(tmp_path):
-    from sragent import graph, pipeline
-    from sragent.store import ReviewStore
-    ctx = make_ctx(tmp_path)
-    pipeline.run(ctx)
-    # make it look like a schema-1 store: no dep_versions, no settings nodes, coarse edges
-    st = ctx.store
-    for n in st.nodes.values():
-        n.pop("dep_versions", None)
-    for nid in [n["id"] for n in st.by_type("setting")]:
-        del st.nodes[nid]
-    for n in st.by_type("extraction"):
-        n["depends_on"] = [d for d in n["depends_on"] if not d.startswith(("field:", "cfg:"))] + ["protocol"]
-    st.meta.pop("schema", None)
-    st.reindex()
-    st.save()
-    old = ReviewStore.load(ctx.run_dir / "store.json")
-    done = graph.migrate(old, ctx.cfg)
-    assert done and old.meta["schema"] == graph.SCHEMA
-    assert graph.migrate(old, ctx.cfg) == []                            # idempotent
-    e = old.get("ext:1001")
-    assert "field:sample_size" in e["depends_on"] and "protocol" not in e["depends_on"]
-    assert graph.stale(old) == {}                                       # migration makes nothing stale
-    assert old.get("cfg:question")["data"]["value"] == ctx.topic["question"]
-    assert set(old.children("cfg:question")) >= {"protocol"}            # reverse index rebuilt
 
 
 def test_removed_criteria_are_retired_and_protocol_edits_are_recorded(tmp_path):
@@ -1199,9 +1171,9 @@ def test_cut_off_replies_are_retried_with_more_room_and_never_salvaged(tmp_path,
             raise Truncated("cut", pin=100, pout=max_tokens)
         return '{"errors": []}', 100, 50
     monkeypatch.setattr(LLM, "_call", call)
-    cfg = load_config(None, {"llm_defaults": {"provider": "mock", "model": "mock", "max_tokens": 4000, "max_retries": 3}})
+    cfg = load_config(None, {"llm_defaults": {"max_tokens": 4000, "max_retries": 3}, "models": {"default": {"writer": {"provider": "mock", "model": "mock"}}}})
     tr = CostTracker(1.0)
-    llm = LLM(cfg, "agent", tr, None, mock_fn=lambda m, mode: "{}")
+    llm = LLM(cfg, model_for(cfg, None), tr, None, mock_fn=lambda m, mode: "{}")
     llm.c["pricing"] = {"input_per_m": 1.0, "output_per_m": 1.0}
     assert llm.chat([{"role": "user", "content": "x"}], tag="t") == {"errors": []}
     assert seen == [4000, 8000] and tr.calls == 2
@@ -1542,16 +1514,16 @@ def test_evidence_bundle_shows_the_cited_values_per_statement(tmp_path):
 
 
 def test_provider_specific_options_are_not_inherited_across_providers():
-    """llm_defaults on local vLLM with extra_body (chat_template_kwargs): a stage or role on an API model must not
-    inherit it (Anthropic rejects unknown request fields); one that sets its own keeps it."""
-    from sragent.config import load_config, role_cfg, stage_cfg
+    """The default writer on local vLLM with extra_body (chat_template_kwargs): a stage or role on an API model must
+    not inherit it (Anthropic rejects unknown request fields); one that sets its own keeps it."""
+    from sragent.config import load_config, model_for
     cfg = load_config(ROOT / "configs/benchmark/emicizumab_pk/topic.yaml", {
-        "llm_defaults": {"provider": "local", "model": "auto", "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
-        "stage_models": {"plan": {"model": "claude-sonnet-5-5"}, "screen": {"reasoning_effort": None}},
-        "roles": {"verifier": {"model": "gpt-6.1-sol", "extra_body": {"foo": 1}}}})
-    assert stage_cfg(cfg, "plan")["provider"] == "anthropic" and stage_cfg(cfg, "plan")["extra_body"] == {}
-    assert stage_cfg(cfg, "screen")["provider"] == "local" and stage_cfg(cfg, "screen")["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
-    assert role_cfg(cfg, "verifier")["extra_body"] == {"foo": 1}
+        "models": {"default": {"writer": {"provider": "local", "model": "auto", "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+                               "verifier": {"model": "gpt-6.1-sol", "extra_body": {"foo": 1}}},
+                   "protocol": {"writer": "claude-sonnet-5-5"}, "screen": {"writer": {"reasoning_effort": None}}}})
+    assert model_for(cfg, "protocol")["provider"] == "anthropic" and model_for(cfg, "protocol")["extra_body"] == {}
+    assert model_for(cfg, "screen")["provider"] == "local" and model_for(cfg, "screen")["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert model_for(cfg, "screen", "verifier")["extra_body"] == {"foo": 1}
 
 
 def test_search_strategy_is_chosen_with_the_review_team(tmp_path, monkeypatch):
@@ -1735,7 +1707,8 @@ def test_data_items_changed_in_the_interface_at_any_stage(tmp_path):
     (cdir / "run.yaml").write_text(f"""include: [topic.yaml]
 run_dir: {tmp_path / 'run'}
 cache_dir: {tmp_path / 'cache'}
-llm_defaults: {{provider: mock, model: mock, concurrency: 1}}
+llm_defaults: {{concurrency: 1}}
+models: {{default: {{writer: {{provider: mock, model: mock}}}}}}
 pipeline: {{fulltext: false, validate_terms: false, citation_chasing: false}}
 topic: {{records: {{source: file, file: {recf}}}}}
 """)
@@ -1869,6 +1842,28 @@ def test_pending_mode_lets_the_verifier_decide_undecided_records(tmp_path):
     d1 = SC(st, "1001")                  # neither could decide: stays with the person
     assert d1["decision"] == "awaiting" and d1["screen_verify"]["outcome"] == "still_undecided"
     assert SC(st, "1002").get("screen_verify") is None          # decided records are not read in pending mode
+
+
+def test_blind_verifier_reads_without_the_screeners_answer(tmp_path):
+    """verify_screening_blind: the verifier is shown the record and the criteria, not the screener's assessments or
+    decision; the two readings are compared afterwards, with the same outcomes as the anchored reading."""
+    from sragent import pipeline
+    from sragent.stages.screening import verify_existing
+    ctx = make_ctx(tmp_path, extra_cfg={"pipeline": {"verify_screening_blind": True}})
+    seen = []
+    ctx.hub.mock_fn = lambda m, mode: (seen.append(m[-1]["content"]), mock_fn(m, mode))[1]
+    pipeline.run(ctx)
+    st = ctx.store
+    for rid in ("1003", "1001"):
+        set_fulltext_decision(st, rid, decision="awaiting", because=["I3"])
+    r = verify_existing(ctx, st.get("protocol")["data"], mode="pending")
+    assert r["outcomes"] == {"decided_by_verifier": 1, "still_undecided": 1}
+    asked = [u for u in seen if "An independent screening of one record" in u]
+    assert len(asked) == 2 and not any("SCREENER" in u or "awaiting" in u for u in asked)   # nothing of the first reading
+    d3 = SC(st, "1003")
+    assert d3["decision"] == "include" and d3["decided_by"] == "verifier" and d3["screen_verify"]["blind"]
+    rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines()]
+    assert {(r["stage"], r["role"]) for r in rows if r["tag"].startswith("screen_verify")} == {("eligibility", "verifier")}
 
 
 def test_rob_drafts_need_a_person_only_with_an_open_reason(tmp_path):

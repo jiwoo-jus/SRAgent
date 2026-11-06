@@ -1,17 +1,13 @@
 """The one list of stages (docs/refactor/04-refactor-plan.md §1.1 and §2).
 
 Every other list of stages is derived from STAGES: the pipeline order and `--until` choices (pipeline.py), the
-models per stage and their labels (config.LLM_STAGES / STAGE_LABELS / stage_of_tag), the stages whose model is fixed
-once they have started (config_lock.STAGE_STARTED), the To-do groups (todos.STEPS), the Overview rows (ui/steps.py)
-and the stage list of the web interface (/api/state "registry").
+model cells per stage and role (config.MODEL_CELLS, the run file's `models:`), the stages whose models are fixed once
+they have started (config_lock.STAGE_STARTED), the To-do groups (todos.STEPS), the Overview rows (ui/steps.py) and
+the stage list of the web interface (/api/state "registry").
 
-Older keys are accepted wherever a person or an older review folder may still use them (LEGACY): a run file's
-`stage_models` and `pipeline.skip_stages`, `sragent run --until`, and the stage models recorded in store.json when a
-stage started. `fulltext` used to be one stage for retrieval and full-text screening; its model is the eligibility
-stage's model, and `--until fulltext` runs through eligibility.
-
-The model-call tags (`plan`, `screen_full_text`, ...) are not renamed: they are written in every usage.jsonl and
-cost history. Each stage lists the tag prefixes that belong to it.
+Roles (04 §1.2): the writer produces a stage's output; the verifier gives a second reading of the items that have a
+reason (undecided, flagged, doubted). Each stage lists the roles it has. Model-call tags (`plan`, `screen_full_text`,
+...) name what a call does; each stage lists the tag prefixes that belong to it.
 """
 from __future__ import annotations
 
@@ -26,7 +22,7 @@ class StageSpec:
     llm: bool                                # has a model of its own (stage_models.<key>), fixed once it has started
     produces: tuple[str, ...]                # node types (or meta keys, in brackets) this stage writes
     tags: tuple[str, ...] = ()               # model-call tag prefixes attributed to this stage
-    legacy: tuple[str, ...] = ()             # earlier keys of this stage
+    roles: tuple[str, ...] = ("writer",)     # the model roles of this stage (a stage with llm=False has none)
     started: Callable = field(default=lambda st: False, compare=False, repr=False)
 
     @property
@@ -39,51 +35,50 @@ def _retrieval_started(st) -> bool:
     return bool(st.by_type("fulltext")) or any(v.get("stage") == "retrieval" for _, v in screened(st))
 
 
+WV = ("writer", "verifier")
 STAGES: tuple[StageSpec, ...] = (
-    StageSpec("protocol", "Protocol", True, ("protocol", "criterion"), tags=("plan",), legacy=("plan",),
+    StageSpec("protocol", "Protocol", True, ("protocol", "criterion"), tags=("plan",),
               started=lambda st: st.get("protocol") is not None),
     StageSpec("search", "Search", True, ("search", "record"), tags=("search",),
               started=lambda st: st.get("search") is not None),
-    StageSpec("screen", "Title/abstract screening", True, ("screen",), tags=("screen_title_abstract",),
+    StageSpec("screen", "Title/abstract screening", True, ("screen",), tags=("screen_title_abstract",), roles=WV,
               started=lambda st: bool(st.by_type("screen"))),
     StageSpec("retrieve", "Full texts", False, ("fulltext",),
               started=_retrieval_started),
-    StageSpec("eligibility", "Full-text screening", True, ("eligibility",), tags=("screen_full_text",), legacy=("fulltext",),
+    StageSpec("eligibility", "Full-text screening", True, ("eligibility",), tags=("screen_full_text", "eligibility"), roles=WV,
               started=lambda st: bool(st.by_type("eligibility"))),
     StageSpec("snowball", "Citation chasing", True, ("[snowball]", "record"),
               started=lambda st: st.get("snowball") is not None),
     StageSpec("extract", "Data extraction", True, ("extraction",), tags=("extract",),
               started=lambda st: bool(st.by_type("extraction"))),
-    StageSpec("rob", "Risk of bias", True, ("rob",), tags=("rob",),
+    StageSpec("rob", "Risk of bias", True, ("rob",), tags=("rob",), roles=WV,
               started=lambda st: bool(st.by_type("rob"))),
-    StageSpec("synthesis", "Synthesis", True, ("synthesis",), tags=("synthesis",), legacy=("synthesize",),
+    StageSpec("synthesis", "Synthesis", True, ("synthesis",), tags=("synthesis",), roles=WV,
               started=lambda st: bool(st.by_type("synthesis"))),
     StageSpec("report", "Report", False, ("report",),
               started=lambda st: st.get("report") is not None),
 )
 KEYS: tuple[str, ...] = tuple(s.key for s in STAGES)
 BY_KEY: dict[str, StageSpec] = {s.key: s for s in STAGES}
-LEGACY: dict[str, str] = {old: s.key for s in STAGES for old in s.legacy}
 
-# Revisions of dependent outputs, feedback and updates after a person's decisions have their own model slot until
-# models are chosen per (stage, role) (04 §6, phase 5). It is not a stage: nothing in the pipeline order belongs to it.
+# Your feedback and the agent's answer to it (locating what it concerns, checking it against the evidence, revising
+# what it reaches) have model cells of their own. It is not a stage: nothing in the pipeline order belongs to it.
 FEEDBACK = "feedback"
-FEEDBACK_LABEL = "Feedback, revisions and updates"
-
-
-def canonical(key: str | None) -> str | None:
-    """A stage key as used now (an earlier key is translated; anything else is returned as given)."""
-    return LEGACY.get(key, key) if key else key
+FEEDBACK_LABEL = "Feedback and revisions"
+ROLES = WV
 
 
 def label(key: str) -> str:
-    k = canonical(key)
-    return FEEDBACK_LABEL if k == FEEDBACK else BY_KEY[k].label
+    return FEEDBACK_LABEL if key == FEEDBACK else BY_KEY[key].label
 
 
 def model_slots() -> tuple[str, ...]:
-    """The keys of stage_models: every stage with a model, then the feedback slot."""
+    """The stages with model cells (`models.<stage>.<role>`): every stage with a model, then feedback."""
     return tuple(s.key for s in STAGES if s.llm) + (FEEDBACK,)
+
+
+def roles_of(key: str) -> tuple[str, ...]:
+    return WV if key == FEEDBACK else BY_KEY[key].roles
 
 
 def stage_of_tag(tag: str | None) -> str:
@@ -96,22 +91,8 @@ def stage_of_tag(tag: str | None) -> str:
     return FEEDBACK
 
 
-def canonical_keys(d: dict | None, what: str) -> dict:
-    """A mapping keyed by stage (stage_models, recorded locks) with earlier keys translated. Both an earlier and the
-    current key for the same stage is an error: which one is meant is not clear."""
-    out: dict = {}
-    for k, v in (d or {}).items():
-        c = canonical(k)
-        if c in out:
-            old = ", ".join(o for o, n in LEGACY.items() if n == c)
-            raise ValueError(f"{what}: {c!r} is set twice ({old} is its earlier name); keep one")
-        out[c] = v
-    return out
-
-
 def run_until(key: str) -> str:
-    """`--until` / `skip_stages` value: an earlier key is accepted."""
-    k = canonical(key)
-    if k not in BY_KEY:
+    """A stage key given by a person (`--until`, `skip_stages`, a stage page), checked."""
+    if key not in BY_KEY:
         raise ValueError(f"unknown stage {key!r}; stages are {', '.join(KEYS)}")
-    return k
+    return key

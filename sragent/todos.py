@@ -457,8 +457,6 @@ def to_operation(answer: dict) -> tuple[str, dict] | None:
         return "feedback.clarify", {"changeset": tid.split(":", 1)[1], "option": opt, "text": text}
     if tid.startswith("edited:"):
         node = tid[len("edited:"):]
-        if ":" in node.split(":", 1)[1]:          # an id from before phase 2d: edited:<node>:<flag id>
-            node = node.rsplit(":", 1)[0]
         return ("edit.dependents_fine", {"node": node, "note": text}) if opt == "ok" else \
             ("edit.update_dependents", {"node": node, "note": text}) if opt == "update" else None
     if tid.startswith("disagree:"):

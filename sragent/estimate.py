@@ -31,10 +31,12 @@ DEFAULTS = {
     "synthesis_repair": (10000, 500, 2500),
     "feedback": (12000, 1200, 4000),
 }
-# estimate rows -> pipeline stage whose model does that work (stage_models)
-ROW_STAGE = {"plan": "protocol", "search": "search", "screen_title_abstract": "screen", "screen_full_text": "eligibility",
-             "extract": "extract", "rob": "rob", "synthesis": "synthesis", "synthesis_verify": "synthesis",
-             "synthesis_repair": "synthesis", "screen_verify": "eligibility", "rob_verify": "rob", "feedback": "feedback"}
+# estimate rows -> the (stage, role) whose model does that work (config.model_for)
+ROW_CELL = {"plan": ("protocol", "writer"), "search": ("search", "writer"), "screen_title_abstract": ("screen", "writer"),
+            "screen_full_text": ("eligibility", "writer"), "extract": ("extract", "writer"), "rob": ("rob", "writer"),
+            "synthesis": ("synthesis", "writer"), "synthesis_repair": ("synthesis", "writer"),
+            "synthesis_verify": ("synthesis", "verifier"), "screen_verify": ("eligibility", "verifier"),
+            "rob_verify": ("rob", "verifier"), "feedback": ("feedback", "writer")}
 ROB_FLAG_RATE = 1.0     # share of risk-of-bias drafts with a reason for a second look (aspirin review, Haiku: 40 of 40 had the agent's own doubts)
 FORWARD_RATE = 0.56     # share of records forwarded past title/abstract (v2)
 INCLUDE_RATE = 0.09     # share of records finally included (v2)
@@ -98,7 +100,6 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
         calls["screen_title_abstract"] = max(0, unscreened - ruled)
     forwarded_known = [n for n in selection.study_nodes(st) if n["data"]["stage"] == "title_abstract"
                        and n["data"]["decision"] in ("include", "uncertain", "forward")]
-    waiting = sum(1 for n in selection.study_nodes(st) if n["data"]["stage"] == "retrieval")   # no full text yet: no call
     if "eligibility" in order:
         calls["screen_full_text"] = int((len(forwarded_known) + calls["screen_title_abstract"] * FORWARD_RATE) * RETRIEVED_RATE)
     vs = ctx.cfg["pipeline"].get("verify_screening") or "off"
@@ -175,16 +176,13 @@ def out_tokens(stage: str, effort: str | None) -> float:
 
 
 def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None) -> dict:
-    """Like estimate(), with each stage's own model, price and effort (stage_models)."""
-    from .config import role_cfg, stage_cfg
+    """Like estimate(), with the model, price and effort of the stage and role that makes each kind of call."""
+    from .config import model_for
     rows, total = [], 0.0
     for stage, n in calls.items():
         if not n:
             continue
-        if stage in ("synthesis_verify", "screen_verify", "rob_verify"):   # checks are made by the verifier role (default: the agent role)
-            c = role_cfg(cfg, "verifier") if (cfg.get("roles") or {}).get("verifier") else role_cfg(cfg, "agent")
-        else:
-            c = stage_cfg(cfg, ROW_STAGE.get(stage, "feedback"))
+        c = model_for(cfg, *ROW_CELL.get(stage, ("feedback", "writer")))
         e = estimate({stage: n}, c.get("model"), c.get("pricing") or {}, c.get("reasoning_effort"), hist)
         for r in e["rows"]:
             r["model"], r["effort"] = c.get("model"), c.get("reasoning_effort") or "default"

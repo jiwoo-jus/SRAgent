@@ -30,7 +30,7 @@ def plan(ctx: Ctx) -> dict:
     else:
         seed = ctx.topic.get("seed_eligibility", "")
         seed_txt = f"SEED ELIGIBILITY TEXT (from the review team; stay faithful to it):\n{seed}" if seed else ""
-        protocol = ctx.agent.chat(ctx.msgs(prompts.PLAN.format(question=ctx.topic["question"], seed=seed_txt)),
+        protocol = ctx.writer.chat(ctx.msgs(prompts.PLAN.format(question=ctx.topic["question"], seed=seed_txt)),
                                   tag="plan")
         ctx.log(f"[plan] drafted protocol with {len(protocol.get('criteria', []))} criteria")
 
@@ -131,7 +131,7 @@ def revise_protocol(ctx: Ctx, instruction: str) -> dict:
 def draft_revision(ctx: Ctx, instruction: str) -> dict:
     """The model call of a protocol revision; writes nothing (the interface runs it without holding the review)."""
     cur = (ctx.store.get("protocol") or {}).get("data") or {}
-    out = ctx.agent.chat(ctx.msgs(prompts.PLAN_REVISE.format(
+    out = ctx.writer.chat(ctx.msgs(prompts.PLAN_REVISE.format(
         protocol=json.dumps(cur, ensure_ascii=False, indent=1), instruction=instruction)), tag="plan_revise")
     return {"protocol": out.get("protocol"), "explanation": str(out.get("explanation") or "")}
 

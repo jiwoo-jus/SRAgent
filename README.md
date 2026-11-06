@@ -86,7 +86,7 @@ The same pipeline runs on your own vLLM servers.
 sragent local-endpoints --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --probe
 ```
 
-`local-endpoints` takes any run file. To run on local servers, copy a run file and write `llm_defaults: {provider: local, model: auto, concurrency: <servers x slots>}` in it; for Qwen3 add `extra_body: {chat_template_kwargs: {enable_thinking: false}}` for the high-volume stages. Stages or roles on an API model (`stage_models`, `roles.verifier`) do not inherit these local-only options.
+`local-endpoints` takes any run file. To run on local servers, copy a run file and write `models: {default: {writer: {provider: local, model: auto}}}` and `llm_defaults: {concurrency: <servers x slots>}` in it; for Qwen3 add `extra_body: {chat_template_kwargs: {enable_thinking: false}}` to that cell. A cell on an API model (`models.<stage>.<role>`) does not inherit these local-only options.
 
 `local-endpoints` only registers servers that are already running and does not start vLLM. Use `--urls` instead of `--nodes` for a server you reach through your own tunnel. Rerun it with the full new list at any time and active runs pick it up. `local_endpoints.yaml` in the project root is the server list; it also shows how to give nodes to roles (`--roles`, `--add`). See GUIDE.md section 4 for the settings.
 

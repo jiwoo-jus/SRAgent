@@ -9,7 +9,6 @@ Two views of the SAME underlying review (this is the manipulation in Claim 1):
 from __future__ import annotations
 
 import html
-import json
 from collections import Counter
 import time
 

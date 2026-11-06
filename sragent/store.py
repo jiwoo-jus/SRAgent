@@ -325,9 +325,9 @@ class ReviewStore:
         if cl.exists():
             s.changelog = [json.loads(l) for l in cl.read_text().splitlines() if l.strip()]
         s._flushed = len(s.changelog)
-        for i, e in enumerate(s.changelog):   # older entries have no seq: their place in the log is it
-            if e.get("op") in ("create", "update", "status"):
-                s._last[e.get("node")] = e.get("seq", i)
+        for e in s.changelog:
+            if e["op"] in ("create", "update", "status"):
+                s._last[e["node"]] = e["seq"]
         s.reindex()
         return s
 

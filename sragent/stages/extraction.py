@@ -182,7 +182,7 @@ def _merge(ctx: Ctx, rid: str, outs: list[dict], text: str) -> tuple[dict, list]
             for i, c in enumerate(cands, 1):
                 ev = " ".join(f"[{x}] {by_id[x]['text'][:240]}" for x in cites_of(c) if x in by_id)
                 lines.append(f"    candidate {i}: {c.get('value')}\n      evidence: {ev or '(none)'}")
-        out = ctx.agent.chat(ctx.msgs(prompts.EXTRACT_MERGE.format(rid=rid, candidates="\n".join(lines))), tag="extract_merge")
+        out = ctx.writer.chat(ctx.msgs(prompts.EXTRACT_MERGE.format(rid=rid, candidates="\n".join(lines))), tag="extract_merge")
         for name in need:
             v = (out.get("fields") or {}).get(name)
             final[name] = v if isinstance(v, dict) else need[name][0]
@@ -210,7 +210,7 @@ DOUBT_SOURCE = "eligibility_doubt"
 
 def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     """Extraction read the whole paper and claims the study is not eligible (the upward check). A second agent, the
-    verifier role (else the full-text screening model), reads the paper with that claim and the screening's assessment,
+    eligibility stage's verifier, reads the paper with that claim and the screening's assessment,
     and settles it:
 
       the verifier says include                  the study stays included (two readings against one); recorded, no question
@@ -233,7 +233,7 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
     first = next((a for a in sc["data"].get("criteria", []) if a.get("id") == cid), {})
     text, kind = st.text_of(rid)
     limit = int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
-    checker = ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub.agent_for("eligibility")
+    checker = ctx.hub.model("eligibility", "verifier")
     out = checker.chat(ctx.msgs(prompts.ELIGIBILITY_VERIFY.format(
         cid=cid, ctype=crit.get("type", "inclusion"), ctext=crit.get("text", ""),
         screen_assessment=first.get("assessment", "not assessed"),
@@ -294,13 +294,13 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
     crit_spec = criteria_text(_protocol(st), "full_text") or "(none recorded)"
     mode, merged = "single", []
     if data_chars(text) <= budget:
-        out = ctx.agent.chat(ctx.msgs(prompts.EXTRACT.format(question=ctx.topic["question"], fields=fields_spec, criteria=crit_spec,
+        out = ctx.writer.chat(ctx.msgs(prompts.EXTRACT.format(question=ctx.topic["question"], fields=fields_spec, criteria=crit_spec,
                                                               kind=kind, rid=rid, text=packed(text, budget))), tag="extract")
         raw_fields = out.get("fields", {})
         doubt = _doubt(st, out.get("eligibility_doubt"))
     else:   # long paper: read it in consecutive parts (same sentence ids), then merge differing values
         parts = chunks(text, budget)
-        outs = [ctx.agent.chat(ctx.msgs(prompts.EXTRACT.format(
+        outs = [ctx.writer.chat(ctx.msgs(prompts.EXTRACT.format(
             question=ctx.topic["question"], fields=fields_spec, criteria=crit_spec, kind=f"{kind}, part {i} of {len(parts)}",
             rid=rid, text=part)), tag="extract") for i, part in enumerate(parts, 1)]
         raw_fields, merged = _merge(ctx, rid, outs, text)

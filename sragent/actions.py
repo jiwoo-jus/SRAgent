@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import json
 import time
 
 from .context import Ctx
@@ -146,7 +145,7 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
     dec_id = node_id(st, rid)
     screen_before = copy.deepcopy((st.get(dec_id) or {}).get("data"))
     pstage = {"extract": "extract", "rob": "rob"}.get(step) or ("eligibility" if stage == "full_text" else "screen")
-    llm = ctx.hub.agent_for(pstage)          # that stage's model (stage_models), or the model picked for this job
+    llm = ctx.hub.model(pstage)              # that stage's writer, or the model picked for this job
     cs = _new_cs("RR", kind="rerun", label=f"Re-run of {RERUN_STEPS[step].lower()}", rid=rid, step=step,
                  target=nid, note=note, model=llm.name,
                  feedback=f"Re-run {RERUN_STEPS[step].lower()} for study {rid} with {llm.name}"
@@ -167,7 +166,7 @@ def rerun(ctx: Ctx, rid: str, step: str, note: str = "", propagate: bool = True,
             rob.rob_one(sb, rid)
     finally:
         llm.cache = cache
-        sb.stage = None        # revising dependent outputs is feedback work (stage_models.feedback)
+        sb.stage = None        # revising dependent outputs is feedback work (models.feedback.writer)
     after_node = sb.store.get(nid)
     after = after_node["data"] if after_node else None
     screen_after = (sb.store.get(dec_id) or {}).get("data")
@@ -203,7 +202,7 @@ def propagate_from(ctx: Ctx, node_id: str, from_version: int | None = None, note
         raise ValueError(f"{node_id} has no version {from_version}")
     t0, usd0 = time.time(), ctx.hub.tracker.spent
     cs = _new_cs("UP", kind="propagate", label="Update after your edit", target=node_id, rid=study_of(node_id),
-                 model=ctx.agent.name, verdict="propagate",
+                 model=ctx.writer.name, verdict="propagate",
                  feedback=f"Update the outputs that depend on your edit of {node_id} (v{from_version} → v{n['version']})"
                           + (f". Note: {note}" if note else ""))
     sb = dataclasses.replace(ctx, store=st.clone(), note=note)

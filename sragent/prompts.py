@@ -221,6 +221,19 @@ Rules: judge from the record only; cite sentence ids. "agree" is true when you r
 exclude / uncertain), even if a minor assessment differs. List in "differs_on" only the criteria on which your
 assessment changes the decision. {stage_rule}"""
 
+SCREEN_VERIFY_BLIND = """An independent screening of one record. Assess it against every criterion below and decide.
+
+CRITERIA:
+{criteria}
+
+{synonyms}RECORD ({stage}):
+{record}
+
+Return JSON: {{"decision": "include"|"exclude"|"uncertain",
+              "assessments": [{{"id": str, "assessment": "met"|"not_met"|"unclear", "reason": str, "evidence": ["s3", ...]}}],
+              "explanation": str}}
+Rules: judge from the record only; give every criterion; cite sentence ids. {stage_rule}"""
+
 ELIGIBILITY_VERIFY = """A study passed full-text screening; the data-extraction step then read the whole paper and doubts
 that it is eligible. Decide, as an independent check, whether the study stays included.
 

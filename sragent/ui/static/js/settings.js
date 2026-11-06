@@ -1,5 +1,5 @@
-/* Settings (04 §5): the models of each stage and the verifier (the run file's stage_models / roles.verifier; a stage's
-   model is fixed once it has started), the spending cap of the next jobs, and, for benchmark topics, evaluations.
+/* Settings (04 §5): the model of each stage and role (the run file's models:; a stage's models are fixed once it
+   has started), the spending cap of the next jobs, and, for benchmark topics, evaluations.
    What to run is not here: each stage page's toolbar runs that stage. */
 function renderSettings(){
   const el = $("#v-settings");

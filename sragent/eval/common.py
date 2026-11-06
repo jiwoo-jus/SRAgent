@@ -22,7 +22,7 @@ class Judge:
         self.out_dir = out_dir
 
     def __call__(self, kind: str, prompt: str, label_key: str, meta: dict | None = None, tag: str = "judge") -> dict:
-        llm = self.ctx.hub[self.role]
+        llm = self.ctx.hub.model(None, self.role)
         res = llm.chat([{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": prompt}],
                        tag=f"{tag}_{kind}")
         if not isinstance(res, dict):   # not one JSON object: logged without a label instead of failing the run

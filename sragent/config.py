@@ -1,8 +1,9 @@
 """Configuration loading.
 
 A run is configured by one YAML file in configs/<benchmark|review>/<topic>/ that includes the folder's
-topic.yaml and chooses its models (llm_defaults, roles, stage_models). Facts about each model (provider,
-price) are written once, in the model catalog configs/models.yaml, and filled in by model name.
+topic.yaml and chooses its models: `models.<stage>.<role>` (writer, verifier) over `models.default`, and
+`eval.models` for the evaluation roles; `llm_defaults` holds the request settings every model shares. Facts about
+each model (provider, price) are written once, in the model catalog configs/models.yaml, and filled in by model name.
 LLM credentials are never stored in configs; they are read from an `api_env.yaml` file (or from environment
 variables) whose path is given in `llm_defaults.api_env`.
 
@@ -32,21 +33,21 @@ DEFAULTS: dict[str, Any] = {
     "contact_email": "",          # sent to NCBI, Unpaywall and OpenAlex (Unpaywall requires it)
     "ncbi_api_key": "",           # optional, raises E-utilities rate limit
     "models_file": "configs/models.yaml",   # model catalog: provider and price per model name (project root)
-    "llm_defaults": {
-        "provider": "openai",     # openai | gemini | anthropic | local | mock (tests)
-        "model": "gpt-6.1-sol",
+    "llm_defaults": {             # request settings every model uses; a model cell can override any of them
         "api_env": "api_env.yaml",
-        "base_url": None,         # optional API endpoint override (local servers are listed in local.endpoints_file)
         "temperature": 0.0,
         "max_tokens": 8192,
-        "reasoning_effort": None, # openai/gemini: low | medium | high; anthropic: low | medium | high | xhigh | max
-        "extra_body": {},         # optional provider request parameters (e.g. Qwen chat_template_kwargs)
         "timeout": 600,
         "max_retries": 4,
         "json_mode": True,        # use response_format=json_object when available
-        "pricing": {"input_per_m": 0.0, "output_per_m": 0.0},
         "concurrency": 4,
     },
+    # The model of each stage and role (04 §6): models.<stage>.<role>, else models.default.<role>. Roles: writer
+    # (produces the stage's output) and verifier (the second reading; unset = models.default.writer). A cell is a model
+    # name or {model, reasoning_effort, provider, pricing, base_url, extra_body, and any llm_defaults key}; provider and price come
+    # from the model catalog when not written. Stages: protocol search screen eligibility snowball extract rob synthesis,
+    # and feedback (your feedback and the revisions it starts). A stage's cells are fixed once it has started.
+    "models": {"default": {"writer": "gpt-6.1-sol"}},
     "local": {
         "endpoints_file": "local_endpoints.yaml",   # live vLLM endpoint list (project root)
         "poll_interval": 2,
@@ -54,20 +55,9 @@ DEFAULTS: dict[str, Any] = {
         "probe_timeout": 5,
         "wait_timeout": None,   # wait for updated/recovered endpoints until cancelled
     },
-    # model and effort per pipeline stage, over the agent role: {stage: {model, reasoning_effort, provider, ...}}.
-    # Stages: plan search screen fulltext snowball extract rob synthesize, and feedback (feedback handling,
-    # revisions, sync). Unset = the agent role. Provider and price come from the model catalog when not written.
-    # A stage's model is fixed once the stage has started (config_lock.py).
-    "stage_models": {},
-    # role-specific overrides of llm_defaults
-    "roles": {
-        "agent": {},      # does the review work
-        "judge": {},      # LLM-as-judge for evaluation
-        "reviewer": {},   # simulated human reviewer for Claim 1
-        "judge2": {},     # second judge for inter-judge agreement
-        "verifier": {},   # optional: checks feedback against the evidence; empty = the agent does it
-    },
     "eval": {                         # `sragent eval` only
+        "models": {},                 # judge (LLM-as-judge), judge2 (inter-judge agreement), reviewer (simulated person,
+                                      #   Claim 1); a cell like those of `models`; unset = models.default.writer
         "budget_usd": 8.0,            # per evaluation run (each run has its own usage.jsonl)
         "seed": 2026,
         "grounding_max_studies": 15,  # null = all supplied studies
@@ -99,9 +89,11 @@ DEFAULTS: dict[str, Any] = {
         "verify_rob": "off",          # risk-of-bias drafts with a reason for a second look (the agent's own doubt, a judgment
                                       #   without a cited sentence, an overall milder than a domain): off -> to a person;
                                       #   flagged -> the verifier settles them, a person sees only what it cannot settle
-        "verify_screening": "off",    # a second agent (roles.verifier) reads screening decisions: off | pending | full_text | all
+        "verify_screening": "off",    # a second agent (the stage's verifier) reads screening decisions: off | pending | full_text | all
                                       #   pending: only records undecided after their full text (it decides, or leaves it to a person)
                                       #   full_text: every full-text decision; all: also title/abstract exclusions (disputes go to a person)
+        "verify_screening_blind": False,   # the screening verifier reads the record and the criteria without the screener's
+                                      #   answer; the two readings are compared afterwards (an independent second reading)
         "pdf_parser": "auto",         # auto | azure_cu | pdftotext
         "azure_cu_analyzer": "prebuilt-documentSearch",   # or prebuilt-layout (no figure descriptions, cheaper)
         "vision_pages": False,        # without Azure: transcribe table/figure pages with the (multimodal) agent model
@@ -149,8 +141,9 @@ def _resolve_paths(user: dict, base: Path) -> None:
     fix(user, "models_file")
     fix(user.get("local"), "endpoints_file")
     fix(user.get("llm_defaults"), "api_env")
-    for role in (user.get("roles") or {}).values():
-        fix(role, "api_env")
+    for cells in list((user.get("models") or {}).values()) + [((user.get("eval") or {}).get("models") or {})]:
+        for cell in (cells or {}).values() if isinstance(cells, dict) else ():
+            fix(cell, "api_env")
 
 
 def _load_layer(p: Path, depth: int = 0) -> dict:
@@ -181,13 +174,18 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
     if p["human_mode"] == "agent_only" and p["fulltext_unclear"] == "await":
         raise ValueError("pipeline.fulltext_unclear: await leaves records for a person to decide; "
                          "with human_mode: agent_only set it to include or exclude")
-    _resolve_stage_models(cfg)
+    unknown = set(cfg) - set(DEFAULTS) - {"topic", "_config_dir", "_catalog", "job_model"}
+    if unknown:
+        raise ValueError(f"unknown settings: {', '.join(sorted(unknown))} (configs/README.md lists the run file's sections)")
+    bad = set(cfg["llm_defaults"]) - set(DEFAULTS["llm_defaults"])
+    if bad:
+        raise ValueError(f"llm_defaults: unknown keys {', '.join(sorted(bad))}; models are chosen under models: "
+                         "(models.default.writer, models.<stage>.<role>)")
+    _check_models(cfg)
     for k, v in (cfg.get("update_policy") or {}).items():
         if k not in ("screen", "extraction", "rob", "synthesis") or v not in ("auto", "propose", "manual"):
             raise ValueError(f"update_policy.{k}: {v!r}; keys are screen, extraction, rob, synthesis and values auto, propose or manual")
-    # an earlier key is accepted; `fulltext` was retrieval and full-text screening together
-    p["skip_stages"] = [k for x in (p.get("skip_stages") or [])
-                        for k in (("retrieve", "eligibility") if x == "fulltext" else (stagespec.run_until(x),))]
+    p["skip_stages"] = [stagespec.run_until(x) for x in (p.get("skip_stages") or [])]
     bad = [x for x in p["skip_stages"] if x in ("protocol", "screen", "report")]
     if bad:
         raise ValueError(f"pipeline.skip_stages: {', '.join(bad)} cannot be skipped")
@@ -212,12 +210,6 @@ def default_run_dir(path: str | os.PathLike | None) -> str:
 def is_benchmark(cfg: dict) -> bool:
     """A benchmark topic has known answers (gold labels), so runs can be sampled and evaluated."""
     return ((cfg.get("topic") or {}).get("records") or {}).get("source") == "synergy"
-
-
-def role_cfg(cfg: dict, role: str) -> dict:
-    """LLM settings for a role = llm_defaults overridden by roles[role]; the provider and price of its model
-    come from the model catalog unless the role writes its own."""
-    return _with_model(cfg, cfg["llm_defaults"], cfg.get("roles", {}).get(role, {}) or {})
 
 
 # ---------------------------------------------------------------- model catalog
@@ -254,12 +246,12 @@ def load_catalog(path: str | os.PathLike | None) -> dict:
 
 def _with_model(cfg: dict, base: dict, ov: dict) -> dict:
     """base overridden by ov; then the catalog's facts about the resulting model, except those ov writes."""
-    sc = _over_agent(base, ov)
+    sc = _over(base, ov)
     facts = (cfg.get("_catalog") or {}).get(sc.get("model")) or {}
     for k, v in facts.items():
         if k not in ov:
             sc[k] = copy.deepcopy(v)
-    if sc.get("provider") != base.get("provider"):
+    if base.get("provider") and sc.get("provider") != base.get("provider"):
         # another provider than the defaults: provider-specific request options (vLLM chat_template_kwargs, json_mode)
         # are not inherited; an API provider would reject them
         for k in ("extra_body", "json_mode"):
@@ -267,60 +259,83 @@ def _with_model(cfg: dict, base: dict, ov: dict) -> dict:
     return sc
 
 
-# ---------------------------------------------------------------- per-stage models
+# ---------------------------------------------------------------- models per stage and role
 
-LLM_STAGES = stagespec.model_slots()          # the keys of stage_models
-STAGE_LABELS = {k: stagespec.label(k) for k in LLM_STAGES}
-stage_of_tag = stagespec.stage_of_tag
+MODEL_STAGES = stagespec.model_slots()        # the stages with model cells (models.<stage>.<role>), then feedback
+STAGE_LABELS = {k: stagespec.label(k) for k in MODEL_STAGES}
+EVAL_ROLES = ("judge", "judge2", "reviewer")
 EFFORTS = {"anthropic": ("low", "medium", "high", "xhigh", "max"), "openai": ("low", "medium", "high"),
            "gemini": ("low", "medium", "high")}
-_STAGE_KEYS = set(DEFAULTS["llm_defaults"]) | {"fallbacks"}
+_FACTS = ("model", "provider", "pricing", "base_url", "reasoning_effort", "fallbacks",
+          "extra_body")   # provider request parameters (e.g. vLLM chat_template_kwargs): a cell's own, not shared
 
 
-def _resolve_stage_models(cfg: dict) -> None:
-    """Check stage_models (each stage's provider and price come from the model catalog when not written)."""
-    sm = cfg.get("stage_models") or {}
-    if not isinstance(sm, dict):
-        raise ValueError("stage_models must map a stage to its settings, e.g. extract: {model: ..., reasoning_effort: medium}")
-    sm = cfg["stage_models"] = stagespec.canonical_keys(sm, "stage_models")   # plan -> protocol, fulltext -> eligibility, ...
-    agent = role_cfg(cfg, "agent")
-    catalog = cfg.get("_catalog") or {}
-    for stage, ov in list(sm.items()):
-        if stage not in LLM_STAGES:
+def _cell(v) -> dict:
+    """A model cell as a mapping: a bare model name is {model: name}."""
+    return {"model": v} if isinstance(v, str) else dict(v or {})
+
+
+def _layers(cfg: dict, stage: str | None, role: str) -> dict:
+    """llm_defaults, then models.default.<role>, then models.<stage>.<role>."""
+    m = cfg["models"]
+    c = _with_model(cfg, cfg["llm_defaults"], _cell((m.get("default") or {}).get(role)))
+    return _with_model(cfg, c, _cell((m.get(stage) or {}).get(role))) if stage else c
+
+
+def model_for(cfg: dict, stage: str | None, role: str = "writer") -> dict:
+    """The settings of the model for one stage and role (stage None: models.default). A verifier with no cell in
+    models.default starts from models.default.writer, not from the stage's writer: a stage written by a stronger
+    model is still read again by another one. An evaluation role (judge, judge2, reviewer) is eval.models.<role> over
+    models.default.writer. job_model, a model a person picked for one job, replaces every writer of that job (never
+    a verifier)."""
+    if role in EVAL_ROLES:
+        return _with_model(cfg, _layers(cfg, None, "writer"), _cell((cfg["eval"].get("models") or {}).get(role)))
+    if role == "verifier":
+        base = _layers(cfg, None, "verifier" if (cfg["models"].get("default") or {}).get("verifier") else "writer")
+        return _with_model(cfg, base, _cell((cfg["models"].get(stage) or {}).get("verifier"))) if stage else base
+    c = _layers(cfg, stage, "writer")
+    return _with_model(cfg, c, _cell(cfg["job_model"])) if cfg.get("job_model") else c
+
+
+def _check_models(cfg: dict) -> None:
+    """models: known stages and roles, cells that resolve to a known provider and price, efforts the provider offers."""
+    m = cfg.get("models")
+    if not isinstance(m, dict) or not (m.get("default") or {}).get("writer"):
+        raise ValueError("models.default.writer is required: the model of every stage and role not written otherwise")
+    keys = set(DEFAULTS["llm_defaults"]) | set(_FACTS)
+    cells = [(f"eval.models.{r}", cfg["eval"].get("models", {}).get(r), None, r) for r in (cfg["eval"].get("models") or {})]
+    for stage, roles in m.items():
+        if stage != "default" and stage not in MODEL_STAGES:
             hint = f" ({stagespec.label(stage).lower()} makes no model calls)" if stage in stagespec.BY_KEY else ""
-            raise ValueError(f"stage_models.{stage}: unknown stage{hint}; use one of {', '.join(LLM_STAGES)}")
-        if ov is None:
-            sm[stage] = {}
-            continue
-        if not isinstance(ov, dict):
-            raise ValueError(f"stage_models.{stage}: write a mapping, e.g. {{model: claude-sonnet-5-5, reasoning_effort: high}}")
-        bad = set(ov) - _STAGE_KEYS
+            raise ValueError(f"models.{stage}: unknown stage{hint}; use default or one of {', '.join(MODEL_STAGES)}")
+        if not isinstance(roles, dict):
+            raise ValueError(f"models.{stage}: write the roles, e.g. {{writer: claude-haiku-5-5, verifier: gpt-6.1-sol}}")
+        for role, v in roles.items():
+            ok = stagespec.ROLES if stage == "default" else stagespec.roles_of(stage)
+            if role not in ok:
+                raise ValueError(f"models.{stage}.{role}: unknown role; {stage} has {', '.join(ok)}")
+            cells.append((f"models.{stage}.{role}", v, None if stage == "default" else stage, role))
+    for where, v, stage, role in cells:
+        if v is not None and not isinstance(v, (str, dict)):
+            raise ValueError(f"{where}: a model name or a mapping such as {{model: claude-sonnet-5-5, reasoning_effort: high}}")
+        bad = set(_cell(v)) - keys
         if bad:
-            raise ValueError(f"stage_models.{stage}: unknown keys {', '.join(sorted(bad))}")
-        ov = dict(ov)
-        if ov.get("model") and ov["model"] != agent.get("model") and ov["model"] not in catalog and not ov.get("pricing") \
-                and ov.get("provider", agent.get("provider")) != "local":
-            raise ValueError(f"stage_models.{stage}: {ov['model']} is not in the model catalog "
-                             f"({cfg.get('models_file')}); add it there or write pricing: {{input_per_m: ..., output_per_m: ...}}")
-        sc = _with_model(cfg, agent, ov)
-        eff = sc.get("reasoning_effort")
-        ok = EFFORTS.get(sc.get("provider"))
-        if eff is not None and ok and eff not in ok:
-            raise ValueError(f"stage_models.{stage}.reasoning_effort: {eff!r} is not offered for {sc['provider']} "
-                             f"(use {', '.join(ok)} or null for the model default)")
-        sm[stage] = ov
-    cfg["stage_models"] = sm
+            raise ValueError(f"{where}: unknown keys {', '.join(sorted(bad))}")
+        if role not in EVAL_ROLES and role not in stagespec.ROLES:
+            raise ValueError(f"eval.models.{role}: unknown role; use {', '.join(EVAL_ROLES)}")
+        c, own = model_for(cfg, stage, role), _cell(v)
+        if not c.get("provider") or (own.get("model") and own["model"] not in (cfg.get("_catalog") or {})
+                                     and not own.get("pricing") and c["provider"] not in ("local", "mock")):
+            raise ValueError(f"{where}: {c.get('model')} is not in the model catalog ({cfg.get('models_file')}); add it "
+                             "there or write provider and pricing: {input_per_m: ..., output_per_m: ...}")
+        eff, offered = c.get("reasoning_effort"), EFFORTS.get(c.get("provider"))
+        if eff is not None and offered and eff not in offered:
+            raise ValueError(f"{where}.reasoning_effort: {eff!r} is not offered for {c['provider']} "
+                             f"(use {', '.join(offered)} or null for the model default)")
 
 
-def stage_cfg(cfg: dict, stage: str | None) -> dict:
-    """LLM settings for the agent in one pipeline stage = the agent role overridden by stage_models[stage]."""
-    agent = role_cfg(cfg, "agent")
-    ov = (cfg.get("stage_models") or {}).get(stagespec.canonical(stage) or "") or {}
-    return _with_model(cfg, agent, ov) if ov else agent
-
-
-def _over_agent(agent: dict, ov: dict) -> dict:
-    """A stage's settings over the agent's; a stage's own price replaces the agent's (never merged into it)."""
+def _over(agent: dict, ov: dict) -> dict:
+    """A cell over the settings below it; a cell's own price replaces the one below (never merged into it)."""
     sc = deep_merge(agent, ov)
     if ov.get("pricing"):
         sc["pricing"] = copy.deepcopy(ov["pricing"])

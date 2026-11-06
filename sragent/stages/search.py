@@ -61,7 +61,7 @@ def build_query(ctx: Ctx, protocol: dict) -> dict:
         v = kc.get("validation") or {}
         syn_lines.append(f"- {kc['term']} ({kc.get('kind')}): status={v.get('status', 'n/a')}; "
                          f"synonyms={', '.join((v.get('synonyms') or [])[:12]) or 'none'}")
-    q = ctx.agent.chat(ctx.msgs(prompts.SEARCH_QUERY.format(protocol=protocol_brief(protocol),
+    q = ctx.writer.chat(ctx.msgs(prompts.SEARCH_QUERY.format(protocol=protocol_brief(protocol),
                                                             synonyms="\n".join(syn_lines))), tag="search")
     return q
 
@@ -106,7 +106,7 @@ def suggest_queries(ctx: Ctx, protocol: dict) -> dict:
         base = {"id": "V0", "name": "The agent's query", "query": q.get("query", ""),
                 "rationale": q.get("rationale", ""), "expect": "sensitive", "concept_blocks": q.get("concept_blocks", [])}
         base.update(count(ctx, base["query"]))
-    out = ctx.agent.chat(ctx.msgs(prompts.SEARCH_VARIANTS.format(
+    out = ctx.writer.chat(ctx.msgs(prompts.SEARCH_VARIANTS.format(
         protocol=protocol_brief(protocol), synonyms=_syn_lines(protocol), current=base["query"],
         current_count=base.get("count", "?"))), tag="search_variants")
     variants = [base]
@@ -131,7 +131,7 @@ def refine_query(ctx: Ctx, protocol: dict, query: str, instruction: str) -> dict
     st = ctx.store
     m = strategy_meta(st)
     cur = count(ctx, query)
-    out = ctx.agent.chat(ctx.msgs(prompts.SEARCH_REFINE.format(
+    out = ctx.writer.chat(ctx.msgs(prompts.SEARCH_REFINE.format(
         protocol=protocol_brief(protocol), current=query, current_count=cur.get("count", "?"), instruction=instruction)),
         tag="search_refine")
     new_q = str(out.get("query") or query)

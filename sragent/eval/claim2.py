@@ -172,7 +172,7 @@ def build_D(ctx: Ctx, rnd: random.Random, rid: str) -> dict | None:
     if not cands:
         return None
     f, v = rnd.choice(cands)
-    out = ctx.agent.chat(ctx.msgs(prompts.INJECT_FALSE_FEEDBACK.format(node_id=f"ext:{rid}", field=f, value=v["value"],
+    out = ctx.writer.chat(ctx.msgs(prompts.INJECT_FALSE_FEEDBACK.format(node_id=f"ext:{rid}", field=f, value=v["value"],
                                                                        quote=v.get("quote", ""))), tag="inject")
     return {"type": "D_false_feedback", "rid": rid, "target": f"ext:{rid}", "field": f, "R1": st.clone(),
             "gold_value": v["value"], "false_claim": out.get("false_claim"), "feedback": out.get("feedback"),

@@ -140,10 +140,20 @@ def _status(spec, rows: list[dict], waiting: int, st) -> str:
     return "done" if spec.started(st) else "not started"
 
 
+def spent_by_cell(ctx) -> dict[tuple, float]:
+    """USD spent so far by (stage, role), from usage.jsonl."""
+    import json
+    out: dict[tuple, float] = defaultdict(float)
+    p = ctx.run_dir / "usage.jsonl"
+    for line in p.read_text().splitlines() if p.exists() else ():
+        u = json.loads(line)
+        out[(u.get("stage"), u.get("role"))] += float(u.get("usd") or 0)
+    return out
+
+
 def stage_page(ctx, key: str, job: dict | None = None, jobs: list[dict] | None = None) -> dict:
     from .. import engine
-    from ..config import stage_cfg
-    from ..config_lock import STAGE_STARTED
+    from ..config_lock import STAGE_STARTED, cell
     st = ctx.store
     key = stagespec.run_until(key)
     spec = stagespec.BY_KEY[key]
@@ -185,29 +195,15 @@ def stage_page(ctx, key: str, job: dict | None = None, jobs: list[dict] | None =
             cn = st.get(c)
             if cn and cn["status"] == "active" and cn["type"] not in TYPES[key]:
                 down[cn["type"]] += 1
-    spent = defaultdict(float)
-    import json as _json
-    p = ctx.run_dir / "usage.jsonl"
-    if p.exists():
-        for line in p.read_text().splitlines():
-            try:
-                u = _json.loads(line)
-            except ValueError:
-                continue
-            spent[stagespec.stage_of_tag(u.get("tag"))] += float(u.get("usd") or 0)
-    models = {}
-    if spec.llm:
-        c = stage_cfg(ctx.cfg, key)
-        models["writer"] = {"model": c.get("model"), "effort": c.get("reasoning_effort"), "fixed": key in STAGE_STARTED and STAGE_STARTED[key](st)}
-    if v:
-        from ..config import role_cfg
-        rv = (ctx.cfg.get("roles") or {}).get("verifier") or {}
-        models["verifier"] = {"model": (role_cfg(ctx.cfg, "verifier") if rv.get("model") else stage_cfg(ctx.cfg, key)).get("model")}
+    spent = spent_by_cell(ctx)
+    fixed = key in STAGE_STARTED and STAGE_STARTED[key](st)
+    models = {r: {**cell(ctx.cfg, key, r), "fixed": fixed, "spent_usd": round(spent.get((key, r), 0.0), 4)}
+              for r in (spec.roles if spec.llm else ())}
     off = key == "snowball" and not ctx.cfg["pipeline"].get("citation_chasing", True)
     return {"key": key, "label": spec.label, "order": spec.order, "llm": spec.llm,
             "status": "off (pipeline.citation_chasing)" if off else _status(spec, rows, len(waiting), st), "counts": {"items": len(rows), "out_of_date": sum(1 for r in rows if r["stale"]),
                                                                          "needs_you": len(waiting)},
-            "models": models, "spent_usd": round(spent.get(key, 0.0), 4),
+            "models": models, "spent_usd": round(sum(u for (s, _), u in spent.items() if s == key), 4),
             "pending": {"items": len(mine), "est_usd": engine._cost(ctx, mine).get("total_usd") if mine else 0},
             "toolbar": tb, "inputs": inputs, "dependents": dict(sorted(down.items())), "items": rows, "needs_you": waiting,
             "jobs": [j for j in (jobs or []) if _job_stage(j) == key][:20]}

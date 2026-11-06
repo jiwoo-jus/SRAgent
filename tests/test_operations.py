@@ -246,7 +246,7 @@ G03_PDF = "Emicizumab pharmacokinetics in 140 patients: trough concentrations we
 
 SCENARIOS = {
     # protocol
-    "protocol.draft@pipeline": ("protocol.draft", "empty", _pipeline("plan")),
+    "protocol.draft@pipeline": ("protocol.draft", "empty", _pipeline("protocol")),
     "protocol.approve@todo": ("protocol.approve", "planned", _todo("protocol", "approve", "looks right")),
     "protocol.edit_criteria@page": ("protocol.edit_criteria", "reviewed", _protocol_edit_criteria),
     "protocol.revise@page": ("protocol.revise", "reviewed", _protocol_revise),
@@ -497,86 +497,6 @@ def test_review_state_is_in_nodes_not_meta():
         for k in re.findall(r"meta(?:\.get|\.setdefault|\.pop)?[\(\[]\s*[\"'](\w+)[\"']", p.read_text()):
             used.setdefault(k, []).append(p.name)
     assert set(used) <= META_ALLOWED, {k: v for k, v in used.items() if k not in META_ALLOWED}
-
-
-def test_an_older_review_is_migrated_with_a_backup(tmp_path):
-    """A review saved before phase 2b (side notes in meta, schema 2) opens with its notes moved into nodes, its old
-    store kept beside it, and the same meaning: the approval holds, the scope, requests and rules are where they were."""
-    from sragent import state
-    from sragent.context import Ctx
-    from test_golden import golden_mock
-    ctx = reviewed(tmp_path, AWAITING)
-    st = ctx.store
-    state.approve(st, "ok")
-    approved_v = st.get("protocol")["version"]
-    # turn the nodes back into the meta of an older store
-    m = st.meta
-    m["protocol_approved"] = {"ts": 1.0, "note": "ok"}
-    m["search_strategy"] = {"variants": [], "chat": [], "confirmed": {"query": "emicizumab[tiab]", "count": 9}}
-    m["synthesis_considered"] = state.considered(st)
-    m["synthesis_written_with"] = {"included": 2, "not_retrieved": 0, "when": "x"}
-    m["pdf_wanted"], m["pdf_unavailable"] = {"G03": True}, ["G05"]
-    m["rules_applied"] = state.rules_applied(st)
-    m["waiting_for_pdfs"] = 1
-    for nid in [n["id"] for n in st.nodes.values() if n["type"] in STATE_TYPES]:
-        del st.nodes[nid]
-    for n in st.by_type("screen"):
-        n["depends_on"] = [d for d in n["depends_on"] if d != "cfg:screening_rules"]
-    m["schema"] = 2
-    st.reindex()
-    ctx.save()
-    c2 = Ctx.create(ctx.cfg, mock_fn=golden_mock)
-    s2 = c2.store
-    from sragent import graph as _g
-    assert (ctx.run_dir / "store.schema2.bak.json").exists() and s2.meta["schema"] == _g.SCHEMA
-    assert not set(s2.meta) - META_ALLOWED
-    assert state.approval(s2) and s2.get("protocol")["version"] == approved_v
-    assert state.confirmed_query(s2)["query"] == "emicizumab[tiab]"
-    assert state.considered(s2) == ["G01", "G02"] and s2.get(state.SCOPE)["data"]["written_with"]["included"] == 2
-    assert state.wanted(s2) == {"G03"} and state.unavailable(s2) == {"G05"}
-    assert state.rules_applied(s2)["rules"] and "cfg:screening_rules" in s2.get("screen:G07")["depends_on"]
-    from sragent import graph
-    assert not graph.stale(s2), graph.stale(s2)         # the migration itself makes nothing out of date
-
-
-def test_one_screen_node_per_study_is_split_on_load(tmp_path):
-    """A review saved when one screen node held both stages (schema 3) opens with the full-text decision on
-    elig:<rid> and the title/abstract decision on screen:<rid>; every study's eligibility reads the same, the
-    flags move with the decision, and nothing becomes out of date."""
-    from sragent import graph
-    from sragent.context import Ctx
-    from test_golden import golden_mock
-    ctx = reviewed(tmp_path, AWAITING)
-    st = ctx.store
-    want = json.loads(json.dumps(view(ctx), default=list))
-    # merge each elig node back into its screen node, as schema 3 stored it
-    for el in list(st.by_type("eligibility")):
-        rid = el["id"].split(":", 1)[1]
-        sc = st.get(f"screen:{rid}")
-        sc["history"].append({"version": sc["version"], "data": sc["data"], "evidence": sc["evidence"], "status": sc["status"]})
-        sc["data"] = {**el["data"], "title_abstract": {k: sc["data"].get(k) for k in ("decision", "because")}}
-        sc["version"] += 1
-        sc["depends_on"] = sorted({f"rec:{rid}"} | (set(el["depends_on"]) - {f"screen:{rid}", "cfg:fulltext_unclear"}))
-        sc["dep_versions"] = {d: st.get(d)["version"] for d in sc["depends_on"]}
-        sc["evidence"], sc["flags"] = el["evidence"], el["flags"]
-        for x in ("ext", "rob"):
-            m = st.get(f"{x}:{rid}")
-            if m and f"elig:{rid}" in m["depends_on"]:
-                m["depends_on"] = sorted((set(m["depends_on"]) - {f"elig:{rid}"}) | {f"screen:{rid}"})
-                m["dep_versions"].pop(f"elig:{rid}")
-                m["dep_versions"][f"screen:{rid}"] = sc["version"]
-        del st.nodes[el["id"]]
-    st.meta["schema"] = 3
-    st.reindex()
-    ctx.save()
-    c2 = Ctx.create(ctx.cfg, mock_fn=golden_mock)
-    s2 = c2.store
-    assert (ctx.run_dir / "store.schema3.bak.json").exists() and s2.meta["schema"] == graph.SCHEMA
-    assert {n["id"] for n in s2.by_type("eligibility")} == {"elig:G01", "elig:G02", "elig:G03", "elig:G06"}
-    assert json.loads(json.dumps(view(c2), default=list)) == want
-    assert s2.get("screen:G01")["data"]["stage"] == "title_abstract" and "elig:G01" in s2.get("ext:G01")["depends_on"]
-    assert not graph.stale(s2)
-    assert not {n["id"]: p for n in s2.nodes.values() if (p := graph.edge_problems(n))}
 
 
 def test_a_changed_rule_set_makes_its_exclusions_out_of_date(tmp_path):

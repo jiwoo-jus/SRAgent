@@ -14,7 +14,8 @@ from pathlib import Path
 
 import yaml
 
-from ..config import DEFAULTS, LLM_STAGES, default_run_dir, is_benchmark, load_catalog, load_config, role_cfg, stage_cfg
+from ..config import DEFAULTS, EVAL_ROLES, MODEL_STAGES, default_run_dir, is_benchmark, load_catalog, load_config, model_for
+from ..stagespec import roles_of
 from ..config_lock import pending
 
 KINDS = ("review", "benchmark")
@@ -116,7 +117,7 @@ class Library:
             cfg = load_config(p)
         except Exception as e:
             return {**row, "error": f"{type(e).__name__}: {e}"[:300]}
-        a = role_cfg(cfg, "agent")
+        a = model_for(cfg, None)
         rd = Path(cfg["run_dir"]).resolve()
         topic = cfg.get("topic") or {}
         locked = [c["key"] for c in pending(cfg, rd)]
@@ -315,7 +316,7 @@ class Library:
         for m in unpriced:
             warnings.append(f"{m} is not in {self.rel(self.catalog_path)}: its calls are counted as free by the "
                             "budget guard and the estimates (add it there, or write its pricing)")
-        a, j = role_cfg(cfg, "agent"), role_cfg(cfg, "judge")
+        a, j = model_for(cfg, None), model_for(cfg, None, "judge")
         rd = Path(cfg["run_dir"]).resolve()
         ch = pending(cfg, rd)
         if ch:
@@ -330,10 +331,9 @@ class Library:
 
     @staticmethod
     def _models_of(cfg: dict) -> set:
-        """Names of the API models a run file uses (roles it uses and every stage), without priced ones it writes itself."""
+        """Names of the API models a run file uses (every model cell), without priced ones it writes itself."""
         out = set()
-        for c in [role_cfg(cfg, r) for r in ("agent", "judge", "reviewer", "judge2", "verifier")] + \
-                 [stage_cfg(cfg, st) for st in LLM_STAGES]:
+        for c in [model_for(cfg, s, r) for s in MODEL_STAGES for r in roles_of(s)] + [model_for(cfg, None, r) for r in EVAL_ROLES]:
             pr = c.get("pricing") or {}
             if c.get("provider") not in ("local", "mock") and c.get("model") and \
                     (c["model"] in (cfg.get("_catalog") or {}) or not (pr.get("input_per_m") or pr.get("output_per_m"))):
@@ -409,27 +409,30 @@ class Library:
 
     # ------------------------------------------------------------ new files
     def _models_block(self, kind: str, folder: Path, b: dict) -> tuple[list[str], str]:
-        """llm_defaults (the agent) and, for a benchmark, the judge: chosen by name from the catalog."""
+        """llm_defaults and models.default.writer (the model of every stage and role) and, for a benchmark, the judge:
+        chosen by name from the catalog."""
         names = {m["name"] for m in self.catalog_models()}
         agent = b.get("agent_model") or ""
         effort = b.get("agent_effort") or "low"
         env = Path(os.path.relpath(self.base / "api_env.yaml", folder)).as_posix()
         if agent == "local":
-            lines = ["llm_defaults:                # your vLLM servers (local_endpoints.yaml); free",
-                     "  provider: local", "  model: auto", f"  api_env: {env}   # optional local_api_key",
-                     "  reasoning_effort: null", "  max_tokens: 16000", "  concurrency: 32"]
+            lines = ["llm_defaults:                # request settings every model uses",
+                     f"  api_env: {env}   # optional local_api_key", "  max_tokens: 16000", "  concurrency: 32",
+                     "models:                      # models.<stage>.<role> over models.default; your vLLM servers are free",
+                     "  default: {writer: {provider: local, model: auto}}"]
         else:
             if agent not in names:
-                raise ValueError(f"choose an agent model from {self.rel(self.catalog_path)}")
-            lines = ["llm_defaults:                # models by name; provider and price come from configs/models.yaml",
-                     f"  model: {agent}      # the agent, and every role and stage that does not say otherwise",
-                     f"  api_env: {env}", f"  reasoning_effort: {effort}", "  max_tokens: 16000", "  concurrency: 6"]
+                raise ValueError(f"choose a model from {self.rel(self.catalog_path)}")
+            lines = ["llm_defaults:                # request settings every model uses",
+                     f"  api_env: {env}", "  max_tokens: 16000", "  concurrency: 6",
+                     "models:                      # models.<stage>.<role> over models.default; provider and price come from configs/models.yaml",
+                     f"  default: {{writer: {{model: {agent}, reasoning_effort: {effort}}}}}"]
         judge = b.get("judge_model") or ""
         if kind == "benchmark" and judge:
             if judge not in names:
                 raise ValueError(f"choose a judge model from {self.rel(self.catalog_path)}")
-            lines += ["roles:                         # evaluation roles (sragent eval)",
-                      f"  judge: {{model: {judge}, reasoning_effort: medium}}"]
+            lines += ["eval:                         # sragent eval",
+                      f"  models: {{judge: {{model: {judge}, reasoning_effort: medium}}}}"]
         return lines, ("local" if agent == "local" else agent)
 
     @staticmethod

@@ -18,7 +18,6 @@ change it makes in a change set so the caller can show, propose or log it.
 from __future__ import annotations
 
 import copy
-import json
 from collections import defaultdict
 
 from . import graph, selection

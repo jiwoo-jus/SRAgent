@@ -6,14 +6,14 @@ current config with that record and refuses to continue when they differ, whiche
 edited (web interface, text editor, a changed include, --run-dir onto an existing folder). Nothing is
 spent and no output is mixed.
 
-Each stage's agent model and effort (stage_models, else the agent role) is fixed the same way once that
-stage has started (STAGE_STARTED); the model of a stage that has not started can change freely.
+Each stage's model cells (models.<stage>.writer and .verifier, as they resolve: config.model_for) are fixed the
+same way once that stage has started (STAGE_STARTED); the cells of a stage that has not started can change freely.
 
 Three ways on: revert the edit; make a new run file (its own runs/ folder); or accept the change on
 purpose (`sragent accept-config --reason ...` or the web interface). An accepted change is written to
 meta.config_changes and to provenance.jsonl, and the report and every evaluation of the run show it.
-Other settings (budget, contact email, the models of stages not yet started, feedback handling, the judges,
-feedback.*, eval.*) can change at any time.
+Other settings (budget, contact email, the models of stages not yet started, the feedback cells, feedback.*,
+eval.*) can change at any time.
 """
 from __future__ import annotations
 
@@ -34,31 +34,16 @@ LOCKED = (
 STAGE_STARTED = {s.key: s.started for s in stagespec.STAGES if s.llm}
 
 
-def canonical_values(values: dict | None) -> dict:
-    """Recorded values with earlier stage keys translated (stage_models.plan -> stage_models.protocol, ...)."""
-    out = {}
-    for k, v in (values or {}).items():
-        if k.startswith("stage_models."):
-            k = "stage_models." + stagespec.canonical(k.split(".", 1)[1])
-        out.setdefault(k, v)
-    return out
-
-
-def _migrate(store) -> dict | None:
-    """The lock of an older review, its stage keys renamed in place. Returns the recorded values."""
-    lock = store.meta.get("config_lock")
-    if lock and lock.get("values"):
-        canon = canonical_values(lock["values"])
-        if canon != lock["values"]:
-            lock["values"] = canon
-        return lock["values"]
-    return None
-
-
-def stage_model(cfg: dict, stage: str) -> dict:
-    from .config import stage_cfg
-    c = stage_cfg(cfg, stage)
+def cell(cfg: dict, stage: str, role: str) -> dict:
+    """What is fixed of one model cell: provider, model and reasoning effort as they resolve."""
+    from .config import model_for
+    c = model_for(cfg, stage, role)
     return {"provider": c.get("provider"), "model": c.get("model"), "reasoning_effort": c.get("reasoning_effort")}
+
+
+def cells(cfg: dict, stage: str) -> dict:
+    """The fixed cells of a started stage, keyed models.<stage>.<role>."""
+    return {f"models.{stage}.{r}": cell(cfg, stage, r) for r in stagespec.roles_of(stage)}
 
 
 def started_stages(store) -> list[str]:
@@ -89,8 +74,8 @@ def _get(cfg: dict, dotted: str):
 
 def locked_values(cfg: dict, stages=()) -> dict:
     """The review-defining settings as plain JSON values (the effective value where a default applies),
-    plus the model of each given (started) stage as stage_models.<stage>."""
-    out = {f"stage_models.{s}": stage_model(cfg, s) for s in stages}
+    plus the model cells of each given (started) stage."""
+    out = {k: v for s in stages for k, v in cells(cfg, s).items()}
     for k in LOCKED:
         v = _get(cfg, k)
         if k == "topic.screening_rules" and v is None:
@@ -100,17 +85,19 @@ def locked_values(cfg: dict, stages=()) -> dict:
     return out
 
 
+def _stages(recorded: dict) -> list[str]:
+    return list(dict.fromkeys(k.split(".")[1] for k in recorded if k.startswith("models.")))
+
+
 def diff(recorded: dict, cfg: dict) -> list[dict]:
-    recorded = canonical_values(recorded)
-    stages = [k.split(".", 1)[1] for k in recorded if k.startswith("stage_models.")]
-    now = locked_values(cfg, stages)
-    keys = [k for k in LOCKED if k in recorded] + [f"stage_models.{s}" for s in STAGE_STARTED if f"stage_models.{s}" in recorded]
+    now = locked_values(cfg, _stages(recorded))
+    keys = [k for k in LOCKED if k in recorded] + [k for k in now if k.startswith("models.") and k in recorded]
     return [{"key": k, "old": recorded.get(k), "new": now[k]} for k in keys if recorded.get(k) != now[k]]
 
 
 def check(cfg: dict, store, run_dir=None) -> None:
     """Raise ConfigChanged when a started review's config no longer matches what it started with."""
-    rec = _migrate(store)
+    rec = (store.meta.get("config_lock") or {}).get("values")
     if rec:
         ch = diff(rec, cfg)
         if ch:
@@ -119,14 +106,13 @@ def check(cfg: dict, store, run_dir=None) -> None:
 
 def record_if_new(cfg: dict, store) -> None:
     """Called on every save: the first save of a review records its settings, and the first save after a
-    stage has started records that stage's model."""
-    _migrate(store)
+    stage has started records that stage's model cells."""
     lock = store.meta.get("config_lock")
     if not lock:
         lock = store.meta["config_lock"] = {"recorded": time.time(), "values": locked_values(cfg)}
-    new = [s for s in started_stages(store) if f"stage_models.{s}" not in lock["values"]]
-    if new:   # only the newly started stages; the settings recorded earlier are never overwritten here
-        lock["values"].update({f"stage_models.{s}": stage_model(cfg, s) for s in new})
+    new = [s for s in started_stages(store) if s not in _stages(lock["values"])]
+    for s in new:   # only the newly started stages; the settings recorded earlier are never overwritten here
+        lock["values"].update(cells(cfg, s))
 
 
 def accept(ctx, reason: str, actor: str = "user") -> list[dict]:
@@ -135,7 +121,7 @@ def accept(ctx, reason: str, actor: str = "user") -> list[dict]:
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("give a reason for changing the review's settings; it is recorded and shown in the report")
-    rec = _migrate(ctx.store)
+    rec = (ctx.store.meta.get("config_lock") or {}).get("values")
     if not rec:
         return []
     ch = diff(rec, ctx.cfg)
@@ -143,8 +129,7 @@ def accept(ctx, reason: str, actor: str = "user") -> list[dict]:
         return []
     entry = {"ts": time.time(), "actor": actor, "reason": reason, "changes": copy.deepcopy(ch)}
     ctx.store.meta.setdefault("config_changes", []).append(entry)
-    stages = [k.split(".", 1)[1] for k in rec if k.startswith("stage_models.")]
-    ctx.store.meta["config_lock"] = {"recorded": time.time(), "values": locked_values(ctx.cfg, stages)}
+    ctx.store.meta["config_lock"] = {"recorded": time.time(), "values": locked_values(ctx.cfg, _stages(rec))}
     provenance.record(ctx, "config_change", "accepted", reason=reason, changes=ch)
     ctx.save()
     ctx.log(f"[config] accepted changed settings ({', '.join(c['key'] for c in ch)}): {reason}")
@@ -179,13 +164,13 @@ def pending(cfg: dict, run_dir) -> list[dict]:
 
 
 def models_by_stage(cfg: dict, store) -> list[tuple[str, str]]:
-    """[(stages, "model (effort)")] grouped: the model each started stage ran with (as recorded when it
+    """[(stages, "writer model (effort)")] grouped: the writer each started stage ran with (as recorded when it
     started), else the configured one."""
     from .config import STAGE_LABELS
-    rec = canonical_values((store.meta.get("config_lock") or {}).get("values"))
+    rec = (store.meta.get("config_lock") or {}).get("values") or {}
     groups: dict[str, list[str]] = {}
     for st in STAGE_STARTED:
-        m = rec.get(f"stage_models.{st}") or stage_model(cfg, st)
+        m = rec.get(f"models.{st}.writer") or cell(cfg, st, "writer")
         key = f"{m.get('model')}" + (f" ({m['reasoning_effort']} effort)" if m.get("reasoning_effort") else "")
         groups.setdefault(key, []).append(STAGE_LABELS[st].lower())
     return [(", ".join(v), k) for k, v in groups.items()]

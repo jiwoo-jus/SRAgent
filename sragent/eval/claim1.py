@@ -168,11 +168,12 @@ def run(ctx: Ctx, judge: Judge, out_dir, n_sets: int = 2, repeats: int = 1, max_
     sids = [n["id"] for n in ctx.store.by_type("synthesis", active_only=True)]
     half = max(1, len(inc) // n_sets)
     results = {"sets": [], "conditions": {}}
-    reviewer = ctx.hub["reviewer"]
-    if not (ctx.cfg.get("roles") or {}).get("reviewer"):
-        ctx.log("[claim1] WARNING: roles.reviewer is not set, so the simulated reviewer is the agent model; "
-                "Claim 1 then measures that model's reading as much as the materials. Fix roles.reviewer across runs.")
-    results["reviewer"] = {"model": reviewer.name, "configured": bool((ctx.cfg.get("roles") or {}).get("reviewer")),
+    reviewer = ctx.hub.model(None, "reviewer")
+    configured = bool(ctx.cfg["eval"].get("models", {}).get("reviewer"))
+    if not configured:
+        ctx.log("[claim1] WARNING: eval.models.reviewer is not set, so the simulated reviewer is the default writer; "
+                "Claim 1 then measures that model's reading as much as the materials. Fix eval.models.reviewer across runs.")
+    results["reviewer"] = {"model": reviewer.name, "configured": configured,
                            "reasoning_effort": reviewer.c.get("reasoning_effort"),
                            "source_chars": max_src_chars, "total_chars_cap": max_total_chars}
     for s in range(n_sets):

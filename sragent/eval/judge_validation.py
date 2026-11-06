@@ -59,7 +59,7 @@ def run(ctx: Ctx, judge: Judge, out_dir, planted_items: list[dict], n_agree: int
     by_kind = {}
     for p in pairs:
         by_kind.setdefault(p["kind"], []).append(p)
-    out["inter_judge"] = {"judge1": ctx.hub["judge"].name, "judge2": ctx.hub["judge2"].name, "n": len(pairs),
+    out["inter_judge"] = {"judge1": ctx.hub.model(None, "judge").name, "judge2": ctx.hub.model(None, "judge2").name, "n": len(pairs),
                           "raw_agreement": round(sum(str(p["j1"]) == str(p["j2"]) for p in pairs) / len(pairs), 3) if pairs else None,
                           "kappa_overall": cohen_kappa([p["j1"] for p in pairs], [p["j2"] for p in pairs]),
                           "by_kind": {k: {"n": len(v), "agree": sum(str(p["j1"]) == str(p["j2"]) for p in v),

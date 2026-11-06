@@ -12,16 +12,17 @@ from .sources import http, pubmed
 from .store import ReviewStore
 
 
-class StageAgent:
-    """ctx.agent: picks the agent client per call, for the current pipeline stage or, outside a stage
-    (sync, re-runs, feedback), for the stage the call's tag belongs to (config.stage_of_tag)."""
+class StageWriter:
+    """ctx.writer: the writer of the stage a call belongs to: the stage its tag names (stagespec.stage_of_tag), else
+    the stage being run, else feedback. An extraction redone during a screening run is the extraction writer's."""
 
     def __init__(self, ctx: "Ctx"):
         self._ctx = ctx
 
     def client(self, tag: str = ""):
-        from .config import stage_of_tag
-        return self._ctx.hub.agent_for(self._ctx.stage or stage_of_tag(tag))
+        from .stagespec import FEEDBACK, stage_of_tag
+        s = stage_of_tag(tag)
+        return self._ctx.hub.model(s if s != FEEDBACK else (self._ctx.stage or FEEDBACK))
 
     def chat(self, messages, **kw):
         return self.client(kw.get("tag", "")).chat(messages, **kw)
@@ -42,7 +43,7 @@ class Ctx:
     topic: dict = field(default_factory=dict)
     quiet: bool = False
     note: str = ""          # reviewer note added to every agent prompt (user-requested re-runs)
-    stage: str | None = None   # the pipeline stage being run: its agent model comes from stage_models
+    stage: str | None = None   # the pipeline stage being run (models.<stage>.writer for calls whose tag names no stage)
 
     @classmethod
     def create(cls, cfg: dict, run_dir: str | Path | None = None, mock_fn=None, fresh: bool = False,
@@ -52,24 +53,18 @@ class Ctx:
         rd = Path(run_dir or cfg["run_dir"])
         rd.mkdir(parents=True, exist_ok=True)
         http.init_cache(cfg.get("cache_dir", ".cache"))
-        from .config import load_secrets, role_cfg
-        sec = load_secrets(role_cfg(cfg, "agent").get("api_env"), cfg.get("_config_dir")) or {}
+        from .config import load_secrets
+        sec = load_secrets(cfg["llm_defaults"].get("api_env"), cfg.get("_config_dir")) or {}
         pubmed.configure(cfg.get("contact_email") or sec.get("contact_email") or "", cfg.get("ncbi_api_key") or sec.get("ncbi_api_key") or "")
         sp = rd / "store.json"
         store = ReviewStore.load(sp) if (sp.exists() and not fresh) else ReviewStore(rd)
         store.run_dir = rd
+        from . import graph
+        if store.nodes and store.meta.get("schema") != graph.SCHEMA:
+            raise ValueError(f"{sp} was made by an older version (format {store.meta.get('schema')}, this version reads "
+                             f"{graph.SCHEMA}); run the review again in a new run folder")
         if check_config:   # a started review refuses a config whose review-defining settings changed
             config_lock.check(cfg, store, rd)
-        from . import graph
-        old_schema = int(store.meta.get("schema") or 1)
-        if sp.exists() and not fresh and store.nodes and old_schema < graph.SCHEMA:
-            import shutil                            # an older review: kept as it was before it is migrated
-            bak = sp.with_name(f"store.schema{old_schema}.bak.json")
-            if not bak.exists():
-                shutil.copy2(sp, bak)
-                print(f"[store] {sp.name} (schema {old_schema}) kept as {bak.name} before migrating", flush=True)
-        for what in graph.migrate(store, cfg):     # an older store: versioned edges, settings nodes
-            print(f"[store] migrated to schema {graph.SCHEMA}: {what}", flush=True)
         if not fresh or not sp.exists():
             graph.sync_settings(store, cfg)        # the review's settings as nodes (versions move only on change)
         store.meta.setdefault("schema", graph.SCHEMA)
@@ -99,7 +94,7 @@ class Ctx:
         out = []
         try:
             for i in range(0, len(items), self.SAVE_EVERY):
-                out += self.agent.map(fn, items[i:i + self.SAVE_EVERY])
+                out += self.writer.map(fn, items[i:i + self.SAVE_EVERY])
                 if i + self.SAVE_EVERY < len(items):
                     self.save()
             return out
@@ -107,12 +102,12 @@ class Ctx:
             self.save()
 
     @property
-    def agent(self):
-        return StageAgent(self)
+    def writer(self):
+        return StageWriter(self)
 
     @contextmanager
     def at(self, stage: str):
-        """Run a block as one pipeline stage (its LLM calls use that stage's model)."""
+        """Run a block as one pipeline stage (calls whose tag names no stage use that stage's writer)."""
         prev, self.stage = self.stage, stage
         try:
             yield self

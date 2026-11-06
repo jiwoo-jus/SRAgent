@@ -15,8 +15,7 @@ Each piece is a node with real edges, so the dependency graph explains when it n
 What stays in meta (tests/test_operations.py::META_ALLOWED checks it): presentation and history (snoozed, comments,
 protocol_revisions: the conversation shown on the protocol card), the settings lock (config_lock, config_changes),
 counters (flag_seq, schema) and job bookkeeping (rob_reassess: where a long redraft resumes; gold_input,
-verified_extraction_input: evaluation runs). A schema-2 review is migrated on load (graph.migrate), its store.json
-kept first as store.schema2.bak.json.
+verified_extraction_input: evaluation runs).
 """
 from __future__ import annotations
 
@@ -136,64 +135,3 @@ def rules_applied(st) -> dict | None:
 def save_rules_applied(st, data: dict) -> None:
     st.write(RULES, "rules_run", data, depends_on=["cfg:screening_rules"] if st.get("cfg:screening_rules") else [],
              actor="rule", reason="screening rules applied")
-
-
-# ---------------------------------------------------------------- schema 3: meta -> nodes
-def migrate_meta(st) -> list[str]:
-    """Move the side notes of an older review into nodes (idempotent). The moved meta keys are removed, so nothing
-    can read a stale copy."""
-    m, done = st.meta, []
-    if m.get("protocol_approved") is not None and st.get("protocol") and not st.get(APPROVAL):
-        a = m["protocol_approved"] if isinstance(m["protocol_approved"], dict) else {}
-        st.write(APPROVAL, "approval", {"note": a.get("note", ""), "ts": a.get("ts"), "by": "user"},
-                 depends_on=["protocol"], actor="migrate", reason="protocol approval (from meta)")
-        done.append("protocol approval")
-    m.pop("protocol_approved", None)
-    if m.get("search_strategy") and st.get("protocol") and not st.get(STRATEGY):
-        st.write(STRATEGY, "strategy", m["search_strategy"], depends_on=["protocol"], actor="migrate",
-                 reason="search strategy (from meta)")
-        if st.get("search") and STRATEGY not in st.get("search")["depends_on"]:
-            n = st.get("search")
-            n["depends_on"] = sorted(set(n["depends_on"]) | {STRATEGY})
-            n.setdefault("dep_versions", {})[STRATEGY] = st.get(STRATEGY)["version"]
-            st.reindex()
-        done.append("search strategy")
-    m.pop("search_strategy", None)
-    if st.by_type("screen"):
-        refresh_cohort(st)
-    if m.get("synthesis_considered") is not None and not st.get(SCOPE):
-        d = {"considered": sorted(m["synthesis_considered"])}
-        if m.get("synthesis_written_with"):
-            d["written_with"] = m["synthesis_written_with"]
-        st.write(SCOPE, "synthesis_scope", d, depends_on=[COHORT], actor="migrate",
-                 reason="studies taken into the synthesis (from meta)")
-        done.append("synthesis scope")
-    m.pop("synthesis_considered", None)
-    m.pop("synthesis_written_with", None)
-    if m.get("snowball") and not st.get(SNOWBALL):
-        st.write(SNOWBALL, "snowball", m["snowball"], depends_on=[COHORT], actor="migrate", reason="citation chasing (from meta)")
-        done.append("citation chasing")
-    m.pop("snowball", None)
-    cited = [rid for rid, how in (m.get("found_via") or {}).items() if "citation" in (how or [])
-             and st.get(f"rec:{rid}") and not st.get(f"rec:{rid}")["data"].get("found_via")]
-    if cited and st.get(SNOWBALL):     # records citation chasing found again: noted on the snowball node
-        d = snowball(st)
-        d["also_cited"] = sorted(set(d.get("also_cited") or []) | set(cited))
-        st.write(SNOWBALL, "snowball", d, depends_on=[COHORT], actor="migrate", reason="records found again (from meta)")
-    if m.pop("found_via", None) is not None:
-        done.append("records citation chasing found again (on the snowball node)")
-    for rid in (m.get("pdf_wanted") or {}):
-        if st.get(f"rec:{rid}"):
-            set_pdf_request(st, rid, actor="migrate", wanted=True)
-    for rid in (m.get("pdf_unavailable") or []):
-        if st.get(f"rec:{rid}"):
-            set_pdf_request(st, rid, actor="migrate", unavailable=True)
-    if m.pop("pdf_wanted", None) is not None or m.pop("pdf_unavailable", None) is not None:
-        done.append("full-text requests")
-    m.pop("pdf_unavailable", None)
-    m.pop("waiting_for_pdfs", None)                      # derived now (fulltext.waiting_for_pdfs)
-    if m.get("rules_applied") and not st.get(RULES):
-        save_rules_applied(st, m["rules_applied"])
-        done.append("screening rules applied")
-    m.pop("rules_applied", None)
-    return done

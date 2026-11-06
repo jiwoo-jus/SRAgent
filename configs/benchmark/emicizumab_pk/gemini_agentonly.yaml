@@ -5,15 +5,10 @@
 #   sragent eval --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --suite all
 include:
   - topic.yaml
-llm_defaults:                # models by name; provider and price come from configs/models.yaml
-  model: gemini-3.8-flash      # the agent, and every role and stage that does not say otherwise
+llm_defaults:                # request settings every model uses
   api_env: ../../../api_env.yaml
-  reasoning_effort: low        # ~7x fewer thinking tokens than the default
   max_tokens: 16000
   concurrency: 6
-roles:                         # evaluation roles (sragent eval)
-  judge: {model: gemini-3.1-pro-preview}
-  judge2: {model: gemma-4-31b-it, reasoning_effort: null}   # second judge (same family as the judge: see GUIDE 4.3)
 cache_dir: .cache
 budget_usd: 15.0           # hard cap for this run folder (the review itself)
 pipeline:
@@ -24,6 +19,7 @@ pipeline:
   context_chars: 30000
   fulltext_screen_chars: 12000
 eval:
+  models: {judge: gemini-3.1-pro-preview, judge2: {model: gemma-4-31b-it, reasoning_effort: null}}
   budget_usd: 8.5            # per evaluation run (each run has its own usage.jsonl)
   grounding_max_studies: null   # all supplied studies
   claim1_sets: 3
@@ -32,3 +28,5 @@ eval:
   claim2_cases_per_type: 4
   judge_agreement_items: 40
   human_audit_items: 15
+models:                      # models.<stage>.<role> over models.default; provider and price come from configs/models.yaml
+  default: {writer: {model: gemini-3.8-flash, reasoning_effort: low}}

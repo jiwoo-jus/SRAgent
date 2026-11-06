@@ -113,7 +113,7 @@ def build(tmp_path, fulltexts=FULLTEXTS, **cfg_over) -> Ctx:
     for rid, body in fulltexts.items():
         (fdir / f"{rid}.txt").write_text(f"## Title\n{rid}\n## Methods\n" + (body + " ") * 25)
     over = {"run_dir": str(tmp_path / "run"), "cache_dir": str(tmp_path / "cache"), "budget_usd": 1.0,
-            "llm_defaults": {"provider": "mock", "model": "mock", "concurrency": 1},
+            "llm_defaults": {"concurrency": 1}, "models": {"default": {"writer": {"provider": "mock", "model": "mock"}}},
             "pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False},
             "topic": {"records": {"source": "file", "file": str(recf)}}}
     cfg = load_config(ROOT / "configs/benchmark/emicizumab_pk/topic.yaml", _merge(over, cfg_over))

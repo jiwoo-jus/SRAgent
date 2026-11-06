@@ -126,7 +126,7 @@ def _waiting_for_pdfs(ctx: Ctx) -> bool:
 
 
 def run(ctx: Ctx, until: str = "report", stop_after_plan: bool = False):
-    until = stagespec.run_until(until)        # an earlier key (plan, fulltext, synthesize) is accepted
+    until = stagespec.run_until(until)
     order = STAGES[: STAGES.index(until) + 1]
     run_now = set(enabled(ctx))
     state = {"protocol": None, "changed": 0}

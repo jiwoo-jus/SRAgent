@@ -104,7 +104,7 @@ def coverage_note(st) -> str:
 
 
 def synthesize(ctx: Ctx) -> int:
-    out = ctx.agent.chat(ctx.msgs(prompts.SYNTH.format(question=ctx.topic["question"], table=table_text(ctx),
+    out = ctx.writer.chat(ctx.msgs(prompts.SYNTH.format(question=ctx.topic["question"], table=table_text(ctx),
                                                        rob=rob_text(ctx))), tag="synthesis")
     statements = out.get("statements", [])
     keep = write_statements(ctx, statements, "synthesis drafted")
@@ -130,12 +130,6 @@ ABSENCE = re.compile(r"\b(not reported|not available|not provided|not stated|not
                      r"none of the (included )?studies|in (none|no) (of the )?(included )?stud(y|ies))\b", re.I)
 
 
-def checker(ctx: Ctx):
-    """The model that checks statements: roles.verifier if configured, else the agent role itself (not the
-    stage's model), so a synthesis written by a stronger stage model is checked by another model."""
-    return ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.hub["agent"]
-
-
 def statement_evidence(ctx: Ctx, cites: list[str], text: str = "") -> str:
     """The cited studies' data with quotes; for a statement that says something is absent or not reported,
     every included study's data as well, so the check can find what the statement says is missing."""
@@ -151,7 +145,7 @@ def verify_one(ctx: Ctx, sid: str, tag: str = "synthesis_verify") -> dict:
     st = ctx.store
     n = st.get(sid)
     d = n["data"]
-    res = checker(ctx).chat(ctx.msgs(prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"],
+    res = ctx.hub.model("synthesis", "verifier").chat(ctx.msgs(prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"],
                                                                  evidence=statement_evidence(ctx, d["cites"], d["text"]))), tag=tag)
     n["data"]["verification"] = res
     if res.get("support") in ("unsupported", "partially_supported") or res.get("overgeneralization"):
@@ -173,7 +167,7 @@ def repair_one(ctx: Ctx, sid: str) -> str:
     d = n["data"]
     res = d.get("verification") or {}
     issues = f"{res.get('support')}; overgeneralization={res.get('overgeneralization')}; " + "; ".join(res.get("issues") or [])
-    out = ctx.agent.chat(ctx.msgs(prompts.SYNTH_REPAIR.format(sid=d["id"], text=d["text"], scope=d.get("scope", ""),
+    out = ctx.writer.chat(ctx.msgs(prompts.SYNTH_REPAIR.format(sid=d["id"], text=d["text"], scope=d.get("scope", ""),
                                                                cites=", ".join(d["cites"]), issues=issues,
                                                                evidence=statement_evidence(ctx, d["cites"], d["text"]))),
                          tag="synthesis_repair")

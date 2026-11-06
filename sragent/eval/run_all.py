@@ -32,7 +32,8 @@ from pathlib import Path
 
 from .. import config_lock, gold, provenance
 from ..provenance import file_sha
-from ..config import role_cfg
+from ..config import EVAL_ROLES, MODEL_STAGES, model_for
+from ..stagespec import roles_of
 from ..context import Ctx
 from ..llm import BudgetExceeded, LLMHub, QuotaExhausted
 from ..store import ReviewStore
@@ -91,10 +92,11 @@ def manifest(ctx: Ctx, ectx: Ctx, run_id: str, suite: str, allow_cache: bool, fr
     if sp.exists():
         shutil.copy(sp, snap)
     labels = gold.labels(ctx)
+    cells = [(s, r) for s in MODEL_STAGES for r in roles_of(s)] + [(None, r) for r in EVAL_ROLES]
     models = {}
-    for r in ("agent", "judge", "judge2", "reviewer"):
-        rc = role_cfg(ectx.cfg, r)
-        models[r] = {k: rc.get(k) for k in ("provider", "model", "reasoning_effort", "temperature", "pricing")}
+    for s, r in cells:   # every model cell as it resolves: <stage>.<role>, and the evaluation roles
+        rc = model_for(ectx.cfg, s, r)
+        models[f"{s}.{r}" if s else r] = {k: rc.get(k) for k in ("provider", "model", "reasoning_effort", "temperature", "pricing")}
     return {
         "run_id": run_id, "created": time.strftime("%Y-%m-%d %H:%M:%S"), "suite": suite,
         "command": " ".join(sys.argv[1:]) or None,
@@ -340,17 +342,12 @@ def summary_row(ctx: Ctx, run_id: str, note: str = "", run_file: str = "") -> di
     out = ctx.run_dir / "eval" / "runs" / run_id
     R = json.loads((out / "results.json").read_text())
     M, X = R["manifest"], R["results"]
-    cfg = M.get("config") or {}
-    models = [f"agent {_short_model(_dig(M, 'models', 'agent', 'model'))} {_dig(M, 'models', 'agent', 'reasoning_effort') or ''}".strip()]
-    by_model: dict[str, list[str]] = {}
-    for stage, mc in (cfg.get("stage_models") or {}).items():
+    by_model: dict[str, list[str]] = {}   # model (effort) -> the cells that use it; the most used one is "default"
+    for c, mc in (M.get("models") or {}).items():
         if isinstance(mc, dict) and mc.get("model"):
-            by_model.setdefault(f"{_short_model(mc['model'])} {mc.get('reasoning_effort') or ''}".strip(), []).append(stage)
-    models += [f"{'/'.join(stages)} {m}" for m, stages in by_model.items()]
-    for role in ("verifier", "judge", "judge2", "reviewer"):
-        mc = _dig(M, "models", role) or _dig(cfg, "roles", role) or {}
-        if isinstance(mc, dict) and mc.get("model"):
-            models.append(f"{role} {_short_model(mc['model'])} {mc.get('reasoning_effort') or ''}".strip())
+            by_model.setdefault(f"{_short_model(mc['model'])} {mc.get('reasoning_effort') or ''}".strip(), []).append(c)
+    ranked = sorted(by_model.items(), key=lambda kv: -len(kv[1]))
+    models = [f"default {m}" if i == 0 else f"{'/'.join(c)} {m}" for i, (m, c) in enumerate(ranked)]
     e2e, g, syn, c1, c2, jv = (X.get(k) or {} for k in ("end_to_end", "stagewise_extraction_rob", "stagewise_synthesis",
                                                           "claim1", "claim2", "judge_validation"))
     loc = _dig(g, "evidence_extraction", "located_rate")

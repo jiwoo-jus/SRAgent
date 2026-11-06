@@ -193,13 +193,13 @@ def node_history(st, node_ids: list[str], effects: bool = False) -> list[dict]:
     off (a decision that made an extraction out of date, say), that change: `because`, so a chain can be followed.
     effects=True: also the changes to other outputs that these set off, and what those set off in turn."""
     ids = set(node_ids)
-    by_seq = {e.get("seq", i): e for i, e in enumerate(st.changelog)}
+    by_seq = {e["seq"]: e for e in st.changelog}
     mine: set = set()
     out = []
-    for i, e in enumerate(st.changelog):
+    for e in st.changelog:
         if e["node"] not in ids and not (effects and mine & set(e.get("caused_by") or [])):
             continue
-        mine.add(e.get("seq", i))
+        mine.add(e["seq"])
         t = _ntype(st, e["node"])
         if e["op"] in ("create", "update"):
             what = diff_summary(t, e.get("before"), e.get("after"))
@@ -399,16 +399,23 @@ def history(ctx: Ctx, limit: int = 400, actor: str = "", q: str = "") -> dict:
         log = [e for e in log if e["actor"] == actor]
     if q:
         log = [e for e in log if q in e["node"] or q in e["reason"]]
+    from .stagespec import KEYS
     usage = _jsonl(ctx.run_dir / "usage.jsonl")
-    by_tag = {}
+    by_cell = {}      # (stage, role): calls, cache hits, cost, the models and what the calls did (tags)
     for u in usage:
-        t = by_tag.setdefault(u.get("tag", ""), {"tag": u.get("tag", ""), "calls": 0, "cached": 0, "usd": 0.0, "last": 0})
+        k = (u.get("stage") or "", u.get("role") or "")
+        t = by_cell.setdefault(k, {"stage": k[0], "role": k[1], "calls": 0, "cached": 0, "usd": 0.0, "last": 0,
+                                   "models": set(), "tags": set()})
         t["calls"] += 1
         t["cached"] += int(bool(u.get("cached")))
         t["usd"] += float(u.get("usd", 0))
         t["last"] = max(t["last"], u.get("ts", 0))
+        t["models"].add(u.get("model") or "")
+        t["tags"].add(u.get("tag") or "")
+    order = {k: i for i, k in enumerate(KEYS)}
+    cells = sorted(by_cell.values(), key=lambda x: (order.get(x["stage"], 99), x["stage"], x["role"]))
     return {"changelog": log[-limit:][::-1], "changelog_total": len(log),
             "proposals": _changesets(ctx),
             "decisions": _jsonl(ctx.run_dir / "human_decisions.jsonl")[::-1][:limit],
             "comments": st.meta.get("comments", [])[::-1],
-            "llm_by_tag": sorted(by_tag.values(), key=lambda x: -x["last"])}
+            "llm_by_cell": [{**c, "models": sorted(c["models"]), "tags": sorted(c["tags"])} for c in cells]}

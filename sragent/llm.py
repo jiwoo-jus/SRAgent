@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import deep_merge, load_secrets, role_cfg, stage_cfg
+from .config import load_secrets, model_for
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 JSON_ONLY = "Reply with a single JSON object only, without code fences or commentary."
@@ -58,7 +58,7 @@ class QuotaExhausted(RuntimeError):
 
 
 class CostTracker:
-    """Shared across roles. Logs every call to usage.jsonl and enforces budget."""
+    """Shared by every model of a run. Logs every call to usage.jsonl (with its stage and role) and enforces the budget."""
 
     def __init__(self, budget_usd: float, log_path: str | Path | None = None):
         self.budget = float(budget_usd) if budget_usd is not None else float("inf")
@@ -85,7 +85,7 @@ class CostTracker:
             if self.spent >= self.budget:
                 raise BudgetExceeded(f"Budget ${self.budget:.2f} exhausted (spent ${self.spent:.4f}).")
 
-    def add(self, role: str, model: str, tag: str, pin: int, pout: int, cost: float,
+    def add(self, stage: str | None, role: str, model: str, tag: str, pin: int, pout: int, cost: float,
             seconds: float, cached: bool, *, endpoint: str | None = None, provider: str | None = None):
         with self.lock:
             self.spent_equiv += cost
@@ -103,7 +103,7 @@ class CostTracker:
             t["sec"] += seconds
             if self.log_path:
                 with open(self.log_path, "a") as f:
-                    f.write(json.dumps({"ts": time.time(), "role": role, "model": model, "tag": tag,
+                    f.write(json.dumps({"ts": time.time(), "stage": stage, "role": role, "model": model, "tag": tag,
                                         "prompt_tokens": pin, "completion_tokens": pout,
                                         "usd": 0.0 if cached else round(cost, 6),
                                         "seconds": round(seconds, 2), "cached": cached,
@@ -203,10 +203,11 @@ def _parse_json(text: str) -> Any:
 # ------------------------------------------------------------------ client
 
 class LLM:
-    def __init__(self, cfg: dict, role: str, tracker: CostTracker, cache: DiskCache | None,
-                 mock_fn: Callable[[list[dict], str], str] | None = None, local_pool=None, c: dict | None = None):
-        self.role = role                     # e.g. agent, judge, or agent@extract (a stage's own model)
-        self.c = c if c is not None else role_cfg(cfg, role)
+    def __init__(self, cfg: dict, c: dict, tracker: CostTracker, cache: DiskCache | None,
+                 mock_fn: Callable[[list[dict], str], str] | None = None, local_pool=None,
+                 stage: str | None = None, role: str = "writer"):
+        self.stage, self.role = stage, role     # what its calls are booked to (usage.jsonl); role also routes local endpoints
+        self.c = c
         self.provider = self.c["provider"]
         if self.provider not in {"openai", "gemini", "anthropic", "local", "mock"}:
             raise ValueError(f"Unsupported API provider: {self.provider}")
@@ -261,7 +262,7 @@ class LLM:
         if self.provider == "local":
             return self._local_chat(messages, json_out, tag, max_tokens, temperature, use_cache)
         key_src = json.dumps([self.provider, self.model, messages, json_out, temperature, max_tokens,
-                              self.c.get("reasoning_effort"), self.c.get("extra_body")], sort_keys=True)
+                              self.c.get("reasoning_effort"), self.c.get("extra_body") or {}], sort_keys=True)
         key = hashlib.sha256(key_src.encode()).hexdigest()
         if use_cache and self.cache and self.cache_read:
             hit = self.cache.get(key)
@@ -270,7 +271,7 @@ class LLM:
             except ValueError:   # a cached reply that is not one JSON object: ask again
                 val = None
             if val is not None:
-                self.tracker.add(self.role, self.model, tag, hit.get("pin", 0), hit.get("pout", 0),
+                self.tracker.add(self.stage, self.role, self.model, tag, hit.get("pin", 0), hit.get("pout", 0),
                                  self._cost(hit.get("pin", 0), hit.get("pout", 0)), 0.0, True)
                 return val
 
@@ -284,10 +285,10 @@ class LLM:
             except (BudgetExceeded, QuotaExhausted):
                 raise
             except Refused as e:   # paid for, recorded, not retried
-                self.tracker.add(self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
+                self.tracker.add(self.stage, self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
                 raise
             except Truncated as e:   # paid for, recorded; asked again with room for the whole reply
-                self.tracker.add(self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
+                self.tracker.add(self.stage, self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
                 last_err = e
                 if max_tokens >= MAX_OUTPUT_TOKENS:
                     raise RuntimeError(f"{self.name}: the reply did not fit in {max_tokens} output tokens (tag={tag})") from e
@@ -303,7 +304,7 @@ class LLM:
                     raise
                 time.sleep(min(60, 2 ** attempt * 2))
                 continue
-            self.tracker.add(self.role, self.model, tag, pin, pout, self._cost(pin, pout), time.time() - t0, False)
+            self.tracker.add(self.stage, self.role, self.model, tag, pin, pout, self._cost(pin, pout), time.time() - t0, False)
             if json_out:
                 try:
                     val = json_object(text)
@@ -346,7 +347,7 @@ class LLM:
                 except ValueError:   # a cached reply that is not one JSON object: ask again
                     val = None
                 if val is not None:
-                    self.tracker.add(self.role, hit["model"], tag, hit["pin"], hit["pout"], 0, 0, True,
+                    self.tracker.add(self.stage, self.role, hit["model"], tag, hit["pin"], hit["pout"], 0, 0, True,
                                      endpoint=entry["_key"], provider="local")
                     return val
             for attempt in range(self.c["max_retries"] + 1):
@@ -360,7 +361,7 @@ class LLM:
                     pout = max(int(usage.get("completion_tokens") or 0), int(usage.get("total_tokens") or 0) - pin)
                 except (KeyError, IndexError, TypeError, ValueError) as exc:
                     raise LocalRequestError("Malformed chat completion response from local server") from exc
-                self.tracker.add(self.role, actual_model, tag, pin, pout, 0, time.time() - t0, False,
+                self.tracker.add(self.stage, self.role, actual_model, tag, pin, pout, 0, time.time() - t0, False,
                                  endpoint=entry["_key"], provider="local")
                 try:
                     value = json_object(text) if json_out else text
@@ -492,7 +493,7 @@ def _to_anthropic(messages: list[dict]) -> tuple[str, list[dict]]:
 
 
 class LLMHub:
-    """Holds one client per role, sharing a tracker, a cache and (for local roles) one endpoint pool."""
+    """One client per (stage, role), sharing a tracker, a cache and (for local models) one endpoint pool."""
 
     def __init__(self, cfg: dict, run_dir: str | Path, mock_fn=None):
         self.cfg = cfg
@@ -500,33 +501,22 @@ class LLMHub:
         self.cache = DiskCache(Path(cfg.get("cache_dir", ".cache")) / "llm_cache.sqlite")
         self.mock_fn = mock_fn
         self.cache_read = True      # False: always ask the model (answers are still written to the cache)
-        self._clients: dict[str, LLM] = {}
+        self._clients: dict[tuple, LLM] = {}
         self._local_pool = None
         self._client_lock = threading.Lock()
 
-    def __getitem__(self, role: str) -> LLM:
-        return self._client(role, None)
-
-    def _client(self, role: str, c: dict | None) -> LLM:
+    def model(self, stage: str | None, role: str = "writer") -> LLM:
+        """The client of one stage and role (config.model_for); stage None: models.default."""
         with self._client_lock:
-            if role not in self._clients:
-                if (c or role_cfg(self.cfg, role))["provider"] == "local" and self._local_pool is None:
+            if (stage, role) not in self._clients:
+                c = model_for(self.cfg, stage, role)
+                if c["provider"] == "local" and self._local_pool is None:
                     from .local import LocalPool
                     self._local_pool = LocalPool(self.cfg)
-                client = LLM(self.cfg, role, self.tracker, self.cache, self.mock_fn, self._local_pool, c=c)
+                client = LLM(self.cfg, c, self.tracker, self.cache, self.mock_fn, self._local_pool, stage=stage, role=role)
                 client.cache_read = self.cache_read
-                self._clients[role] = client
-            return self._clients[role]
-
-    def agent_for(self, stage: str | None) -> LLM:
-        """The agent client for one pipeline stage (stage_models). job_agent, a model a person picked for one
-        job (a re-run or feedback from the web interface), is used for every call of that job instead."""
-        if self.cfg.get("job_agent"):
-            return self._client("agent@job", deep_merge(role_cfg(self.cfg, "agent"), self.cfg["job_agent"]))
-        c = stage_cfg(self.cfg, stage)
-        if c == role_cfg(self.cfg, "agent"):
-            return self["agent"]
-        return self._client(f"agent@{stage}", c)
+                self._clients[(stage, role)] = client
+            return self._clients[(stage, role)]
 
     def close(self):
         if self._local_pool is not None:

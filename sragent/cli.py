@@ -102,7 +102,7 @@ def cmd_revalidate(args):
 
 def cmd_runs(args):
     """Every run file under configs/<benchmark|review>/ with what it would run and what runs/ holds for it."""
-    from .config import is_benchmark, role_cfg
+    from .config import is_benchmark, model_for
     from .config_lock import pending
     from .ui.configs import run_status
     root = Path(args.configs)
@@ -119,11 +119,11 @@ def cmd_runs(args):
         status = run_status(rd)
         if pending(cfg, rd):
             status += ", PAUSED: fixed settings changed (sragent accept-config)"
-        a = role_cfg(cfg, "agent")
+        a = model_for(cfg, None)
         rows.append((str(p.relative_to(root)), "benchmark" if is_benchmark(cfg) else "review",
                      f"{a['provider']}:{a['model']}", cfg["pipeline"]["human_mode"],
                      str(cfg["pipeline"]["max_records"] or "all"), status, str(rd)))
-    head = ("run file", "kind", "agent", "people", "records", "status", "outputs")
+    head = ("run file", "kind", "default model", "people", "records", "status", "outputs")
     widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
     for r in [head] + rows:
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
@@ -272,9 +272,8 @@ def main(argv=None):
         p.add_argument("--run-dir", default=None, help="override run_dir")
 
     p = sub.add_parser("run"); common(p)
-    from .stagespec import KEYS, LEGACY
-    p.add_argument("--until", default="report", choices=list(KEYS) + list(LEGACY),
-                   help=f"stop after this stage: {', '.join(KEYS)} (earlier names {', '.join(LEGACY)} are accepted)")
+    from .stagespec import KEYS
+    p.add_argument("--until", default="report", choices=list(KEYS), help=f"stop after this stage: {', '.join(KEYS)}")
     p.add_argument("--plan-only", action="store_true")
     p.add_argument("--fresh", action="store_true", help="ignore an existing store.json in run_dir")
     p.set_defaults(fn=cmd_run)
@@ -343,13 +342,13 @@ def main(argv=None):
     p.add_argument("--file", required=True)
     p.set_defaults(fn=cmd_eval_audit)
 
-    p = sub.add_parser("verify-screening", help="a second reading (roles.verifier) of screening decisions already made; disagreements go to a person"); common(p)
+    p = sub.add_parser("verify-screening", help="a second reading (the screening verifier) of screening decisions already made; disagreements go to a person"); common(p)
     p.add_argument("--mode", default="pending", choices=["pending", "full_text", "all"],
                    help="pending: records undecided after their full text; full_text: every full-text decision too; all: also title/abstract exclusions")
     p.add_argument("--rids", nargs="*", default=None, help="only these record ids")
     p.set_defaults(fn=cmd_verify_screening)
 
-    p = sub.add_parser("verify-rob", help="the verifier's second look (roles.verifier) at risk-of-bias drafts flagged with a reason; what it cannot settle goes to a person"); common(p)
+    p = sub.add_parser("verify-rob", help="the verifier's second look (models.rob.verifier) at risk-of-bias drafts flagged with a reason; what it cannot settle goes to a person"); common(p)
     p.add_argument("--rids", nargs="*", default=None, help="only these record ids")
     p.set_defaults(fn=cmd_verify_rob)
 
@@ -385,7 +384,7 @@ def main(argv=None):
     p.add_argument("--remote-host", default="127.0.0.4")
     p.add_argument("--remote-port", type=int, default=8000)
     p.add_argument("--slots", type=int, default=1, help="maximum active requests per endpoint in this process")
-    p.add_argument("--roles", nargs="*", default=None, choices=["agent", "judge", "reviewer", "judge2"],
+    p.add_argument("--roles", nargs="*", default=None, choices=["writer", "verifier", "judge", "judge2", "reviewer"],
                    help="restrict the new endpoints to these roles (default: every role)")
     p.add_argument("--add", action="store_true", help="append to the current list instead of replacing it")
     p.add_argument("--probe", action="store_true", help="connect and list served models (no inference)")

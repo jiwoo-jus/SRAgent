@@ -24,13 +24,13 @@ from urllib.parse import unquote, parse_qs, urlparse
 import yaml
 
 from .. import stagespec, state
-from ..config import EFFORTS, LLM_STAGES, STAGE_LABELS, is_benchmark, load_config, load_secrets, role_cfg, stage_cfg
+from ..config import EFFORTS, MODEL_STAGES, STAGE_LABELS, is_benchmark, load_config, load_secrets, model_for
 from ..config_lock import ConfigChanged
 from ..context import Ctx
 from .configs import Library
 
 STATIC = Path(__file__).parent / "static"
-STAGE_JOBS = ("run", "pdfs", "sync", "reassess_rob")   # pipeline work: every stage uses its own model (stage_models)
+STAGE_JOBS = ("run", "pdfs", "sync", "reassess_rob")   # pipeline work: every stage uses its own models (models.<stage>.<role>)
 
 
 class App:
@@ -152,7 +152,7 @@ class App:
                                          "ended", "usd", "returncode", "cmd", "log", "error", "note", "text", "comment_id")}
         a = spec.get("agent") or {}
         keep["model"] = self.stage_summary() if spec.get("action") in STAGE_JOBS else \
-            ((a.get("model") if a else "") or role_cfg(self.cfg, "agent").get("model", ""))
+            ((a.get("model") if a else "") or model_for(self.cfg, None).get("model", ""))
         with open(self.jobs_file, "a") as f:
             f.write(json.dumps(keep) + "\n")
 
@@ -177,8 +177,9 @@ class App:
         """API models offered in the web interface: every model in the model catalog (configs/models.yaml),
         with its price. Local models come from the endpoint list."""
         uses = {}
-        for r in ("agent", "judge", "reviewer", "judge2"):
-            uses.setdefault(role_cfg(self.cfg, r).get("model"), []).append(r)
+        for s_ in MODEL_STAGES:
+            for r in stagespec.roles_of(s_):
+                uses.setdefault(model_for(self.cfg, s_, r).get("model"), []).append(f"{s_} {r}")
         api = []
         for name, e in (self.cfg.get("_catalog") or {}).items():
             if e.get("provider") == "local":
@@ -191,8 +192,7 @@ class App:
         return {"api": api}
 
     def api_env_abs(self) -> str | None:
-        rc = role_cfg(self.cfg, "agent")
-        env = rc.get("api_env")
+        env = self.cfg["llm_defaults"].get("api_env")
         if not env:
             return None
         cd = Path(self.cfg.get("_config_dir", "."))
@@ -209,11 +209,11 @@ class App:
             keys = {"openai": ["openai_api_key"], "gemini": ["gemini_api_key"],
                     "anthropic": ["anthropic_api_key", "claude_api_key"]}.get(m["provider"], [])
             api.append({**m, "key_available": any(secrets.get(k) for k in keys), "kind": "api"})
-        cur = {r: {k: role_cfg(self.cfg, r).get(k) for k in ("provider", "model", "reasoning_effort")}
-               for r in ("agent", "judge", "reviewer", "judge2")}
+        cur = {r: {k: model_for(self.cfg, None, r).get(k) for k in ("provider", "model", "reasoning_effort")}
+               for r in ("writer", "judge", "reviewer", "judge2")}
         settings = self._settings()
         return {"api": api, "local": self._local_endpoints(), "current": cur, "settings": settings,
-                "stages": self.stage_rows(), "efforts": {k: list(v) for k, v in EFFORTS.items()},
+                "models": self.model_rows(), "efforts": {k: list(v) for k, v in EFFORTS.items()},
                 "benchmark": is_benchmark(self.cfg)}   # known answers: record sampling and evaluation
 
     def _local_endpoints(self) -> dict:
@@ -238,7 +238,8 @@ class App:
                 return m
         return {"provider": sel.get("provider", "gemini"), "id": sel.get("model"), "input_per_m": 0, "output_per_m": 0}
 
-    def role_override(self, sel: dict) -> dict:
+    def model_cell(self, sel: dict) -> dict:
+        """A model picked in the interface ({provider, model, effort}) as a model cell."""
         m = self.model_entry(sel)
         eff = sel.get("effort") or None
         if m["provider"] == "local":   # served by the endpoint pool; request options come from the config
@@ -287,17 +288,9 @@ class App:
                     "range_usd": [0, per.get(opts.get("suite", "all"), 3.5) * 2],
                     "note": "Rough estimate with fresh calls (Gemini Flash agent, Gemini Pro judge); suites that need the "
                             "stage-wise review also build it (about $0.35)."}
-        if action in STAGE_JOBS or not opts.get("agent"):   # each stage with its own model (stage_models)
+        if action in STAGE_JOBS or not opts.get("agent"):   # each kind of call with its stage's model
             from ..estimate import estimate_stages
-            cfg = self.cfg
-            if opts.get("stage_models") is not None:      # the Run page's table before it is saved
-                from ..config import _resolve_stage_models
-                cfg = {**self.cfg, "stage_models": {k: dict(v) for k, v in opts["stage_models"].items() if v and k in LLM_STAGES}}
-                try:
-                    _resolve_stage_models(cfg)
-                except ValueError as e:
-                    return {"error": str(e)}
-            est = estimate_stages(calls, cfg, history(self.run_dir.parent))
+            est = estimate_stages(calls, self.cfg, history(self.run_dir.parent))
             est["spent_so_far"] = round(self.spent(), 4)
             return est
         m = self.model_entry(opts.get("agent") or {})
@@ -323,7 +316,7 @@ class App:
         spec = {**spec, "id": uuid.uuid4().hex[:8], "status": "queued", "created": time.time()}
         spec["label"] = spec.get("label") or self.label_for(spec)
         # a job carries a model only when the person picked one for that job; otherwise every call follows
-        # stage_models (pipeline stages, and `feedback` for revisions). The last budget top-up carries over.
+        # models.<stage>.<role>. The last budget top-up carries over.
         spec.update({k: v for k, v in self._last_budget().items() if k not in spec})
         self._record(spec)
         if spec.get("action") in ("run", "pdfs", "sync", "eval"):
@@ -340,14 +333,11 @@ class App:
         over["llm_defaults"] = {"api_env": api_env}
         # this file lives in run_dir: keep the endpoint list of the original config directory
         over["local"] = {"endpoints_file": str(endpoint_path(self.cfg).resolve())}
-        roles = {}
         if spec.get("agent") and spec.get("action") not in STAGE_JOBS:
-            # a model picked for one re-run / feedback / evaluation job; pipeline jobs follow stage_models
-            over["job_agent"] = self.role_override(spec["agent"])
+            # a model picked for one re-run / feedback / evaluation job: its writers; pipeline jobs follow models
+            over["job_model"] = self.model_cell(spec["agent"])
         if spec.get("judge"):
-            roles["judge"] = self.role_override(spec["judge"])
-        if roles:
-            over["roles"] = roles
+            over["eval"] = {"models": {"judge": self.model_cell(spec["judge"])}}
         if spec.get("max_records") not in (None, "", 0):
             over["pipeline"] = {"max_records": int(spec["max_records"])}
         extra = float(spec.get("extra_budget") or 2.0)
@@ -464,7 +454,7 @@ class App:
             return {k: j.get(k) for k in ("id", "action", "label", "rid", "target", "status", "created", "started", "ended",
                                           "usd", "returncode", "cmd", "error", "note", "text")} | \
                    {"model": ((j.get("agent") or {}).get("model") if isinstance(j.get("agent"), dict) else j.get("model"))
-                             or role_cfg(self.cfg, "agent").get("model", "")}
+                             or model_for(self.cfg, None).get("model", "")}
         with self.lock:
             cur = [view(self.job)] if self.job else []
             q = [view(x) for x in self.queue]
@@ -498,7 +488,7 @@ class App:
     # ------------------------------------------------------------ changes queued while the folder is busy
     def _drain_answers(self):
         """Apply the changes queued while the folder was busy (called with self.lock held)."""
-        from .. import lease, todos
+        from .. import lease
         if not self.pending_answers or self.job is not None or not lease.try_acquire(self.run_dir):
             return
         try:
@@ -667,95 +657,71 @@ class App:
         return {"ok": True, "message": f"saved to {lib.rel(target)}" + (f"; {n} output(s) to bring up to date (Out-of-date outputs)" if n else ""),
                 "pending": pc}
 
-    def stage_rows(self) -> list[dict]:
-        """One row per stage: what the run file sets, the model it resolves to, and whether it is fixed."""
+    def model_rows(self) -> list[dict]:
+        """The Settings table: models.default, then each stage with model cells, a cell per role: what the run file
+        writes (`set`, None = inherited), what it resolves to, and whether the stage has started (its cells fixed)."""
         from .. import config_lock
         try:
             started = set(config_lock.started_stages(self.ctx().store))
         except Exception:
             started = set()
-        raw = self.cfg.get("stage_models") or {}
-        rows = []
-        for st in LLM_STAGES:
-            c = stage_cfg(self.cfg, st)
-            ov = raw.get(st) or {}
-            setv = {k: ov.get(k) for k in ("provider", "model", "reasoning_effort") if k in ov}
-            if setv.get("model") and not setv.get("provider"):
-                setv["provider"] = c.get("provider")   # resolved from the catalog: the table matches options by model and provider
-            rows.append({"stage": st, "label": STAGE_LABELS[st], "set": setv,
-                         "effective": {"provider": c.get("provider"), "model": c.get("model"), "reasoning_effort": c.get("reasoning_effort")},
-                         "pricing": c.get("pricing") or {}, "started": st in started})
-        # the verifier is a role, not a stage, but it makes model calls during the review (statement checks, feedback
-        # checks, post-checks); it is set and saved here like a stage, into roles.verifier (never locked)
-        rv = (self.cfg.get("roles") or {}).get("verifier") or {}
-        c = role_cfg(self.cfg, "verifier") if rv.get("model") else role_cfg(self.cfg, "agent")
-        rows.append({"stage": "verifier", "label": "Checks (verifier)", "role": True,
-                     "set": ({k: rv.get(k) for k in ("model", "reasoning_effort") if rv.get(k) is not None}
-                             | ({"provider": rv.get("provider") or c.get("provider")} if rv.get("model") else {})),
-                     "effective": {"provider": c.get("provider"), "model": c.get("model"), "reasoning_effort": c.get("reasoning_effort")},
-                     "pricing": c.get("pricing") or {}, "started": False,
-                     "note": "checks synthesis statements, your feedback and every revision; best from another family than the writer"})
+        written = self.cfg.get("models") or {}
+
+        def cell(stage, role):
+            c = model_for(self.cfg, None if stage == "default" else stage, role)
+            raw = (written.get(stage) or {}).get(role)
+            raw = {"model": raw} if isinstance(raw, str) else dict(raw or {})
+            setv = {k: raw[k] for k in ("model", "reasoning_effort") if k in raw} or None
+            if setv and setv.get("model"):
+                setv["provider"] = c.get("provider")   # the table matches options by model and provider
+            return {"set": setv, "effective": {k: c.get(k) for k in ("provider", "model", "reasoning_effort")}}
+
+        rows = [{"stage": "default", "label": "Default", "note": "every stage and role not set below", "started": False,
+                 "cells": {r: cell("default", r) for r in stagespec.ROLES}}]
+        for st in MODEL_STAGES:
+            rows.append({"stage": st, "label": STAGE_LABELS[st], "started": st in started,
+                         "cells": {r: cell(st, r) for r in stagespec.roles_of(st)}})
         return rows
 
     def stage_summary(self) -> str:
-        ms = []
-        for st in LLM_STAGES[:-1]:
-            c = stage_cfg(self.cfg, st)
-            ms.append(f"{c.get('model')}" + (f" ({c.get('reasoning_effort')})" if c.get("reasoning_effort") else ""))
-        uniq = list(dict.fromkeys(ms))
-        return uniq[0] if len(uniq) == 1 else "per stage: " + ", ".join(uniq)
+        ms = list(dict.fromkeys(
+            f"{c.get('model')}" + (f" ({c.get('reasoning_effort')})" if c.get("reasoning_effort") else "")
+            for c in (model_for(self.cfg, st) for st in MODEL_STAGES if st != stagespec.FEEDBACK)))
+        return ms[0] if len(ms) == 1 else "per stage: " + ", ".join(ms)
 
-    def set_stage_models(self, stages: dict, lib: Library) -> dict:
-        """Write the per-stage models into the run file (stage_models). Stages that have started keep theirs."""
+    def save_models(self, cells: dict, lib: Library) -> dict:
+        """Write the model table into the run file (`models:`). The cells of a stage that has started are fixed."""
         with self.lock:
             if not self.idle():
                 return {"ok": False, "message": "A job is running or queued; change the models when it has finished."}
         try:
             p = lib.resolve(self.config_path)
         except ValueError:
-            return {"ok": False, "message": "This run file is outside configs/; edit its stage_models in the file."}
-        stages = dict(stages or {})
-        ver = stages.pop("verifier", "__absent__")
-        new = {}
-        for st, sel in stages.items():
-            if st not in LLM_STAGES:
-                return {"ok": False, "message": f"unknown stage {st}"}
+            return {"ok": False, "message": "This run file is outside configs/; edit its models: section in the file."}
+        catalog = self.cfg.get("_catalog") or {}
+        new: dict = {}
+        for key, sel in (cells or {}).items():
+            stage, role = key.split(".", 1)
             if not sel:
                 continue
             e = {}
             if sel.get("model"):
-                if sel.get("provider") and sel["provider"] != role_cfg(self.cfg, "agent").get("provider"):
-                    e["provider"] = sel["provider"]
                 e["model"] = sel["model"]
+                if sel.get("provider") and (catalog.get(sel["model"]) or {}).get("provider") != sel["provider"]:
+                    e["provider"] = sel["provider"]   # a local model: not in the catalog
             if "reasoning_effort" in sel:
                 e["reasoning_effort"] = sel["reasoning_effort"]
             if e:
-                new[st] = e
-        text = p.read_text()
-        out = lib.set_block(text, "stage_models", new,
-                            "agent model and effort per stage; a stage's model is fixed once it has started")
-        if ver != "__absent__":   # roles.verifier: the other roles in the file are kept as written
-            import yaml
-            raw = (yaml.safe_load(text) or {}).get("roles") or {}
-            roles = {k: v for k, v in raw.items() if isinstance(v, dict) and v}
-            if ver and ver.get("model"):
-                e = {"model": ver["model"]}
-                if ver.get("provider") and ver["provider"] != role_cfg(self.cfg, "agent").get("provider"):
-                    e["provider"] = ver["provider"]
-                if ver.get("reasoning_effort"):
-                    e["reasoning_effort"] = ver["reasoning_effort"]
-                roles["verifier"] = e
-            else:
-                roles.pop("verifier", None)   # back to the default: the agent checks its own work
-            out = lib.set_block(out, "roles", roles,
-                                "verifier checks statements and feedback (default: the agent); judge, judge2, reviewer: sragent eval only")
+                new.setdefault(stage, {})[role] = e["model"] if list(e) == ["model"] else e
+        if not (new.get("default") or {}).get("writer"):
+            return {"ok": False, "message": "Choose the default writer: it is the model of every stage and role not set."}
+        out = lib.set_block(p.read_text(), "models", new, "models.<stage>.<role> over models.default; a started stage's are fixed")
         chk = lib.check(self.config_path, out)
         if chk["errors"]:
             return {"ok": False, "message": "; ".join(chk["errors"])}
-        locked = [c for x in chk.get("locked") or [] for c in x["changes"] if c["key"].startswith("stage_models.")]
+        locked = [c["key"] for x in chk.get("locked") or [] for c in x["changes"] if c["key"].startswith("models.")]
         if locked:
-            return {"ok": False, "message": "These stages have started, so their model is fixed: "
-                    + ", ".join(c["key"].split(".", 1)[1] for c in locked)}
+            return {"ok": False, "message": "These stages have started, so their models are fixed: " + ", ".join(locked)}
         r = lib.save(self.config_path, out, p.stat().st_mtime)
         if r.get("ok"):
             self.stale = True
@@ -826,12 +792,11 @@ class App:
         from ..llm import LLM, CostTracker
         cfg = json.loads(json.dumps(self.cfg))
         cfg["llm_defaults"]["api_env"] = self.api_env_abs()
-        cfg["roles"]["agent"] = self.role_override(sel)
-        cfg["roles"]["agent"]["max_retries"] = 0
+        cfg["job_model"] = {**self.model_cell(sel), "max_retries": 0}
         cfg["local"]["wait_timeout"] = 30   # do not wait indefinitely for a local endpoint here
         llm = None
         try:
-            llm = LLM(cfg, "agent", CostTracker(0.05, self.run_dir / "usage.jsonl"), None)
+            llm = LLM(cfg, model_for(cfg, None), CostTracker(0.05, self.run_dir / "usage.jsonl"), None)
             t0 = time.time()
             out = llm.chat([{"role": "user", "content": 'Return the JSON {"ok": true}'}], tag="ui_test_model",
                            max_tokens=200, use_cache=False)
@@ -907,7 +872,7 @@ class Workspace:
             try:
                 a = self.get(current)
                 out["runs"].insert(0, {"path": cur, "kind": "", "topic": "", "name": Path(cur).stem, "current": True,
-                                       "agent": f"{role_cfg(a.cfg, 'agent').get('provider')}:{role_cfg(a.cfg, 'agent').get('model')}",
+                                       "agent": "{provider}:{model}".format(**model_for(a.cfg, None)),
                                        "human_mode": a.cfg["pipeline"]["human_mode"], "question": (a.cfg.get("topic") or {}).get("question", ""),
                                        "status": "", "run_dir": str(a.run_dir), "outside": True})
             except Exception:
@@ -1091,8 +1056,8 @@ def make_handler(ws: Workspace):
             path = u.path
             try:
                 b = self._body()
-                if path == "/api/stage_models":
-                    r = self._app(parse_qs(u.query)).set_stage_models(b.get("stages") or {}, ws.lib)
+                if path == "/api/models":
+                    r = self._app(parse_qs(u.query)).save_models(b.get("cells") or {}, ws.lib)
                     if r.get("ok"):
                         ws.changed()
                     return self._send(200, r)

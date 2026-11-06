@@ -154,6 +154,12 @@ def mock_fn(messages, mode):
             return json.dumps({"decision": "exclude", "agree": False, "explanation": "the children cohort reports no PK of its own",
                                "differs_on": [{"id": "I3", "assessment": "not_met", "reason": "no original PK data", "evidence": ["s1"]}]})
         return json.dumps({"decision": "include", "agree": True, "explanation": "same reading", "differs_on": []})
+    if "An independent screening of one record" in u:                    # the blind verifier: no screener's answer shown
+        rec = u.split("RECORD (", 1)[1]
+        if "case series" in rec:
+            return json.dumps({"decision": "include", "explanation": "original PK data are reported",
+                               "assessments": [{"id": "I3", "assessment": "met", "reason": "PK data in the results", "evidence": ["s1"]}]})
+        return json.dumps({"decision": "uncertain", "explanation": "cannot tell", "assessments": []})
     if "Decide, as an independent check, whether the study stays included" in u:
         return json.dumps({"verdict": "include" if "VERIFIER_DISAGREES" in u else "exclude",
                            "explanation": "mock verifier", "evidence": ["s1"]})

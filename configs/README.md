@@ -37,7 +37,7 @@ Evaluation is not a separate kind of run: `sragent eval` reads a finished benchm
 | `benchmark/emicizumab_pk/claude_stages_agentonly.yaml` | Claude per stage: Sonnet high for protocol, search and synthesis, Haiku medium for the rest; Gemini judges | all | agent only. The baseline before the dependency-graph refactor (evaluation `20261019-184008_all`) |
 | `review/_template/run.yaml` | Gemini | all | human in the loop; template |
 
-Other runs are made from these when needed, e.g. the second evaluation condition (GUIDE 10.0): copy `gemini_agentonly.yaml` as `gemini_humanloop.yaml`, set `human_mode: human_in_the_loop` and drop `fulltext_unclear`. For another model, change `llm_defaults.model` (and the roles) to names from the catalog. For your own vLLM servers, write `provider: local` and `model: auto` under `llm_defaults` (below).
+Other runs are made from these when needed, e.g. the second evaluation condition (GUIDE 10.0): copy `gemini_agentonly.yaml` as `gemini_humanloop.yaml`, set `human_mode: human_in_the_loop` and drop `fulltext_unclear`. For another model, change the cells under `models:` (and `eval.models`) to names from the catalog. For your own vLLM servers, write `{provider: local, model: auto}` as `models.default.writer` (below).
 
 ## The model catalog (`models.yaml`)
 
@@ -51,11 +51,11 @@ Other runs are made from these when needed, e.g. the second evaluation condition
 
 The catalog holds **facts about each model**: `provider`, `pricing` (`{input_per_m, output_per_m}`, optionally `long_context: {threshold_tokens, input_per_m, output_per_m}`), optionally `base_url` and a `note`. A run file chooses models **by name**, and their provider and price are filled in from here (a catalogued model's provider is a fact: it is taken from the catalog even if a run file writes another), so a price is written in one place only (it drives the budget guard and every cost estimate). Choices (reasoning effort, `max_tokens`, `concurrency`, `api_env`, `fallbacks`) go in the run file, not here. The web interface offers every model in the catalog. To use another model, add it here. Removing a model that a run file still uses is refused by the editor. Local vLLM models need no entry.
 
-Roles: **agent** does the review; **verifier** (optional) checks feedback against the evidence, re-checks revised outputs and checks every synthesis statement, and is the agent role unless set (so with `stage_models.synthesize` on a stronger model, the statements are still checked by another model); **judge**, **judge2** and **reviewer** are used only by `sragent eval`; set **reviewer** explicitly and keep it the same across runs you compare (Claim 1 measures the materials, not the reviewer).
+Roles: the **writer** produces a stage's output; the **verifier** reads again what has a reason for it (a record the screener could not decide, a flagged risk-of-bias draft, an eligibility doubt raised at extraction, a synthesis statement, your feedback and the revisions it starts). A verifier with no model of its own is `models.default.writer`, not the stage's writer, so a stage written by a stronger model is still read again by another one. **judge**, **judge2** and **reviewer** are used only by `sragent eval` (`eval.models`); set **reviewer** explicitly and keep it the same across runs you compare (Claim 1 measures the materials, not the reviewer).
 
 ## Recommended models (October 2026 prices)
 
-The rule: a cheap model for the high-volume work whose mistakes a later step catches; a stronger model for the few calls that everything else rests on; and checks by a model of another family than the writer. `review/adhd_appetite_adverse_events/` is set up this way.
+The rule: a cheap model for the high-volume work whose mistakes a later step catches; a stronger model for the few calls that everything else rests on; and checks by a model of another family than the writer. `review/adhd_appetite_adverse_events/` is set up this way. "Where" is a cell under `models:` (the writer, unless it says verifier).
 
 | Where | Model, effort | Why |
 |---|---|---|
@@ -66,10 +66,10 @@ The rule: a cheap model for the high-volume work whose mistakes a later step cat
 | `rob` | Haiku, medium | drafts a person confirms |
 | `synthesis` | Sonnet, high | the conclusions; a handful of calls |
 | `feedback` | Sonnet, medium | revisions and propagation: few calls, high stakes |
-| `roles.verifier` | GPT-6.1 Sol, medium | checks statements and feedback: a third family, independent of the writer (Claude) and the judge (Gemini) |
-| `roles.judge` | Gemini 3.1 Pro, low | evaluation; another family than the agent |
-| `roles.judge2` | GPT-6.1 Sol, low | second judge of a third family, so judge agreement bounds family bias |
-| `roles.reviewer` | Gemini 3.8 Flash, low | Claim 1's simulated reviewer; keep it fixed across the runs you compare |
+| `default.verifier` | GPT-6.1 Sol, medium | every second reading: a third family, independent of the writer (Claude) and the judge (Gemini) |
+| `eval.models.judge` | Gemini 3.1 Pro, low | evaluation; another family than the writer |
+| `eval.models.judge2` | GPT-6.1 Sol, low | second judge of a third family, so judge agreement bounds family bias |
+| `eval.models.reviewer` | Gemini 3.8 Flash, low | Claim 1's simulated reviewer; keep it fixed across the runs you compare |
 
 Costs (benchmark sizes: about 300 records, 130 full texts, 26 included): a review runs for about $2, of which extraction with Sonnet is about $1. Haiku everywhere was $1.36; Sonnet everywhere would be about $12.
 
@@ -77,12 +77,12 @@ Costs (benchmark sizes: about 300 records, 130 full texts, 26 included): a revie
 
 ### Rules
 
-1. **Three kinds of file, one job each.** `topic.yaml` only has `topic:`. The catalog `models.yaml` only has `models:` (facts about models). A run file has `include:` (its folder's `topic.yaml`), the models it chooses (`llm_defaults`, `roles`, `stage_models`) and run settings.
+1. **Three kinds of file, one job each.** `topic.yaml` only has `topic:`. The catalog `models.yaml` only has `models:` (facts about models). A run file has `include:` (its folder's `topic.yaml`), the models it chooses (`models:`, and `eval.models` for evaluation), the request settings every model shares (`llm_defaults`) and run settings.
 2. **Layering.** `include:` files are loaded first, in order; keys in the including file override them. Nested sections merge key by key, so a run file writes only what it changes. Anything not written takes the default from `DEFAULTS` in `sragent/config.py`, which lists every key.
-3. **Roles inherit.** Each role (`agent`, `verifier`, `judge`, `reviewer`, `judge2`) = `llm_defaults` + its own entry under `roles:`. Write in a role only what differs. The provider and price of a role's model come from the catalog, unless the role writes its own.
+3. **Models inherit.** The model of a stage and role is `llm_defaults`, then `models.default.<role>`, then `models.<stage>.<role>`; write in a cell only what differs (a model name alone, or `{model, reasoning_effort, ...}`). A verifier with no cell of its own is `models.default.writer`. The evaluation roles are `eval.models.<role>` over `models.default.writer`. The provider and price of a cell's model come from the catalog, unless the cell writes its own.
 4. **Paths.** `include`, `api_env`, `local.endpoints_file` and `models_file` are relative to the file they are written in. `cache_dir`, `pipeline.fulltext_dir` and the topic's `records.data_dir`, `records.file` and `protocol_file` are relative to the project root (run `sragent` from there). `run_dir` is derived from the run file's path; write it only to override that.
 5. **Naming.** One folder per topic. Benchmark run files are `<models>_<characteristic>.yaml` (e.g. `gemini_agentonly`, `local_agentonly`); a review's run file is `run.yaml`.
-6. **Settings that define a review are fixed once it has started.** The topic (question, eligibility, screening rules, records, extraction fields, risk-of-bias tool and domains) and `pipeline.human_mode`, `max_records`, `screen_sample_seed` and `fulltext_unclear` are recorded, and so is each stage's model and effort once that stage has started, in the run's `store.json` when it first saves. If any of them is edited afterwards, by the web interface, a text editor or a changed include, the run stops before any LLM call and shows what changed. Then: set them back; make a new run file for the new design (its own `runs/` folder); or accept the change on purpose with `sragent accept-config --config <run file> --reason "..."` (or Accept in the web interface). An accepted change is written to `provenance.jsonl` and shown in the report (Appendix D) and in every evaluation of the run. Budget, contact email, the models of stages not yet started, the evaluation roles, `feedback.*` and `eval.*` can change at any time. A run started before this check existed records its settings on its next save.
+6. **Settings that define a review are fixed once it has started.** The topic (question, eligibility, screening rules, records, extraction fields, risk-of-bias tool and domains) and `pipeline.human_mode`, `max_records`, `screen_sample_seed` and `fulltext_unclear` are recorded, and so are each stage's model cells (writer and verifier, model and effort) once that stage has started, in the run's `store.json` when it first saves. If any of them is edited afterwards, by the web interface, a text editor or a changed include, the run stops before any LLM call and shows what changed. Then: set them back; make a new run file for the new design (its own `runs/` folder); or accept the change on purpose with `sragent accept-config --config <run file> --reason "..."` (or Accept in the web interface). An accepted change is written to `provenance.jsonl` and shown in the report (Appendix D) and in every evaluation of the run. Budget, contact email, the models of stages not yet started, the `feedback` cells, `feedback.*` and `eval.*` (with `eval.models`) can change at any time. A run folder made by an older version of SRAgent is not read; run the review again in a new run folder.
 7. **No keys in configs.** API keys live in `api_env.yaml` (project root, git-ignored) or environment variables.
 
 ### Run file (`configs/<benchmark|review>/<topic>/<run>.yaml`)
@@ -91,28 +91,25 @@ Costs (benchmark sizes: about 300 records, 130 full texts, 26 included): a revie
 # <Benchmark|Review> run: <topic> · <models> · <records> · <people>.
 include:
   - topic.yaml                         # what to review (same folder)
-llm_defaults:                          # models by name; provider and price come from configs/models.yaml
-  model: claude-haiku-5-5              # the agent, and every role and stage that does not say otherwise
+llm_defaults:                          # request settings every model uses
   api_env: ../../../api_env.yaml       # the keys file in the project root (relative to this file)
-  reasoning_effort: low
   max_tokens: 16000
   concurrency: 6
-roles:                                 # evaluation roles (sragent eval); only what differs
-  judge:  {model: claude-sonnet-5-5, reasoning_effort: medium}
-  judge2: {model: gemma-4-31b-it, reasoning_effort: null}
-stage_models:                          # optional: another model or effort for single stages
-  plan:    {model: claude-sonnet-5-5, reasoning_effort: high}
-  extract: {model: claude-sonnet-5-5, reasoning_effort: medium}
-  screen:  {reasoning_effort: medium}  # same model as the agent, other effort
+models:                                # models by name; provider and price come from configs/models.yaml
+  default: {writer: {model: claude-haiku-5-5, reasoning_effort: low}, verifier: gpt-6.1-sol}
+  protocol: {writer: {model: claude-sonnet-5-5, reasoning_effort: high}}
+  extract: {writer: {model: claude-sonnet-5-5, reasoning_effort: medium}}
+  screen: {writer: {reasoning_effort: medium}}   # the default writer's model, another effort
 budget_usd: 5.0                        # hard cost cap for this run folder
 pipeline:
   human_mode: human_in_the_loop        # or agent_only
   max_records: 60                      # benchmark only; omit for all records
 eval:                                  # benchmark only, for `sragent eval`
+  models: {judge: {model: claude-sonnet-5-5, reasoning_effort: medium}, judge2: gemma-4-31b-it}
   budget_usd: 8.0
 ```
 
-**Your own vLLM servers** (free): `llm_defaults: {provider: local, model: auto, reasoning_effort: null, concurrency: 32}`. The servers and the roles each may serve are listed in `local_endpoints.yaml` in the project root; `sragent local-endpoints` edits that list (GUIDE section 4). Pool settings go under `local:` (below) only when they differ from the defaults.
+**Your own vLLM servers** (free): `models: {default: {writer: {provider: local, model: auto}}}` and `llm_defaults: {concurrency: 32}`. The servers and the roles (`writer`, `verifier`, `judge`, ...) each may serve are listed in `local_endpoints.yaml` in the project root; `sragent local-endpoints` edits that list (GUIDE section 4). Pool settings go under `local:` (below) only when they differ from the defaults.
 
 ### Topic file (`configs/<benchmark|review>/<topic>/topic.yaml`)
 
@@ -134,21 +131,27 @@ Defaults are in parentheses.
 | `ncbi_api_key` | optional, higher PubMed rate limit |
 | `models_file` (`configs/models.yaml`) | the model catalog |
 
-**`llm_defaults` and `roles.<role>` (run file)**
+**`llm_defaults` (run file)**: the request settings every model uses; a model cell can override any of them.
+
+| Key | Meaning |
+|---|---|
+| `api_env` (`api_env.yaml`) | file with the API keys |
+| `temperature` (0.0), `max_tokens` (8192), `timeout` (600 s), `max_retries` (4) | request settings |
+| `json_mode` (true) | ask for JSON output (`response_format`) |
+| `concurrency` (4) | parallel requests from this process |
+
+**`models` (run file)**: the model of each stage and role. `models.default.writer` (required; `gpt-6.1-sol` unless written) is the model of every stage and role not written otherwise; `models.default.verifier` is the model of every second reading (unset: `models.default.writer`). `models.<stage>.writer` and `models.<stage>.verifier` override them for one stage. Stages: `protocol`, `search`, `screen` (title/abstract), `eligibility` (full-text screening; its verifier also settles the eligibility doubts raised at extraction), `snowball` (citation chasing, which screens the papers it finds), `extract`, `rob`, `synthesis` (writing, and the verifier's check of each statement), and `feedback` (your feedback: locating, checking and the revisions it starts). Only `screen`, `eligibility`, `rob`, `synthesis` and `feedback` have a verifier. Full-text retrieval (`retrieve`) and the report make no model calls. A cell is a model name or a mapping:
 
 | Key | Meaning |
 |---|---|
 | `model` | model name from the catalog; `auto` for a single-model local server |
 | `provider`, `pricing`, `base_url` | from the catalog; write them only for a model that is not in it (`provider`: `openai`, `gemini`, `anthropic` or `local`; `pricing`: `{input_per_m, output_per_m}` in USD) |
-| `api_env` (`api_env.yaml`) | file with the API keys |
 | `reasoning_effort` | `low`, `medium`, `high` (Claude also `xhigh`, `max`) or null (model default) |
-| `temperature` (0.0), `max_tokens` (8192), `timeout` (600 s), `max_retries` (4) | request settings |
-| `json_mode` (true) | ask for JSON output (`response_format`) |
-| `extra_body` | extra request parameters, e.g. Qwen `chat_template_kwargs` |
-| `concurrency` (4) | parallel requests from this process |
+| `extra_body` | extra request parameters, e.g. Qwen `chat_template_kwargs`; not passed on to a cell of another provider |
 | `fallbacks` | Claude only: `default` re-runs a declined request on another model (server-side refusal fallback) |
+| any `llm_defaults` key | e.g. `max_tokens` for one stage |
 
-**`stage_models` (run file)**: the agent's model and effort per pipeline stage, written over the agent role. Stages: `protocol`, `search`, `screen` (title/abstract), `eligibility` (full-text screening), `snowball` (citation chasing, which screens the papers it finds), `extract`, `rob`, `synthesis` (writing and checking statements), and `feedback` (handling feedback, revising dependent outputs, updates after your decisions). Full-text retrieval (`retrieve`) and the report make no model calls. The earlier keys `plan`, `fulltext` and `synthesize` are still read (as `protocol`, `eligibility`, `synthesis`); a run file may not use both names for one stage. Each entry takes the role keys (`model`, `reasoning_effort`, `max_tokens`, ...); provider and price come from the catalog, so a model must be in it (or carry its own `pricing`). The web interface's Settings page edits this section (Models per stage). A stage's model is fixed once that stage has started (rule 6); stages not yet started can be changed freely. A model picked in the web interface for one re-run or one piece of feedback applies to that job only. The report lists the model each stage ran with.
+The web interface's Settings page edits this section (a table of stages and roles). A stage's cells are fixed once that stage has started (rule 6); stages not yet started can be changed freely. A model picked in the web interface for one re-run or one piece of feedback replaces the writers of that job only (never a verifier). Every call is booked to its stage and role (`usage.jsonl`, the Activity page and each stage page); the report lists the model each stage ran with.
 
 **`local` (run file, for `provider: local`)**: `endpoints_file` (`local_endpoints.yaml` in the project root), `poll_interval` (2 s), `retry_interval` (5 s), `probe_timeout` (5 s), `wait_timeout` (null = wait until cancelled). See GUIDE section 4.
 
@@ -173,8 +176,9 @@ Defaults are in parentheses.
 | `validate_terms` (true) | check drug and disease terms in RxNorm, PubChem, ChEMBL, MONDO |
 | `verify_synthesis` (true) | check every synthesis statement against the cited data |
 | `repair_synthesis` (true) | one repair round: a statement the check faulted is narrowed to what the data show, checked again, and retired if still unsupported |
-| `verify_rob` (`off`) | risk-of-bias drafts with a reason for a second look: the agent's own doubt about a domain, a low/high judgment citing no sentence, or an overall milder than a domain. `off`: they are required To-do items. `flagged`: the verifier (`roles.verifier`, else the agent role) reads the source, the draft and the reasons, and its judgments replace the draft's (the agent's are kept beside them, "set by the verifier"); only what it cannot settle reaches you. Drafts without a reason are optional in both cases and marked as drafts in the report. The New-review form sets `flagged` for human-in-the-loop reviews. One verifier call per flagged draft |
-| `verify_screening` (`off`) | a second agent (`roles.verifier`, else the stage's model) reads the record and decides independently. `pending`: only records the screener could not decide after their full text; the verifier's decision stands ("included/excluded (verifier)"), and only a record neither can decide goes to a person. `full_text`: also every full-text include/exclude; `all`: also every title/abstract exclusion; there a disputed title/abstract exclusion is forwarded to the full text and a disputed full-text decision becomes undecided for a person (agent-only: `fulltext_unclear`, flagged). The New-review form sets `pending` for human-in-the-loop reviews. One verifier call per record read |
+| `verify_rob` (`off`) | risk-of-bias drafts with a reason for a second look: the agent's own doubt about a domain, a low/high judgment citing no sentence, or an overall milder than a domain. `off`: they are required To-do items. `flagged`: the verifier (`models.rob.verifier`) reads the source, the draft and the reasons, and its judgments replace the draft's (the agent's are kept beside them, "set by the verifier"); only what it cannot settle reaches you. Drafts without a reason are optional in both cases and marked as drafts in the report. The New-review form sets `flagged` for human-in-the-loop reviews. One verifier call per flagged draft |
+| `verify_screening` (`off`) | a second agent (the stage's verifier, `models.screen.verifier` or `models.eligibility.verifier`) reads the record and decides independently. `pending`: only records the screener could not decide after their full text; the verifier's decision stands ("included/excluded (verifier)"), and only a record neither can decide goes to a person. `full_text`: also every full-text include/exclude; `all`: also every title/abstract exclusion; there a disputed title/abstract exclusion is forwarded to the full text and a disputed full-text decision becomes undecided for a person (agent-only: `fulltext_unclear`, flagged). The New-review form sets `pending` for human-in-the-loop reviews. One verifier call per record read |
+| `verify_screening_blind` (false) | the screening verifier is shown the record and the criteria, not the screener's assessments or decision; the two readings are compared afterwards with the same outcomes. An independent second reading (the default verifier sees the first answer, which pulls it towards agreeing); the benchmark compares the two before this becomes the default |
 | `confirm_search` (false) | human-in-the-loop: the search runs only with a query the review team confirmed on the Search stage page (Search strategy: the agent's query and five alternatives with their PubMed counts, changes asked in plain words, any query counted); without it the agent's query runs. The New-review form sets it for human-in-the-loop reviews |
 | `keep_fetched_files` (true) | what the agent fetched is kept in `fulltext/auto/` beside your PDFs: the parsed text (`<id>.txt`) and, for articles with a PMC id, the PDF from Europe PMC or NCBI (`<id>.pdf`, best effort). `sragent fetch-files` does it for an existing review |
 | `wait_for_pdfs` (false) | real reviews: the first synthesis is written only once every requested full text has been supplied or declared not obtainable, so it is written once on the settled set; the run stops before the synthesis and says what is missing (`needed_pdfs.csv`), and `sragent run` continues when the list is settled. A synthesis that exists is never held back; later PDFs still propagate through the update engine |

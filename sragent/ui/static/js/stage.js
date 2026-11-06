@@ -93,8 +93,8 @@ function renderStage(){
   $("#ptitle").textContent = `${d.order} · ${d.label}`;
   $("#psub").textContent = `${d.status}${d.counts.out_of_date ? ` · ${d.counts.out_of_date} out of date` : ""}${d.counts.needs_you ? ` · ${d.counts.needs_you} need you` : ""}`;
   const m = d.models || {};
-  const models = [m.writer ? `writer: <b>${esc(m.writer.model || "?")}</b>${m.writer.effort ? ` (${esc(m.writer.effort)})` : ""}${m.writer.fixed ? " · fixed" : ""}` : "",
-                  m.verifier ? `verifier: <b>${esc(m.verifier.model || "?")}</b>` : "", `spent ${usd(d.spent_usd || 0)}`].filter(Boolean).join(" · ");
+  const models = [...Object.entries(m).map(([role, c]) => `${role}: <b>${esc(c.model || "?")}</b>${c.reasoning_effort ? ` (${esc(c.reasoning_effort)})` : ""} ${usd(c.spent_usd || 0)}`),
+                  Object.values(m).some(c => c.fixed) ? "fixed" : "", `spent ${usd(d.spent_usd || 0)}`].filter(Boolean).join(" · ");
   const values = [...new Set(d.items.map(r => String(r.decision)))].filter(v => v && v !== "undefined");
   const chips = [["all", "All", d.items.length], ["you", "Needs you", d.counts.needs_you], ["stale", "Out of date", d.counts.out_of_date],
                  ["person", "Decided by you", d.items.filter(r => r.by === "person").length], ...values.map(v => [v, v, d.items.filter(r => String(r.decision) === v).length])]

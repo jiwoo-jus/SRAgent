@@ -337,7 +337,6 @@ function protocolCard(t){
     <div class="card-f">${t.approved ? `<span class="hint grow">Approved. A change here updates the decisions that depend on it (Out-of-date outputs) and asks for approval again.</span>`
       : `<button class="btn primary" ${a.option?"":"disabled"} onclick="submitTodo('${t.id}')">Submit</button>${a.option ? "" : `<span class="hint">Choose an answer first</span>`}`}<span id="m-protocol" class="msg"></span></div></div>`;
 }
-function provenanceMode(){ return (S && S.run && S.run.human_mode) || ""; }
 /* the eligibility review after extraction: the extraction's claim, the verifier's verdict, the outcome */
 function reviewBox(r){
   const OUT = {excluded:["Excluded: both agents say the study is not eligible","bad"],
@@ -729,10 +728,6 @@ async function answerOp(id, option, text, extra){
   if (!o.ok) { toast(o.message || "Unknown answer", true); return o; }
   return (await runOp(o.name, o.args, (S.todos.find(t => t.id === id) || {}).title || o.name)) || {ok: false, message: "cancelled"};
 }
-async function answerNow(id, opt){
-  const r = await answerOp(id, opt);
-  const m = document.getElementById("m-"+id); if (m) msg(m, r);
-}
 function pick(id, v){ answers[id].option = v; renderTodo(); }
 async function submitTodo(id){
   const a = answers[id];
@@ -749,11 +744,12 @@ async function loadModels(){
   if (!m || m.error || !m.current) return;
   M = m;
   const st = M.settings || {};
-  if (!runOpts.agent) runOpts.agent = st.agent || {provider:M.current.agent.provider, model:M.current.agent.model, effort:M.current.agent.reasoning_effort||"low"};
+  if (!runOpts.agent) runOpts.agent = st.agent || {provider:M.current.writer.provider, model:M.current.writer.model, effort:M.current.writer.reasoning_effort||"low"};
   if (!runOpts.judge) runOpts.judge = st.judge || {provider:M.current.judge.provider, model:M.current.judge.model, effort:"low"};
   if (st.extra_budget) runOpts.extra_budget = st.extra_budget;
   if (st.max_records && M.benchmark) runOpts.max_records = st.max_records;
-  SM.edit = Object.fromEntries((M.stages || []).map(r => [r.stage, Object.keys(r.set).length ? {...r.set} : null])); SM.dirty = false;
+  SM.edit = Object.fromEntries((M.models || []).flatMap(r => Object.entries(r.cells).map(([role, c]) => [`${r.stage}.${role}`, c.set ? {...c.set} : null])));
+  SM.dirty = false;
   if (tab === "settings") renderSettings();
 }
 function modelOptions(sel, role){
@@ -770,68 +766,57 @@ function modelOptions(sel, role){
   }).join("");
   return `<optgroup label="API models (list price)">${o}</optgroup><optgroup label="Local models (vLLM endpoints)">${lo}</optgroup>`;
 }
-function noteFor(sel){
-  if (!sel) return "";
-  if (sel.provider === "local") {
-    const L = M.local;
-    return L.error ? `No valid endpoint list at ${L.file} (${L.error}). Register running servers with sragent local-endpoints (GUIDE section 4).`
-                   : `${L.endpoints} endpoint(s) in ${L.file}. Check them with sragent local-endpoints --probe.`;
-  }
-  const m = M.api.find(x => x.id === sel.model); return m ? m.note || "" : "";
-}
-function runWarn(){
-  const el = $("#runwarn"); if (!el) return;
-  const a = runOpts;
-  el.innerHTML = (a.action==="run" && a.until!=="protocol" && S && S.steps[0].status==="needs you") ? `<div class="callout warn">${ic("warn")}<div>The protocol is not approved yet. You can still run, but screening follows the current criteria.
-     <button class="link" onclick="goTodoGroup('protocol')">Review the protocol</button></div></div>` : "";
-}
-/* models per stage (stage_models in the run file) */
-const STAGE_JOB = act => ["run","pdfs","sync"].includes(act);
+/* the model of each stage and role (models: in the run file); a started stage's cells are fixed */
 const SM = {edit:null, dirty:false};
-function smEff(r){   // what a row resolves to with the unsaved edits
-  const e = SM.edit[r.stage] || {}, ag = M.current.agent;
-  return {provider: e.model ? (e.provider || ag.provider) : ag.provider, model: e.model || ag.model,
-          effort: "reasoning_effort" in e ? e.reasoning_effort : ag.reasoning_effort};
+function smOptions(sel){
+  const on = m => sel && sel.model === m.model && sel.provider === m.provider;
+  const listed = sel && (M.api.some(m => on({provider:m.provider, model:m.id})) || M.local.models.some(id => on({provider:"local", model:id})));
+  return (sel && !listed ? `<option value='${esc(JSON.stringify({provider:sel.provider, model:sel.model}))}' selected>${esc(sel.model)} (as written in the run file)</option>` : "")
+    + M.api.map(m => `<option value='${esc(JSON.stringify({provider:m.provider, model:m.id}))}' ${on({provider:m.provider, model:m.id}) ? "selected" : ""} ${m.key_available ? "" : "disabled"}>${esc(m.id)} · $${m.input_per_m} / $${m.output_per_m}${m.key_available ? "" : " (no API key)"}</option>`).join("")
+    + M.local.models.map(id => `<option value='${esc(JSON.stringify({provider:"local", model:id}))}' ${on({provider:"local", model:id}) ? "selected" : ""}>${esc(id === "auto" ? "local: served model" : "local: " + id)} · free</option>`).join("");
+}
+function smCell(r, role){
+  const c = r.cells[role];
+  if (!c) return `<td class="xs mut">no ${role}</td>`;
+  const k = `${r.stage}.${role}`, e = SM.edit[k] || {}, lock = r.started ? "disabled" : "", fixed = r.stage === "default" && role === "writer";
+  const eff = c.effective, effs = M.efforts[e.provider || eff.provider] || ["low","medium","high"];
+  const effSel = "reasoning_effort" in e ? (e.reasoning_effort === null ? "default" : e.reasoning_effort) : "";
+  const inherited = `${eff.model}${eff.reasoning_effort ? " · " + eff.reasoning_effort : ""}`;
+  return `<td><select style="width:100%;min-width:180px" ${lock} onchange="smSet('${k}','model',this.value)">
+      ${fixed ? "" : `<option value="">inherited (${esc(inherited)})</option>`}${smOptions(e.model ? e : null)}</select>
+    <select style="margin-top:4px" ${lock} onchange="smSet('${k}','effort',this.value)"><option value="">${fixed ? "model default" : "inherited effort"}</option>
+      ${effs.map(x => `<option ${effSel === x ? "selected" : ""}>${x}</option>`).join("")}<option value="default" ${effSel === "default" ? "selected" : ""}>model default</option></select></td>`;
 }
 function stageCard(){
-  if (!M.stages) return "";
-  const ag = M.current.agent;
-  const apiOpts = (sel) => M.api.map(m => `<option value='${esc(JSON.stringify({provider:m.provider, model:m.id}))}' ${sel && sel.model===m.id && (sel.provider||ag.provider)===m.provider ? "selected" : ""} ${m.key_available ? "" : "disabled"}>${esc(m.id)} · $${m.input_per_m} / $${m.output_per_m}${m.key_available ? "" : " (no API key)"}</option>`).join("")
-    + M.local.models.map(id => `<option value='${esc(JSON.stringify({provider:"local", model:id}))}' ${sel && sel.provider==="local" && sel.model===id ? "selected" : ""}>${esc(id === "auto" ? "local: served model" : "local: " + id)} · free</option>`).join("");
-  const rows = M.stages.map(r => {
-    const e = SM.edit[r.stage] || {}, eff = smEff(r), lock = r.started;
-    const effs = (M.efforts[eff.provider] || ["low","medium","high"]);
-    const effSel = "reasoning_effort" in e ? (e.reasoning_effort === null ? "default" : e.reasoning_effort) : "";
-    return `<tr${lock ? ' style="opacity:.75"' : ""}${r.role ? ' style="border-top:2px solid var(--line)"' : ""}><td><b style="font-weight:600">${esc(r.label)}</b>${lock ? `<div class="xs" style="color:var(--warn)" title="This stage has started, so its model is fixed (accept a change on the Configs page)">fixed: stage started</div>` : ""}${r.note ? `<div class="xs mut">${esc(r.note)}</div>` : ""}</td>
-      <td><select style="width:100%;min-width:200px" ${lock ? "disabled" : ""} onchange="smSet('${r.stage}','model',this.value)"><option value="" title="the agent in llm_defaults">${esc(ag.provider === "local" ? "local: " + (ag.model === "auto" ? "served model" : ag.model) + " · free" : ag.model)} (default)</option>${apiOpts(e.model ? e : null)}</select></td>
-      <td><select ${lock ? "disabled" : ""} onchange="smSet('${r.stage}','effort',this.value)"><option value="" title="the agent in llm_defaults">${esc(ag.reasoning_effort || "model default")} (default)</option>
-        ${effs.map(x => `<option ${effSel===x ? "selected" : ""}>${x}</option>`).join("")}<option value="default" ${effSel==="default" ? "selected" : ""}>model default</option></select></td></tr>`;
-  }).join("");
-  return `<div class="card"><div class="card-h"><div class="grow"><h2>Models per stage</h2><div class="sub">Saved in the run file (<code>stage_models</code>; the checks row in <code>roles.verifier</code>). A stage's model is fixed once that stage has started; the others can change.</div></div></div>
-    <div class="card-b flush tw"><table id="smtable"><thead><tr><th>Stage</th><th>Model</th><th>Effort</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="card-f"><button class="btn primary" id="smsave" onclick="saveStageModels()" ${SM.dirty ? "" : "disabled"}>${ic("check","sm")} Save to run file</button>
-      <button class="btn" onclick="testStageModels()">${ic("bot","sm")} Test models</button><span id="smmsg" class="msg grow"></span></div></div>`;
+  if (!M.models) return "";
+  const rows = M.models.map(r => `<tr${r.stage === "default" ? ' style="border-bottom:2px solid var(--line)"' : ""}><td><b style="font-weight:600">${esc(r.label)}</b>
+      ${r.note ? `<div class="xs mut">${esc(r.note)}</div>` : ""}${r.started ? `<div class="xs" style="color:var(--warn)" title="Accept a change on the Configs page">fixed: stage started</div>` : ""}</td>
+    ${smCell(r, "writer")}${smCell(r, "verifier")}</tr>`).join("");
+  return `<div class="card"><div class="card-h"><div class="grow"><h2>Models</h2><div class="sub">The <b>writer</b> produces a stage's output; the <b>verifier</b> reads again what has a reason (undecided, flagged, doubted), so a model of another family is the better check. Saved in the run file (<code>models:</code>); a stage's models are fixed once it has started.</div></div></div>
+    <div class="card-b flush tw"><table id="smtable"><thead><tr><th>Stage</th><th>Writer</th><th>Verifier</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card-f"><button class="btn primary" id="smsave" onclick="saveModels()" ${SM.dirty ? "" : "disabled"}>${ic("check","sm")} Save to run file</button>
+      <button class="btn" onclick="testModels()">${ic("bot","sm")} Test models</button><span id="smmsg" class="msg grow"></span></div></div>`;
 }
-function smSet(stage, what, v){
-  const e = {...(SM.edit[stage] || {})};
+function smSet(k, what, v){
+  const e = {...(SM.edit[k] || {})};
   if (what === "model") { if (v) { const o = JSON.parse(v); e.model = o.model; e.provider = o.provider; } else { delete e.model; delete e.provider; } }
   else { if (v === "") delete e.reasoning_effort; else e.reasoning_effort = v === "default" ? null : v; }
-  SM.edit[stage] = Object.keys(e).length ? e : null; SM.dirty = true;
+  SM.edit[k] = Object.keys(e).length ? e : null; SM.dirty = true;
   if (tab === "settings") renderSettings();
 }
-async function saveStageModels(){
-  const r = await api("/api/stage_models", {stages: SM.edit});
+async function saveModels(){
+  const r = await api("/api/models", {cells: SM.edit});
   msg("smmsg", r);
   if (!r.ok) { toast(r.message || r.error || "Not saved", true); return false; }
   toast(r.message || "Saved"); M = null; await loadModels(); return true;
 }
-async function testStageModels(){
+async function testModels(){
   const el = $("#smmsg"); const seen = {}, out = [];
-  M.stages.forEach(r => { const e = smEff(r); seen[e.provider + ":" + e.model + ":" + e.effort] = e; });
+  M.models.forEach(r => Object.values(r.cells).forEach(c => { const e = c.effective; seen[e.provider + ":" + e.model + ":" + e.reasoning_effort] = e; }));
   el.innerHTML = `<span class="spin" style="display:inline-block;vertical-align:-2px"></span> testing ${Object.keys(seen).length} model(s)…`;
   for (const e of Object.values(seen)) {
-    const r = await api("/api/test_model", {provider:e.provider, model:e.model, effort: e.effort || "default"});
-    out.push(r.ok ? `<span class="saved">${ic("check","sm")} ${esc(e.model)} (${esc(e.effort || "default")}) ${r.seconds}s</span>` : `<span class="err">${esc(e.model)}: ${esc(r.error || "failed")}</span>`);
+    const r = await api("/api/test_model", {provider:e.provider, model:e.model, effort: e.reasoning_effort || "default"});
+    out.push(r.ok ? `<span class="saved">${ic("check","sm")} ${esc(e.model)} (${esc(e.reasoning_effort || "default")}) ${r.seconds}s</span>` : `<span class="err">${esc(e.model)}: ${esc(r.error || "failed")}</span>`);
   }
   el.innerHTML = out.join(" · ");
 }
@@ -839,8 +824,7 @@ let estTimer = null;
 function estimate(){
   clearTimeout(estTimer);
   estTimer = setTimeout(async () => {
-    const e = await api("/api/estimate", {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null,
-                                          ...(STAGE_JOB(runOpts.action) && SM.edit ? {stage_models: SM.edit} : {})});
+    const e = await api("/api/estimate", {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null});
     const el = $("#est"); if (!el) return;
     if (e.error) { el.innerHTML = `<span class="err">${esc(e.error)}</span>`; return; }
     const rows = (e.rows||[]).map(r => `<tr title="${r.in_per_call.toLocaleString()} in / ${r.out_per_call.toLocaleString()} out tokens per call · ${esc(r.source)}"><td>${esc(r.stage)}${r.model ? `<div class="xs mut">${esc(r.model)} · ${esc(r.effort)}</div>` : ""}</td><td class="r num mut">${r.calls}×</td><td class="r num">${usd(r.usd,3)}</td></tr>`).join("");
@@ -856,37 +840,9 @@ async function testModel(){
   const r = await api("/api/test_model", runOpts.agent);
   $("#testres").innerHTML = r.ok ? `<span class="saved">${ic("check","sm")} ${esc(r.model)} answered in ${r.seconds}s</span>` : `<span class="err">${esc(r.error||"failed")}</span>`;
 }
-async function startRun(){
-  if (STAGE_JOB(runOpts.action) && SM.dirty && !(await saveStageModels())) return;
-  const body = {...runOpts, max_records: runOpts.max_records ? Number(runOpts.max_records) : null,
-                n_cases: runOpts.n_cases ? Number(runOpts.n_cases) : null};
-  if (body.action !== "eval") delete body.judge;
-  const r = await api("/api/run", body);
-  $("#runmsg").innerHTML = r.id ? `<span class="saved">${ic("check","sm")} Started: ${esc(r.label || r.action)}</span>` : `<span class="err">${esc(r.error)}</span>`;
-  if (r.id) toast("Job started: " + (r.label || r.action));
-  setTimeout(() => refresh(true), 800);
-}
 async function stopRun(){ await api("/api/stop", {}); toast("Stopping the job; finished work is kept"); setTimeout(() => refresh(true), 800); }
-function renderJob(){
-  const box = $("#jobbox"); if (!box || !S) return;
-  const sb = $("#stopbtn"); if (sb) sb.disabled = !S.job.current;
-  const j = S.job.current || S.job.last;
-  if (!j) { box.innerHTML = `<div class="empty" style="padding:20px">No job has run from this interface yet.</div>`; $("#jobhead").innerHTML = ""; return; }
-  const st = S.job.current ? "running" : j.status;
-  $("#jobhead").innerHTML = `${S.job.current ? `<span class="spin"></span>` : ""}${badge(st, tone(st), "dot")}${j.usd!=null?`<span class="small mut">cost ${usd(j.usd,4)}</span>`:""}`;
-  const old = box.querySelector("pre");
-  const atEnd = !old || old.scrollTop + old.clientHeight >= old.scrollHeight - 30;
-  const prev = old ? old.scrollTop : 0;
-  box.innerHTML = `<div class="small" style="margin-bottom:8px"><b>${esc(j.label || j.action)}</b> <code>sragent ${esc(j.cmd||j.action)}</code></div><pre class="log">${esc(j.log||"")}</pre>`;
-  const pre = box.querySelector("pre"); if (pre) pre.scrollTop = atEnd ? pre.scrollHeight : prev;
-}
 
 /* ---------------- full texts ---------------- */
-async function redraftRob(btn){
-  const r = await runOp("rob.redraft_all", {}, "Redraft every risk-of-bias assessment (those you confirmed are kept)");
-  const m = r && btn.parentElement.querySelector(".robrd");
-  if (m) m.innerHTML = r.ok ? `<span class="saved">${ic("check","sm")} Started; progress is in Activity</span>` : `<span class="err">${esc(r.message)}</span>`;
-}
 async function processPdfs(btn){
   const r = await runOp("retrieve.process_added_files", {}, "Process the files added to the full-text folder");
   const m = r && btn && btn.parentElement.querySelector(".pdfmsg");
@@ -897,7 +853,7 @@ async function processPdfs(btn){
 async function ensureModels(){ if (!M) { const m = await api("/api/models"); if (m && m.current) M = m; } return M; }
 function defaultAgent(){
   const st = (M && M.settings) || {};
-  return runOpts.agent || st.agent || (M ? {provider:M.current.agent.provider, model:M.current.agent.model, effort:"low"} : null);
+  return runOpts.agent || st.agent || (M ? {provider:M.current.writer.provider, model:M.current.writer.model, effort:"low"} : null);
 }
 function modelPicker(holder, key){
   // holder[key] = {provider, model, effort}
@@ -1228,7 +1184,7 @@ async function cancelJob(id){ await api("/api/cancel", {id}); toast("Job cancell
 function renderActivity(){
   const H = ACT.H || {proposals:[],decisions:[],changelog:[],comments:[],llm_by_tag:[]};
   const subs = [["jobs","LLM jobs",null],["proposals","Agent proposals",H.proposals.length],["comments","Comments",H.comments.length],
-                ["decisions","Your decisions",H.decisions.length],["changes","Change history",H.changelog_total||0],["usage","LLM calls by stage",null]];
+                ["decisions","Your decisions",H.decisions.length],["changes","Change history",H.changelog_total||0],["usage","LLM calls by stage and role",null]];
   const tabs = `<div class="seg">${subs.map(([v,l,n]) => `<button class="${ACT.sub===v?"on":""}" onclick="ACT.sub='${v}';renderActivity()">${l}${n!=null?`<span class="cnt">${n}</span>`:""}</button>`).join("")}</div>`;
   const none = t => `<div class="empty">${t}</div>`;
   let body = "";
@@ -1253,11 +1209,12 @@ function renderActivity(){
       <td class="small">${esc(h.op)}: ${esc(h.changes.join("; ").slice(0,300))}${h.operation ? `<div class="mut">by ${esc(h.operation)}</div>` : ""}</td><td class="small">${badge(h.actor, h.actor==="user"?"info":"")}</td><td class="small mut">${esc(h.reason.slice(0,200))}${histBecause(h)}</td></tr>`).join("")}</tbody></table>
       ${H.changelog.length ? "" : none("No changes match.")}
       ${H.changelog_total>H.changelog.length?`<p class="small mut" style="padding:10px 18px;margin:0;border-top:1px solid var(--line)">Showing the latest ${H.changelog.length} of ${H.changelog_total}; download the CSV for all.</p>`:""}</div></div>`;
-  if (ACT.sub === "usage") { const tot = H.llm_by_tag.reduce((a,u) => a + u.usd, 0);
-    body = `<div class="card"><div class="card-b flush tw"><table><thead><tr><th>Stage (tag)</th><th class="r">Calls</th><th class="r">From cache</th><th class="r">Cost</th><th>Last</th></tr></thead><tbody>${H.llm_by_tag.map(u => `<tr>
-      <td class="small mono">${esc(u.tag)}</td><td class="r num">${u.calls.toLocaleString()}</td><td class="r num mut">${u.cached.toLocaleString()}</td><td class="r num">${usd(u.usd,3)}</td><td class="small mut">${fmtT(u.last)}</td></tr>`).join("")}
-      ${H.llm_by_tag.length ? `<tr><td><b>Total</b></td><td class="r num"><b>${H.llm_by_tag.reduce((a,u) => a + u.calls, 0).toLocaleString()}</b></td><td class="r num mut">${H.llm_by_tag.reduce((a,u) => a + u.cached, 0).toLocaleString()}</td><td class="r num"><b>${usd(tot,3)}</b></td><td></td></tr>` : ""}</tbody></table>
-      ${H.llm_by_tag.length ? "" : none("No LLM calls yet.")}</div></div>`; }
+  if (ACT.sub === "usage") { const U = H.llm_by_cell, sum = k => U.reduce((a,u) => a + u[k], 0);
+    const lab = s => ((S.steps || []).find(x => x.key === s) || {}).label || s || "(none)";
+    body = `<div class="card"><div class="card-b flush tw"><table><thead><tr><th>Stage</th><th>Role</th><th>Model</th><th class="r">Calls</th><th class="r">From cache</th><th class="r">Cost</th><th>Last</th></tr></thead><tbody>${U.map(u => `<tr title="${esc(u.tags.join(", "))}">
+      <td class="small">${esc(lab(u.stage))}</td><td class="small">${esc(u.role)}</td><td class="small mono">${esc(u.models.join(", "))}</td><td class="r num">${u.calls.toLocaleString()}</td><td class="r num mut">${u.cached.toLocaleString()}</td><td class="r num">${usd(u.usd,3)}</td><td class="small mut">${fmtT(u.last)}</td></tr>`).join("")}
+      ${U.length ? `<tr><td colspan="3"><b>Total</b></td><td class="r num"><b>${sum("calls").toLocaleString()}</b></td><td class="r num mut">${sum("cached").toLocaleString()}</td><td class="r num"><b>${usd(sum("usd"),3)}</b></td><td></td></tr>` : ""}</tbody></table>
+      ${U.length ? "" : none("No LLM calls yet.")}</div></div>`; }
   $("#v-activity").innerHTML = `<div class="toolbar" style="margin-bottom:16px">${tabs}<span class="grow"></span><button class="btn sm ghost" onclick="loadActivity()">${ic("refresh","sm")} Refresh</button></div>${body}`;
 }
 
@@ -1268,7 +1225,7 @@ const KIND_SUB = {run:"A run = the folder's topic + the models it chooses + run 
   topic:"What to review: question, eligibility, records, extraction fields and risk-of-bias domains. Shared by every run file in this folder.",
   catalog:"Facts about each model (provider, price), written once. Run files choose models from it by name.", other:"A YAML file under configs/."};
 const CF_HELP = {
-  run:`<p style="margin-top:0"><code>include:</code> loads this folder's <code>topic.yaml</code>; keys written here override it, and nested sections merge key by key. Anything not written takes its default. Models are chosen by name (<code>llm_defaults.model</code>, <code>roles.judge.model</code>, <code>stage_models</code>); their provider and price come from <code>configs/models.yaml</code>.</p>
+  run:`<p style="margin-top:0"><code>include:</code> loads this folder's <code>topic.yaml</code>; keys written here override it, and nested sections merge key by key. Anything not written takes its default. Models are chosen by name per stage and role (<code>models.default.writer</code>, <code>models.&lt;stage&gt;.writer</code> or <code>.verifier</code>, <code>eval.models.judge</code>); their provider and price come from <code>configs/models.yaml</code>.</p>
     <table class="sumt keys"><tbody>
     <tr><td><code>budget_usd</code></td><td>hard cost cap for the run folder (5.0)</td></tr>
     <tr><td><code>contact_email</code></td><td>sent to NCBI, Unpaywall, OpenAlex; Unpaywall needs it</td></tr>

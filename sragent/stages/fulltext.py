@@ -53,8 +53,8 @@ def local_file(ctx: Ctx, rid: str) -> Path | None:
 
 
 def secrets(ctx: Ctx) -> dict:
-    from ..config import load_secrets, role_cfg
-    return load_secrets(role_cfg(ctx.cfg, "agent").get("api_env"), ctx.cfg.get("_config_dir"))
+    from ..config import load_secrets
+    return load_secrets(ctx.cfg["llm_defaults"].get("api_env"), ctx.cfg.get("_config_dir"))
 
 
 def contact_email(ctx: Ctx) -> str:
@@ -139,7 +139,7 @@ def backfill_fetched_files(ctx: Ctx) -> dict:
 def _parse(ctx: Ctx, path: Path) -> tuple[str, str]:
     from ..docparse import parse_file
     try:
-        return parse_file(path, ctx.cfg, secrets(ctx), llm=ctx.agent if ctx.cfg["pipeline"].get("vision_pages") else None,
+        return parse_file(path, ctx.cfg, secrets(ctx), llm=ctx.writer if ctx.cfg["pipeline"].get("vision_pages") else None,
                           log=ctx.log)
     except Exception as e:  # unreadable / scanned PDF
         ctx.log(f"[fulltext] {rid_of(path)}: could not read {path.name}: {str(e)[:120]}")

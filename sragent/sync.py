@@ -26,10 +26,10 @@ def process_pdfs(ctx: Ctx) -> dict:
         sc = selection.view(st, rid)
         human = sc and sc.get("human_decision")   # a person decided: the file is read, the decision stays
         if sc and not human and not sc.get("rule") and sc["decision"] != "exclude":
-            out = screening.review_one(ctx, protocol, rid, refetch=True)   # full-text review with the supplied file
+            screening.review_one(ctx, protocol, rid, refetch=True)   # full-text review with the supplied file
             rescreened.append(rid)
         else:
-            out = fulltext.fetch_one(ctx, rid)["kind"]
+            fulltext.fetch_one(ctx, rid)
         if (st.get(f"ft:{rid}") or {}).get("data", {}).get("kind") != "fulltext":
             unreadable.append(rid)
             continue

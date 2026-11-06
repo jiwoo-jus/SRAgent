@@ -20,8 +20,8 @@ handle_feedback(ctx, text, target=..., verify=..., propagate=...)
 Vague or multi-target feedback is split into one request per output first; feedback the agent cannot
 interpret becomes a clarification question for the user (status needs_clarification).
 Proposals remember the version of every output they change; accepting one that is out of date is refused.
-The verifier role (roles.verifier) defaults to the agent model; set it to another model for an
-independent check.
+The checks use models.feedback.verifier (unset: models.default.verifier, else models.default.writer); a model
+of another family gives a more independent check.
 
 `propagate=False` is the LOCAL-EDIT BASELINE: only the directly referenced output is revised.
 """
@@ -61,8 +61,8 @@ class StaleProposal(Exception):
 
 
 def verifier(ctx: Ctx):
-    """The model that checks feedback and revisions: roles.verifier if configured, else the agent."""
-    return ctx.hub["verifier"] if (ctx.cfg.get("roles") or {}).get("verifier") else ctx.agent
+    """The model that checks your feedback and the revisions it starts."""
+    return ctx.hub.model("feedback", "verifier")
 
 
 def record_bases(live_store, cs: dict) -> None:
@@ -327,12 +327,12 @@ def _index(ctx: Ctx) -> str:
 
 
 def locate(ctx: Ctx, text: str, tag: str) -> dict:
-    return ctx.agent.chat(ctx.msgs(prompts.LOCATE.format(feedback=text, index=_index(ctx))), tag=tag)
+    return ctx.writer.chat(ctx.msgs(prompts.LOCATE.format(feedback=text, index=_index(ctx))), tag=tag)
 
 
 def decompose(ctx: Ctx, text: str, tag: str, max_n: int = 5) -> list[dict]:
     """One request per affected output (vague feedback like 're-check every population' -> several)."""
-    out = ctx.agent.chat(ctx.msgs(prompts.DECOMPOSE.format(feedback=text, index=_index(ctx), max_n=max_n)), tag=tag)
+    out = ctx.writer.chat(ctx.msgs(prompts.DECOMPOSE.format(feedback=text, index=_index(ctx), max_n=max_n)), tag=tag)
     reqs = []
     for r in out.get("requests", [])[:max_n]:
         if not isinstance(r, dict):
@@ -369,7 +369,7 @@ def _revise_target(sb: Ctx, cs: dict, target: str, text: str, verify: bool, prop
         cs["evidence_quote"] = joined(ev["spans"])
         revised = out.get("revised") if out.get("verdict") in ("supported", "partially_supported") else None
     else:
-        out = sb.agent.chat(sb.msgs(prompts.FEEDBACK_APPLY.format(
+        out = sb.writer.chat(sb.msgs(prompts.FEEDBACK_APPLY.format(
             feedback=text, node_id=target, ntype=ntype, node=node_json)), tag=f"{tp}_apply")
         cs["verdict"] = "applied_without_verification"
         cs["explanation"] = out.get("explanation", "")
@@ -437,7 +437,7 @@ def _propagate(sb: Ctx, cs: dict, src_id: str, before: dict, after: dict, reason
         return
     cand_txt = "\n".join(f"[{c}] ({st.get(c)['type']}): {json.dumps(editable(st.get(c)), ensure_ascii=False)[:1500]}"
                          for c in cands)
-    imp = sb.agent.chat(sb.msgs(prompts.IMPACT.format(
+    imp = sb.writer.chat(sb.msgs(prompts.IMPACT.format(
         node_id=src_id, before=json.dumps(editable({"type": n["type"], "data": before}), ensure_ascii=False)[:3000],
         after=json.dumps(editable({"type": n["type"], "data": after}), ensure_ascii=False)[:3000],
         reason=reason[:500], candidates=cand_txt)), tag=f"{tp}_impact")
@@ -495,7 +495,7 @@ def _check_and_repair(sb: Ctx, cs: dict, tp: str, max_rounds: int = 1):
             log.append({"node": c["node"], "round": rnd, "ok": not issues, "issues": issues[:4]})
             if not issues or rnd == max_rounds:
                 break
-            out = sb.agent.chat(sb.msgs(prompts.REPAIR.format(
+            out = sb.writer.chat(sb.msgs(prompts.REPAIR.format(
                 node_id=c["node"], ntype=f"{n['type']} — {TYPE_HINTS.get(n['type'], '')}",
                 node=json.dumps(editable(sb.store.get(c["node"])), ensure_ascii=False, indent=1),
                 issues="; ".join(issues), evidence=_context_for(sb, sb.store.get(c["node"])))), tag=f"{tp}_repair")
@@ -516,7 +516,7 @@ def _global_audit(sb: Ctx, cs: dict, tp: str, max_fix: int = 3):
     changed = {c["node"] for c in cs["changes"]}
     stm = "\n".join(f"[{n['data']['id']}] {n['data']['text']} (cites: {', '.join(n['data']['cites'])})" for n in stmts)
     excl = sorted({c for n in stmts for c in n["data"]["cites"] if c not in inc})
-    out = sb.agent.chat(sb.msgs(prompts.CONSISTENCY.format(table=compact_table(st, inc), excluded=", ".join(excl) or "(none)",
+    out = sb.writer.chat(sb.msgs(prompts.CONSISTENCY.format(table=compact_table(st, inc), excluded=", ".join(excl) or "(none)",
                                                            statements=stm)), tag=f"{tp}_audit")
     found = out.get("contradictions") or []
     cs["global_audit"] = {"found": len(found), "fixed": []}
@@ -560,7 +560,7 @@ def _revise_dependent(sb: Ctx, cs: dict, node_id: str, src_id: str, before: dict
         except (KeyError, TypeError):
             return x
     b, a = view(before), view(after)
-    out = sb.agent.chat(sb.msgs(prompts.REVISE_DEPENDENT.format(
+    out = sb.writer.chat(sb.msgs(prompts.REVISE_DEPENDENT.format(
         src_id=src_id, before=json.dumps(b, ensure_ascii=False)[:3000], after=json.dumps(a, ensure_ascii=False)[:3000],
         node_id=node_id, ntype=f"{n['type']} — {TYPE_HINTS.get(n['type'], '')}",
         node=json.dumps(editable(n), ensure_ascii=False, indent=1), context=_context_for(sb, n))),
@@ -620,7 +620,7 @@ def _include_study(sb: Ctx, cs: dict, rid: str, tp: str, integrate: bool = True)
             st.set_status(n["id"], "active", reason=f"feedback {cs['id']}: study {rid} re-included; this statement cited it")
             cs["changes"].append({"node": n["id"], "role": "dependent", "before": {"status": synthesis.RETIRED}, "after": {"status": "active"}})
     cur = synthesis.statements_json(sb)
-    out = sb.agent.chat(sb.msgs(prompts.SYNTH_INTEGRATE.format(
+    out = sb.writer.chat(sb.msgs(prompts.SYNTH_INTEGRATE.format(
         rid=rid, new=extraction.table_text(sb, [rid], with_quotes=True), statements=cur,
         table=extraction.table_text(sb),
         previous=("\nSTATEMENTS THAT CITED THIS STUDY BEFORE IT WAS EXCLUDED (as they read then; restore the citation and "
