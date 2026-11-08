@@ -277,7 +277,9 @@ class LLM:
 
     def chat(self, messages: list[dict], *, json_out: bool = True, tag: str = "",
              max_tokens: int | None = None, temperature: float | None = None,
-             use_cache: bool = True) -> Any:
+             use_cache: bool = True, schema: dict | None = None) -> Any:
+        """schema (schemas.py): the JSON shape of the reply, enforced by the API on models that support it. It is not
+        part of the cache key: an answer already cached for the same prompt is still that prompt's answer."""
         temperature = self.c["temperature"] if temperature is None else temperature
         max_tokens = max_tokens or self.c["max_tokens"]
         if self.provider == "local":
@@ -300,7 +302,7 @@ class LLM:
             self.tracker.check()   # before every paid call, retries included
             t0 = time.time()
             try:
-                text, pin, pout = self._call(msgs, json_out, max_tokens, temperature)
+                text, pin, pout = self._call(msgs, json_out, max_tokens, temperature, schema)
             except (BudgetExceeded, QuotaExhausted):
                 raise
             except Refused as e:   # paid for, recorded, not retried
@@ -399,12 +401,12 @@ class LLM:
 
         return self.local_pool.run(self.role, self.model, self.local_key, request)
 
-    def _call(self, messages, json_out, max_tokens, temperature):
+    def _call(self, messages, json_out, max_tokens, temperature, schema=None):
         if self.provider == "mock":
             text = self.mock_fn(messages, "json" if json_out else "text")
             return text, sum(len(m["content"]) // 4 for m in messages), len(text) // 4
         if self.provider == "anthropic":
-            return self._anthropic_call(messages, json_out, max_tokens)
+            return self._anthropic_call(messages, json_out, max_tokens, schema)
         kw: dict[str, Any] = {"model": self.model, "messages": messages}
         reasoning = self.c.get("reasoning_effort")
         if self.provider == "openai" and reasoning:
@@ -440,15 +442,18 @@ class LLM:
             raise Truncated(f"{self.name}: reply cut off at {max_tokens} output tokens", pin, pout)
         return text, pin, pout
 
-    def _anthropic_params(self, messages, json_out, max_tokens) -> dict[str, Any]:
+    def _anthropic_params(self, messages, json_out, max_tokens, schema=None) -> dict[str, Any]:
         system, msgs = _to_anthropic(messages)
         if json_out and self.c.get("json_mode", True):
             system = f"{system}\n\n{JSON_ONLY}" if system else JSON_ONLY
         kw: dict[str, Any] = {"model": self.model, "max_tokens": max_tokens, "messages": msgs}
         if system:
             kw["system"] = system
-        if self.c.get("reasoning_effort"):
-            kw["output_config"] = {"effort": self.c["reasoning_effort"]}
+        config = {"effort": self.c["reasoning_effort"]} if self.c.get("reasoning_effort") else {}
+        if schema and json_out and self.c.get("json_mode", True):
+            config["format"] = {"type": "json_schema", "schema": schema}
+        if config:
+            kw["output_config"] = config
         return kw
 
     # ---- Anthropic Message Batches: half price, answers within the hour as a rule (at most 24 hours)
@@ -456,7 +461,8 @@ class LLM:
     def can_batch(self) -> bool:
         return self.provider == "anthropic" and bool(self.cache) and self.cache_read
 
-    def batch_prefill(self, prompts: list[tuple[list[dict], str]], pending: Path, log: Callable[[str], None]) -> None:
+    def batch_prefill(self, prompts: list[tuple[list[dict], str]], pending: Path, log: Callable[[str], None],
+                      schema: dict | None = None) -> None:
         """Ask these prompts ((messages, tag)) in one batch and put the answers in the cache, under the keys chat() looks
         up: the normal calls then find them there. A prompt with no good answer is simply not cached and is asked live.
         Only as many as the budget has room for are sent. `pending` names the batch until its answers are in, so a
@@ -478,7 +484,7 @@ class LLM:
         if not todo:
             return
         extra = self.c.get("extra_body") or {}
-        requests = [{"custom_id": k, "params": {**self._anthropic_params(ms, True, max_tokens), **extra}} for k, (ms, _) in todo.items()]
+        requests = [{"custom_id": k, "params": {**self._anthropic_params(ms, True, max_tokens, schema), **extra}} for k, (ms, _) in todo.items()]
         batch = self.client.with_options(max_retries=5).messages.batches.create(requests=requests)
         pending.write_text(json.dumps({"id": batch.id, "tags": {k: t for k, (_, t) in todo.items()}}))
         log(f"[batch] {len(requests)} requests sent to {self.name} as {batch.id}; half price, usually within the hour")
@@ -521,11 +527,11 @@ class LLM:
         pending.unlink()
         log(f"[batch] {info['id']}: {ok} of {len(info['tags'])} usable answers; any others are asked live")
 
-    def _anthropic_call(self, messages, json_out, max_tokens):
+    def _anthropic_call(self, messages, json_out, max_tokens, schema=None):
         """Claude Messages API. Thinking is left at the model default (adaptive) and its depth is set
         with reasoning_effort (low | medium | high | xhigh | max). temperature is not sent: current
         Claude models (Haiku 5.5, Sonnet 5.5, Opus 5.5) reject non-default sampling values."""
-        kw = self._anthropic_params(messages, json_out, max_tokens)
+        kw = self._anthropic_params(messages, json_out, max_tokens, schema)
         if self.c.get("extra_body"):
             kw["extra_body"] = self.c["extra_body"]
         fallbacks = self.c.get("fallbacks")

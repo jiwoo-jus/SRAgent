@@ -119,7 +119,7 @@ class Ctx:
 
     BATCH_SIZE = 1000   # requests per batch: their answers are written to the review before the next batch is sent
 
-    def map_batched(self, stage: str, prompt_of, fn, items):
+    def map_batched(self, stage: str, prompt_of, fn, items, schema: dict | None = None):
         """ctx.map for a stage in pipeline.batch_stages on a model with a batch API: the prompts (prompt_of(item) gives
         (messages, tag), or None for an item that needs no call) are first answered at half price, then fn runs as
         always and finds its answers in the cache. Otherwise this is ctx.map."""
@@ -130,7 +130,7 @@ class Ctx:
         pending, out = self.run_dir / f"pending_batch_{stage}.json", []
         for i in range(0, len(items), self.BATCH_SIZE):
             part = items[i:i + self.BATCH_SIZE]
-            llm.batch_prefill([p for p in map(prompt_of, part) if p], pending, self.log)
+            llm.batch_prefill([p for p in map(prompt_of, part) if p], pending, self.log, schema)
             out += self.map(fn, part)
         return out
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 
-from .. import prompts, terms
+from .. import prompts, schemas, terms
 from ..context import Ctx
 from ..evidence import attach, chunks, cites_of, data_chars, packed, segment
 
@@ -238,7 +238,7 @@ def recheck_eligibility(ctx: Ctx, rid: str, doubt: dict) -> str:
         cid=cid, ctype=crit.get("type", "inclusion"), ctext=crit.get("text", ""),
         screen_assessment=first.get("assessment", "not assessed"),
         screen_reason=f" ({first['reason']})" if first.get("reason") else "",
-        why=why, kind=kind, text=packed(text, limit))), tag="eligibility_verify")
+        why=why, kind=kind, text=packed(text, limit))), tag="eligibility_verify", schema=schemas.ELIGIBILITY_VERIFY)
     verdict = "exclude" if str(out.get("verdict", "")).lower().startswith("exclude") else "include"
     spans = resolve(out.get("evidence") or [], text).get("spans", [])
     review = {"claim": {"by": "extraction", "criterion": cid, "why": why, "ts": time.strftime("%Y-%m-%d %H:%M")},
@@ -290,19 +290,20 @@ def extract_one(ctx: Ctx, rid: str) -> dict:
     src_node = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
     budget = context_budget(ctx)
     fields_spec = fields_text(ctx.topic["extraction_fields"])
+    schema = schemas.extract(ctx.topic["extraction_fields"])
     from .planning import criteria_text
     crit_spec = criteria_text(_protocol(st), "full_text") or "(none recorded)"
     mode, merged = "single", []
     if data_chars(text) <= budget:
         out = ctx.writer.chat(ctx.msgs(prompts.EXTRACT.format(question=ctx.topic["question"], fields=fields_spec, criteria=crit_spec,
-                                                              kind=kind, rid=rid, text=packed(text, budget))), tag="extract")
+                                                              kind=kind, rid=rid, text=packed(text, budget))), tag="extract", schema=schema)
         raw_fields = out.get("fields", {})
         doubt = _doubt(st, out.get("eligibility_doubt"))
     else:   # long paper: read it in consecutive parts (same sentence ids), then merge differing values
         parts = chunks(text, budget)
         outs = [ctx.writer.chat(ctx.msgs(prompts.EXTRACT.format(
             question=ctx.topic["question"], fields=fields_spec, criteria=crit_spec, kind=f"{kind}, part {i} of {len(parts)}",
-            rid=rid, text=part)), tag="extract") for i, part in enumerate(parts, 1)]
+            rid=rid, text=part)), tag="extract", schema=schema) for i, part in enumerate(parts, 1)]
         raw_fields, merged = _merge(ctx, rid, outs, text)
         mode = f"{len(parts)} parts"
         doubt = next((d for d in (_doubt(st, o.get("eligibility_doubt")) for o in outs) if d), None)

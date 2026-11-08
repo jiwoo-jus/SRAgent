@@ -33,7 +33,7 @@ import json
 import re
 import time
 
-from . import prompts
+from . import prompts, schemas
 from .context import Ctx
 from .evidence import attach, cites_of, joined, packed, resolve
 from .stages import extraction, fulltext, rob, screening, synthesis
@@ -476,7 +476,7 @@ def _check_one(sb: Ctx, node_id: str, before, tp: str) -> list[str]:
         d = n["data"]
         r = verifier(sb).chat(sb.msgs(prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"],
                                                                  evidence=synthesis.statement_evidence(sb, d["cites"]))),
-                              tag=f"{tp}_check")
+                              tag=f"{tp}_check", schema=schemas.SYNTH_VERIFY)
         if r.get("support") in ("unsupported", "partially_supported") or r.get("overgeneralization"):
             issues.append(f"{r.get('support')}; overgeneralization={r.get('overgeneralization')}; {'; '.join(r.get('issues') or [])}")
     return issues

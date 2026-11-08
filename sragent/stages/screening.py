@@ -24,7 +24,7 @@ how often does the holistic decision disagree with its own criterion-level asses
 """
 from __future__ import annotations
 
-from .. import prompts
+from .. import prompts, schemas
 from ..context import Ctx
 from ..evidence import attach, cites_of, packed
 from .planning import criteria_text, synonyms_text
@@ -223,7 +223,7 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     text, src_node = screen_source(st, rid, stage)
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
     messages, tag = _screen_prompt(ctx, protocol, rid, stage, tag_suffix)
-    out = ctx.writer.chat(messages, tag=tag)
+    out = ctx.writer.chat(messages, tag=tag, schema=schemas.SCREEN)
     assessments = settle(protocol, complete_assessments(protocol, out.get("criteria"), stage), stage)
     evidence = []
     for a in assessments:
@@ -283,7 +283,7 @@ def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str
     out = ctx.writer.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(sub, stage), synonyms=synonyms_text(protocol),
                                                         record=packed(text, limit), stage=stage.replace("_", "/"),
                                                         stage_rule=prompts.SCREEN_STAGE_RULE[stage])),
-                         tag=f"screen_{stage}{tag_suffix}")
+                         tag=f"screen_{stage}{tag_suffix}", schema=schemas.SCREEN)
     fresh = settle(sub, complete_assessments(sub, out.get("criteria"), stage), stage)
     evidence = list(n.get("evidence") or [])
     for a in fresh:
@@ -338,7 +338,7 @@ def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, lim
                   stage=stage.replace("_", "/"), stage_rule=prompts.SCREEN_STAGE_RULE[stage])
     blind = bool(ctx.cfg["pipeline"].get("verify_screening_blind"))
     if blind:   # the verifier does not see the screener's answer; the readings are compared here
-        out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY_BLIND.format(**common)), tag=f"screen_verify_{stage}")
+        out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY_BLIND.format(**common)), tag=f"screen_verify_{stage}", schema=schemas.SCREEN_VERIFY_BLIND)
         first = {a.get("id"): a.get("assessment") for a in assessments if isinstance(a, dict)}
         out["differs_on"] = [a for a in out.get("assessments") or []
                              if isinstance(a, dict) and a.get("id") in first and a.get("assessment") != first[a["id"]]]
@@ -347,7 +347,7 @@ def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, lim
         brief = "; ".join(f"{a.get('id')}={a.get('assessment')}" + (f" ({a['reason'][:80]})" if a.get("reason") else "")
                           for a in assessments if isinstance(a, dict))
         out = checker.chat(ctx.msgs(prompts.SCREEN_VERIFY.format(**common, assessments=brief, decision=decision,
-                                                                 because=", ".join(because) or "-")), tag=f"screen_verify_{stage}")
+                                                                 because=", ".join(because) or "-")), tag=f"screen_verify_{stage}", schema=schemas.SCREEN_VERIFY)
     own = str(out.get("decision") or "").lower()
     own = {"include": "include", "exclude": "exclude"}.get(own, "uncertain")
     agree = bool(out.get("agree")) if "agree" in out else own == decision
@@ -453,7 +453,7 @@ def screen_all(ctx: Ctx, protocol: dict) -> dict:
             if (st.get(f"screen:{n['id'].split(':', 1)[1]}") or {}).get("status") != "active"]
     ctx.log(f"[screen] title/abstract screening {len(todo)} records")
     ctx.map_batched("screen", lambda rid: _screen_prompt(ctx, protocol, rid, "title_abstract"),
-                    lambda rid: screen_one(ctx, protocol, rid, "title_abstract"), todo)
+                    lambda rid: screen_one(ctx, protocol, rid, "title_abstract"), todo, schema=schemas.SCREEN)
     ctx.save()
     counts = {}
     for n in st.by_type("screen"):
@@ -560,7 +560,7 @@ def eligibility_all(ctx: Ctx, protocol: dict) -> dict:
     todo = [rid for rid in _forwarded(st) if ((st.get(f"ft:{rid}") or {}).get("data") or {}).get("kind") == "fulltext"]
     ctx.log(f"[eligibility] full-text screening of {len(todo)} records")
     out = ctx.map_batched("eligibility", lambda rid: _screen_prompt(ctx, protocol, rid, "full_text") if _needs_full_text_screen(ctx, rid) else None,
-                          lambda rid: eligibility_one(ctx, protocol, rid), todo)
+                          lambda rid: eligibility_one(ctx, protocol, rid), todo, schema=schemas.SCREEN)
     from .. import rules
     rules.apply(ctx, protocol)
     fulltext.write_needed_pdfs(ctx)

@@ -677,6 +677,7 @@ class FakeBatches:
 
     def live(self, **params):
         NS = self.NS
+        self.live_params = params
         usage = NS(input_tokens=1000, output_tokens=500, cache_creation_input_tokens=0, cache_read_input_tokens=0)
         return NS(content=[NS(type="text", text=mock_fn(params["messages"], "json"))], usage=usage, stop_reason="end_turn")
 
@@ -745,6 +746,41 @@ def test_a_batch_sends_only_what_the_budget_has_room_for(tmp_path, monkeypatch):
     ctx.hub.tracker.spent = 1.0 - llm._cost(1000, 1500) * 0.5 * 1.5        # room for one and a half requests
     llm.batch_prefill([([{"role": "user", "content": "y" * 4000 + str(i)}], f"u{i}") for i in range(3)], Path(ctx.run_dir / "p.json"), ctx.log)
     assert len(fake.sent[0]) == 1
+
+
+def test_bulk_prompts_ask_for_their_json_shape(tmp_path, monkeypatch):
+    """The prompts that run once per record send their schema, live and in a batch, beside the effort; schemas are in the
+    form the API accepts; the schema is not part of the cache key; a provider without the feature is unaffected."""
+    from sragent import schemas
+    from sragent.llm import LLM, CostTracker
+    ctx = _batch_ctx(tmp_path, monkeypatch)
+    llm = ctx.hub.model("screen")
+    llm.c["reasoning_effort"] = "low"
+    fake = llm.client = FakeBatches(lambda p: mock_fn(p["messages"], "json"))
+    msgs = [{"role": "user", "content": "An independent check"}]
+    llm.chat(msgs, tag="t", schema=schemas.ELIGIBILITY_VERIFY, use_cache=False)
+    assert fake.live_params["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": schemas.ELIGIBILITY_VERIFY}}
+    assert "format" not in llm._anthropic_params(msgs, True, 100)["output_config"]
+    assert llm._key(msgs, True, 0.0, 100) == llm._key(msgs, True, 0.0, 100)
+    from pathlib import Path
+    llm.batch_prefill([(msgs + [{"role": "user", "content": "more"}], "t")], Path(ctx.run_dir / "p.json"), ctx.log, schemas.SCREEN)
+    assert fake.sent[0][0]["params"]["output_config"]["format"]["schema"] == schemas.SCREEN
+
+    def check(s):
+        if isinstance(s, dict):
+            if s.get("type") == "object":
+                assert s["additionalProperties"] is False and sorted(s["required"]) == sorted(s["properties"])
+            for v in s.values():
+                check(v)
+        elif isinstance(s, list):
+            for v in s:
+                check(v)
+    for s in (schemas.SCREEN, schemas.SCREEN_VERIFY, schemas.SCREEN_VERIFY_BLIND, schemas.ELIGIBILITY_VERIFY, schemas.ROB,
+              schemas.ROB_VERIFY, schemas.SYNTH_VERIFY, schemas.extract(ctx.topic["extraction_fields"])):
+        check(s)
+    assert set(schemas.extract(ctx.topic["extraction_fields"])["properties"]["fields"]["required"]) == {f["name"] for f in ctx.topic["extraction_fields"]}
+    mock = LLM(ctx.cfg, {**llm.c, "provider": "mock", "model": "mock"}, CostTracker(1), None, mock_fn=lambda m, mode: '{"a": 1}')
+    assert mock.chat(msgs, schema=schemas.SCREEN) == {"a": 1}
 
 
 def test_batch_stages_are_checked_and_estimated_at_half_price(tmp_path, monkeypatch):
@@ -917,7 +953,7 @@ def test_llm_refusal_is_paid_once_and_cache_failures_do_not_cost_a_call(tmp_path
     from sragent.llm import LLM, CostTracker, DiskCache, Refused
     cfg = load_config(None, {"llm_defaults": {"max_retries": 3}, "models": {"default": {"writer": {"provider": "mock", "model": "mock"}}}})
     calls = []
-    def refuse(self, msgs, json_out, max_tokens, temperature):
+    def refuse(self, msgs, json_out, max_tokens, temperature, schema=None):
         calls.append(1)
         raise Refused("declined", pin=120, pout=5)
     monkeypatch.setattr(LLM, "_call", refuse)
@@ -1292,7 +1328,7 @@ def test_cut_off_replies_are_retried_with_more_room_and_never_salvaged(tmp_path,
     assert parse_json('Sure: {"errors": []}') == {"errors": []}                     # prose before the object is fine
     # the provider says the reply hit max_tokens: asked again with twice the room, and both calls are paid for
     seen = []
-    def call(self, msgs, json_out, max_tokens, temperature):
+    def call(self, msgs, json_out, max_tokens, temperature, schema=None):
         seen.append(max_tokens)
         if len(seen) == 1:
             raise Truncated("cut", pin=100, pout=max_tokens)

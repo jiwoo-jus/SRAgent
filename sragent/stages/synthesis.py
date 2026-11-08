@@ -5,7 +5,7 @@ import json
 import time
 import re
 
-from .. import prompts
+from .. import prompts, schemas
 from ..context import Ctx
 from .extraction import table_text
 from .rob import rob_text
@@ -146,7 +146,7 @@ def verify_one(ctx: Ctx, sid: str, tag: str = "synthesis_verify") -> dict:
     n = st.get(sid)
     d = n["data"]
     res = ctx.hub.model("synthesis", "verifier").chat(ctx.msgs(prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"],
-                                                                 evidence=statement_evidence(ctx, d["cites"], d["text"]))), tag=tag)
+                                                                 evidence=statement_evidence(ctx, d["cites"], d["text"]))), tag=tag, schema=schemas.SYNTH_VERIFY)
     n["data"]["verification"] = res
     if res.get("support") in ("unsupported", "partially_supported") or res.get("overgeneralization"):
         st.flag(sid, f"Self-check: {res.get('support')}; overgeneralization={res.get('overgeneralization')}; "

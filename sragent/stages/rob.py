@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-from .. import prompts
+from .. import prompts, schemas
 from ..context import Ctx
 from ..evidence import attach, cites_of, packed
 
@@ -29,7 +29,7 @@ def rob_one(ctx: Ctx, rid: str) -> dict:
     src_node = f"ft:{rid}" if st.get(f"ft:{rid}") else f"rec:{rid}"
     ext_brief = _ext_brief(st, rid)
     out = ctx.writer.chat(ctx.msgs(prompts.ROB.format(domains=_domains(ctx), extraction=ext_brief, kind=kind,
-                                                     rid=rid, text=packed(text, _budget(ctx)))), tag="rob")
+                                                     rid=rid, text=packed(text, _budget(ctx)))), tag="rob", schema=schemas.ROB)
     evidence = []
     doms = [d for d in out.get("domains", []) if isinstance(d, dict)]
     for d in doms:
@@ -108,7 +108,7 @@ def _verify(ctx: Ctx, rid: str, data: dict, evidence: list, text: str, kind: str
     reasons = "\n".join(f"- {r['text']}" for r in data["reasons"])
     out = chk.chat(ctx.msgs(prompts.ROB_VERIFY.format(domains=_domains(ctx), extraction=ext_brief, draft=draft,
                                                       reasons=reasons, kind=kind, rid=rid,
-                                                      text=packed(text, _budget(ctx)))), tag="rob_verify")
+                                                      text=packed(text, _budget(ctx)))), tag="rob_verify", schema=schemas.ROB_VERIFY)
     rec = {"by": chk.name, "reasons": data["reasons"], "explanation": str(out.get("explanation") or "")[:600],
            "ts": time.strftime("%Y-%m-%d %H:%M"), "changed": []}
     if not out.get("decided", True):
