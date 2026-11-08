@@ -667,6 +667,98 @@ def test_one_unusable_reply_does_not_stop_the_stage(tmp_path):
         ctx.map(over, ["a"])
 
 
+class FakeBatches:
+    """The Message Batches API, answering each request with `answer(params)` once `ended` is set."""
+
+    def __init__(self, answer):
+        from types import SimpleNamespace as NS
+        self.NS, self.answer, self.sent, self.ended = NS, answer, [], True
+        self.messages = NS(batches=self, create=self.live)
+
+    def live(self, **params):
+        NS = self.NS
+        usage = NS(input_tokens=1000, output_tokens=500, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+        return NS(content=[NS(type="text", text=mock_fn(params["messages"], "json"))], usage=usage, stop_reason="end_turn")
+
+    def with_options(self, **kw):
+        return self
+
+    def create(self, requests):
+        self.sent.append(requests)
+        return self.NS(id=f"b{len(self.sent)}", processing_status="in_progress")
+
+    def retrieve(self, bid):
+        return self.NS(processing_status="ended", request_counts=self.NS(succeeded=0, errored=0, expired=0, canceled=0, processing=0))
+
+    def results(self, bid):
+        NS = self.NS
+        for r in self.sent[int(bid[1:]) - 1]:
+            usage = NS(input_tokens=1000, output_tokens=500, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+            msg = NS(content=[NS(type="text", text=self.answer(r["params"]))], usage=usage, stop_reason="end_turn")
+            yield NS(custom_id=r["custom_id"], result=NS(type="succeeded", message=msg))
+
+
+def _batch_ctx(tmp_path, monkeypatch, budget=None):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only")
+    cfg = {"pipeline": {"batch_stages": ["screen"]}, "models": {"screen": {"writer": "claude-haiku-5-5"}}}
+    return make_ctx(tmp_path, extra_cfg={**cfg, **({"budget_usd": budget} if budget is not None else {})})
+
+
+def test_batched_stage_answers_at_half_price_and_falls_back_to_live_calls(tmp_path, monkeypatch):
+    """Records are screened from one batch at half price; a batch answer that is not valid JSON is asked live; the
+    decisions are those of a normal run."""
+    from sragent import pipeline
+    ctx = _batch_ctx(tmp_path, monkeypatch)
+    answer = lambda p: "not json" if "case series" in p["messages"][-1]["content"] else mock_fn(p["messages"], "json")
+    fake = ctx.hub.model("screen").client = FakeBatches(answer)
+    pipeline.run(ctx, until="screen")
+    st = ctx.store
+    assert len(fake.sent) == 1 and len(fake.sent[0]) == 4 and all(st.get(f"screen:{r}") for r in ("1001", "1002", "1003", "1004"))
+    rows = [json.loads(l) for l in (ctx.run_dir / "usage.jsonl").read_text().splitlines() if '"screen_title_abstract"' in l]
+    batch = [r for r in rows if r.get("batch")]
+    assert len(batch) == 4 and all(r["usd"] == round((1000 * 0.1 + 500 * 0.5) / 1e6 / 2, 6) for r in batch)
+    assert sum(r["cached"] for r in rows) == 3 and sum(not r["cached"] and not r.get("batch") for r in rows) == 1   # 1003 asked live
+    assert not (ctx.run_dir / "pending_batch_screen.json").exists() and (ctx.run_dir / "bad_replies.jsonl").exists()
+
+
+def test_a_batch_waiting_when_the_job_stopped_is_collected_not_sent_again(tmp_path, monkeypatch):
+    from sragent import pipeline
+    from sragent.stages import screening
+    ctx = _batch_ctx(tmp_path, monkeypatch)
+    llm = ctx.hub.model("screen")
+    fake = llm.client = FakeBatches(lambda p: mock_fn(p["messages"], "json"))
+    pipeline.run(ctx, until="search")
+    protocol = ctx.store.get("protocol")["data"]
+    messages, tag = screening._screen_prompt(ctx, protocol, "1001", "title_abstract")
+    key = llm._key(messages, True, llm.c["temperature"], llm.c["max_tokens"])
+    fake.sent.append([{"custom_id": key, "params": llm._anthropic_params(messages, True, llm.c["max_tokens"])}])
+    (ctx.run_dir / "pending_batch_screen.json").write_text(json.dumps({"id": "b1", "tags": {key: tag}}))
+    pipeline.run(ctx, until="screen")                       # collects b1, then sends only the three left
+    assert [len(s) for s in fake.sent] == [1, 3] and ctx.store.get("screen:1001")
+
+
+def test_a_batch_sends_only_what_the_budget_has_room_for(tmp_path, monkeypatch):
+    from pathlib import Path
+    ctx = _batch_ctx(tmp_path, monkeypatch, budget=1.0)
+    llm = ctx.hub.model("screen")
+    fake = llm.client = FakeBatches(lambda p: "{}")
+    ctx.hub.tracker.spent = 1.0 - llm._cost(1000, 1500) * 0.5 * 1.5        # room for one and a half requests
+    llm.batch_prefill([([{"role": "user", "content": "y" * 4000 + str(i)}], f"u{i}") for i in range(3)], Path(ctx.run_dir / "p.json"), ctx.log)
+    assert len(fake.sent[0]) == 1
+
+
+def test_batch_stages_are_checked_and_estimated_at_half_price(tmp_path, monkeypatch):
+    import pytest
+    from sragent.estimate import estimate_stages
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only")
+    with pytest.raises(ValueError, match="batch_stages"):
+        make_ctx(tmp_path, extra_cfg={"pipeline": {"batch_stages": ["extract"]}})
+    ctx = make_ctx(tmp_path, extra_cfg={"models": {"screen": {"writer": "claude-haiku-5-5"}}})
+    base = estimate_stages({"screen_title_abstract": 100}, ctx.cfg)["rows"][0]["usd"]
+    ctx.cfg["pipeline"]["batch_stages"] = ["screen"]
+    assert estimate_stages({"screen_title_abstract": 100}, ctx.cfg)["rows"][0]["usd"] == round(base * 0.5, 3)
+
+
 # ---------------------------------------------------------------- integrity of accepted proposals and human decisions
 def test_accepting_a_proposal_keeps_what_the_sandbox_created(tmp_path):
     """Nodes the sandbox created on the way (here the full-text node of a record the feedback forwarded)

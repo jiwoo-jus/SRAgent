@@ -206,6 +206,15 @@ def screen_source(st, rid: str, stage: str) -> tuple[str, str]:
     return st.text_of(rid)[0], f"ft:{rid}"
 
 
+def _screen_prompt(ctx: Ctx, protocol: dict, rid: str, stage: str, tag_suffix: str = "") -> tuple[list[dict], str]:
+    """The (messages, tag) of one screening call."""
+    text = screen_source(ctx.store, rid, stage)[0]
+    limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
+    return ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(protocol, stage), synonyms=synonyms_text(protocol),
+                                          record=packed(text, limit), stage=stage.replace("_", "/"),
+                                          stage_rule=prompts.SCREEN_STAGE_RULE[stage])), f"screen_{stage}{tag_suffix}"
+
+
 def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract", tag_suffix: str = "",
                keep_human: bool = True) -> dict:
     """Screen one record at one stage. A decision a person made is kept (the assessments are refreshed,
@@ -213,11 +222,8 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
     st = ctx.store
     text, src_node = screen_source(st, rid, stage)
     limit = None if stage == "title_abstract" else int(ctx.cfg["pipeline"].get("fulltext_screen_chars", 15000))
-    out = ctx.writer.chat(ctx.msgs(prompts.SCREEN.format(criteria=criteria_text(protocol, stage),
-                                                        synonyms=synonyms_text(protocol),
-                                                        record=packed(text, limit), stage=stage.replace("_", "/"),
-                                                        stage_rule=prompts.SCREEN_STAGE_RULE[stage])),
-                         tag=f"screen_{stage}{tag_suffix}")
+    messages, tag = _screen_prompt(ctx, protocol, rid, stage, tag_suffix)
+    out = ctx.writer.chat(messages, tag=tag)
     assessments = settle(protocol, complete_assessments(protocol, out.get("criteria"), stage), stage)
     evidence = []
     for a in assessments:
@@ -446,7 +452,8 @@ def screen_all(ctx: Ctx, protocol: dict) -> dict:
     todo = [n["id"].split(":", 1)[1] for n in st.by_type("record")      # not screened, or cleared (inactive)
             if (st.get(f"screen:{n['id'].split(':', 1)[1]}") or {}).get("status") != "active"]
     ctx.log(f"[screen] title/abstract screening {len(todo)} records")
-    ctx.map(lambda rid: screen_one(ctx, protocol, rid, "title_abstract"), todo)
+    ctx.map_batched("screen", lambda rid: _screen_prompt(ctx, protocol, rid, "title_abstract"),
+                    lambda rid: screen_one(ctx, protocol, rid, "title_abstract"), todo)
     ctx.save()
     counts = {}
     for n in st.by_type("screen"):
@@ -505,10 +512,14 @@ def retrieve_one(ctx: Ctx, rid: str, refetch: bool = False) -> tuple[str, bool]:
     return "fulltext_unavailable", fetched
 
 
+def _needs_full_text_screen(ctx: Ctx, rid: str) -> bool:
+    el = (ctx.store.get(elig_id(rid)) or {}).get("data") or {}
+    return el.get("source_kind") != "fulltext" or bool(el.get("human_decision_pending_fulltext"))
+
+
 def eligibility_one(ctx: Ctx, protocol: dict, rid: str, fetched: bool = False) -> str:
     """Stage 5 for one record with a full text: screened on it (again only when the text is new to the decision)."""
-    el = (ctx.store.get(elig_id(rid)) or {}).get("data") or {}
-    if fetched or el.get("source_kind") != "fulltext" or el.get("human_decision_pending_fulltext"):
+    if fetched or _needs_full_text_screen(ctx, rid):
         screen_one(ctx, protocol, rid, "full_text")
     return ctx.store.get(elig_id(rid))["data"]["decision"]
 
@@ -548,7 +559,8 @@ def eligibility_all(ctx: Ctx, protocol: dict) -> dict:
     st = ctx.store
     todo = [rid for rid in _forwarded(st) if ((st.get(f"ft:{rid}") or {}).get("data") or {}).get("kind") == "fulltext"]
     ctx.log(f"[eligibility] full-text screening of {len(todo)} records")
-    out = ctx.map(lambda rid: eligibility_one(ctx, protocol, rid), todo)
+    out = ctx.map_batched("eligibility", lambda rid: _screen_prompt(ctx, protocol, rid, "full_text") if _needs_full_text_screen(ctx, rid) else None,
+                          lambda rid: eligibility_one(ctx, protocol, rid), todo)
     from .. import rules
     rules.apply(ctx, protocol)
     fulltext.write_needed_pdfs(ctx)

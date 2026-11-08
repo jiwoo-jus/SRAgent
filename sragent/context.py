@@ -95,6 +95,7 @@ class Ctx:
         a network or account problem) still stops the job."""
         items = list(items)
         out, skipped = [], []
+        step = max(self.SAVE_EVERY, 4 * self.writer.c.get("concurrency", 4))   # a chunk's slowest call holds up the next chunk
 
         def one(item):
             try:
@@ -105,9 +106,9 @@ class Ctx:
                 return skipped          # the marker of a skipped item: never a result
 
         try:
-            for i in range(0, len(items), self.SAVE_EVERY):
-                out += self.writer.map(one, items[i:i + self.SAVE_EVERY])
-                if i + self.SAVE_EVERY < len(items):
+            for i in range(0, len(items), step):
+                out += self.writer.map(one, items[i:i + step])
+                if i + step < len(items):
                     self.save()
             return [r for r in out if r is not skipped]
         finally:
@@ -115,6 +116,23 @@ class Ctx:
             if skipped:
                 self.log(f"[skipped] {len(skipped)} of {len(items)} item(s) had no usable model reply ({', '.join(map(str, skipped[:20]))}); "
                          "they are left to do: run this stage again to retry them (replies kept in bad_replies.jsonl)")
+
+    BATCH_SIZE = 1000   # requests per batch: their answers are written to the review before the next batch is sent
+
+    def map_batched(self, stage: str, prompt_of, fn, items):
+        """ctx.map for a stage in pipeline.batch_stages on a model with a batch API: the prompts (prompt_of(item) gives
+        (messages, tag), or None for an item that needs no call) are first answered at half price, then fn runs as
+        always and finds its answers in the cache. Otherwise this is ctx.map."""
+        items = list(items)
+        llm = self.hub.model(stage)
+        if stage not in (self.cfg["pipeline"].get("batch_stages") or []) or not llm.can_batch:
+            return self.map(fn, items)
+        pending, out = self.run_dir / f"pending_batch_{stage}.json", []
+        for i in range(0, len(items), self.BATCH_SIZE):
+            part = items[i:i + self.BATCH_SIZE]
+            llm.batch_prefill([p for p in map(prompt_of, part) if p], pending, self.log)
+            out += self.map(fn, part)
+        return out
 
     @property
     def writer(self):

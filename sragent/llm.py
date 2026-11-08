@@ -62,6 +62,9 @@ class QuotaExhausted(RuntimeError):
     """The provider's daily quota for a model is used up: stop now (retrying cannot help today)."""
 
 
+BATCH_DISCOUNT = 0.5    # Message Batches: half the price of every token
+
+
 class CostTracker:
     """Shared by every model of a run. Logs every call to usage.jsonl (with its stage and role) and enforces the budget."""
 
@@ -91,7 +94,7 @@ class CostTracker:
                 raise BudgetExceeded(f"Budget ${self.budget:.2f} exhausted (spent ${self.spent:.4f}).")
 
     def add(self, stage: str | None, role: str, model: str, tag: str, pin: int, pout: int, cost: float,
-            seconds: float, cached: bool, *, endpoint: str | None = None, provider: str | None = None):
+            seconds: float, cached: bool, *, endpoint: str | None = None, provider: str | None = None, batch: bool = False):
         with self.lock:
             self.spent_equiv += cost
             if cached:
@@ -112,7 +115,7 @@ class CostTracker:
                                         "prompt_tokens": pin, "completion_tokens": pout,
                                         "usd": 0.0 if cached else round(cost, 6),
                                         "seconds": round(seconds, 2), "cached": cached,
-                                        "endpoint": endpoint, "provider": provider}) + "\n")
+                                        "endpoint": endpoint, "provider": provider, **({"batch": True} if batch else {})}) + "\n")
 
     def bad_reply(self, stage: str | None, role: str, model: str, tag: str, error: str, text: str) -> None:
         """Keep a reply that could not be used (bad_replies.jsonl next to usage.jsonl), to see what was wrong with it."""
@@ -227,6 +230,7 @@ class LLM:
         self.tracker = tracker
         self.cache = cache
         self.cache_read = True      # False: always ask the model (answers are still written to the cache)
+        self._batch_out = 1500      # output tokens per request assumed for a batch until one has come back
         self.mock_fn = mock_fn
         self.client = None
         self.local_pool = local_pool
@@ -266,6 +270,11 @@ class LLM:
             p = long
         return pin / 1e6 * float(p.get("input_per_m", 0)) + pout / 1e6 * float(p.get("output_per_m", 0))
 
+    def _key(self, messages: list[dict], json_out: bool, temperature: float, max_tokens: int) -> str:
+        return hashlib.sha256(json.dumps([self.provider, self.model, messages, json_out, temperature, max_tokens,
+                                          self.c.get("reasoning_effort"), self.c.get("extra_body") or {}],
+                                         sort_keys=True).encode()).hexdigest()
+
     def chat(self, messages: list[dict], *, json_out: bool = True, tag: str = "",
              max_tokens: int | None = None, temperature: float | None = None,
              use_cache: bool = True) -> Any:
@@ -273,9 +282,7 @@ class LLM:
         max_tokens = max_tokens or self.c["max_tokens"]
         if self.provider == "local":
             return self._local_chat(messages, json_out, tag, max_tokens, temperature, use_cache)
-        key_src = json.dumps([self.provider, self.model, messages, json_out, temperature, max_tokens,
-                              self.c.get("reasoning_effort"), self.c.get("extra_body") or {}], sort_keys=True)
-        key = hashlib.sha256(key_src.encode()).hexdigest()
+        key = self._key(messages, json_out, temperature, max_tokens)
         if use_cache and self.cache and self.cache_read:
             hit = self.cache.get(key)
             try:
@@ -433,10 +440,7 @@ class LLM:
             raise Truncated(f"{self.name}: reply cut off at {max_tokens} output tokens", pin, pout)
         return text, pin, pout
 
-    def _anthropic_call(self, messages, json_out, max_tokens):
-        """Claude Messages API. Thinking is left at the model default (adaptive) and its depth is set
-        with reasoning_effort (low | medium | high | xhigh | max). temperature is not sent: current
-        Claude models (Haiku 5.5, Sonnet 5.5, Opus 5.5) reject non-default sampling values."""
+    def _anthropic_params(self, messages, json_out, max_tokens) -> dict[str, Any]:
         system, msgs = _to_anthropic(messages)
         if json_out and self.c.get("json_mode", True):
             system = f"{system}\n\n{JSON_ONLY}" if system else JSON_ONLY
@@ -445,6 +449,83 @@ class LLM:
             kw["system"] = system
         if self.c.get("reasoning_effort"):
             kw["output_config"] = {"effort": self.c["reasoning_effort"]}
+        return kw
+
+    # ---- Anthropic Message Batches: half price, answers within the hour as a rule (at most 24 hours)
+    @property
+    def can_batch(self) -> bool:
+        return self.provider == "anthropic" and bool(self.cache) and self.cache_read
+
+    def batch_prefill(self, prompts: list[tuple[list[dict], str]], pending: Path, log: Callable[[str], None]) -> None:
+        """Ask these prompts ((messages, tag)) in one batch and put the answers in the cache, under the keys chat() looks
+        up: the normal calls then find them there. A prompt with no good answer is simply not cached and is asked live.
+        Only as many as the budget has room for are sent. `pending` names the batch until its answers are in, so a
+        job stopped while waiting collects it next time instead of paying twice."""
+        self.batch_collect(pending, log)
+        temperature, max_tokens = self.c["temperature"], self.c["max_tokens"]
+        todo: dict[str, tuple[list[dict], str]] = {}
+        for messages, tag in prompts:
+            key = self._key(messages, True, temperature, max_tokens)
+            if self.cache.get(key) is None:
+                todo[key] = (messages, tag)
+        room = self.tracker.budget - self.tracker.spent
+        n = sum(len(str(m["content"])) for ms, _ in todo.values() for m in ms) / 4 / max(1, len(todo))    # tokens per prompt
+        each = self._cost(int(n), self._batch_out) * BATCH_DISCOUNT
+        if each and room / each < len(todo):
+            fits = max(0, int(room / each))
+            log(f"[batch] the budget has room for about {fits} of {len(todo)} requests; the rest wait")
+            todo = dict(list(todo.items())[:fits])
+        if not todo:
+            return
+        extra = self.c.get("extra_body") or {}
+        requests = [{"custom_id": k, "params": {**self._anthropic_params(ms, True, max_tokens), **extra}} for k, (ms, _) in todo.items()]
+        batch = self.client.with_options(max_retries=5).messages.batches.create(requests=requests)
+        pending.write_text(json.dumps({"id": batch.id, "tags": {k: t for k, (_, t) in todo.items()}}))
+        log(f"[batch] {len(requests)} requests sent to {self.name} as {batch.id}; half price, usually within the hour")
+        self.batch_collect(pending, log)
+
+    def batch_collect(self, pending: Path, log: Callable[[str], None], poll: float = 30.0) -> None:
+        """Wait for the pending batch, if there is one, and take its answers: paid, recorded, and cached when usable."""
+        if not pending.exists():
+            return
+        info = json.loads(pending.read_text())
+        client = self.client.with_options(max_retries=5).messages.batches
+        last = None
+        while (b := client.retrieve(info["id"])).processing_status != "ended":
+            done = b.request_counts.succeeded + b.request_counts.errored + b.request_counts.expired + b.request_counts.canceled
+            if done != last:
+                log(f"[batch] {info['id']}: {done} of {done + b.request_counts.processing} answered")
+                last = done
+            time.sleep(poll)
+        ok, outs = 0, []
+        for r in client.results(info["id"]):
+            if r.result.type != "succeeded":
+                continue
+            msg, tag = r.result.message, info["tags"].get(r.custom_id, "")
+            u = msg.usage
+            pin, pout = (u.input_tokens or 0) + (u.cache_creation_input_tokens or 0) + (u.cache_read_input_tokens or 0), u.output_tokens or 0
+            self.tracker.add(self.stage, self.role, self.model, tag, pin, pout, self._cost(pin, pout) * BATCH_DISCOUNT, 0.0, False, batch=True)
+            outs.append(pout)
+            text = "".join(b.text for b in msg.content if b.type == "text")
+            try:
+                if msg.stop_reason != "end_turn":
+                    raise ValueError(f"stopped: {msg.stop_reason}")
+                json_object(text)
+            except ValueError as e:
+                self.tracker.bad_reply(self.stage, self.role, self.model, tag, str(e), text)
+                continue
+            self.cache.set(r.custom_id, {"text": text, "pin": pin, "pout": pout})
+            ok += 1
+        if outs:
+            self._batch_out = int(sum(outs) / len(outs))
+        pending.unlink()
+        log(f"[batch] {info['id']}: {ok} of {len(info['tags'])} usable answers; any others are asked live")
+
+    def _anthropic_call(self, messages, json_out, max_tokens):
+        """Claude Messages API. Thinking is left at the model default (adaptive) and its depth is set
+        with reasoning_effort (low | medium | high | xhigh | max). temperature is not sent: current
+        Claude models (Haiku 5.5, Sonnet 5.5, Opus 5.5) reject non-default sampling values."""
+        kw = self._anthropic_params(messages, json_out, max_tokens)
         if self.c.get("extra_body"):
             kw["extra_body"] = self.c["extra_body"]
         fallbacks = self.c.get("fallbacks")

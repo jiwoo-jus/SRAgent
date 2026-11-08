@@ -184,8 +184,11 @@ def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None) -> dict:
             continue
         c = model_for(cfg, *ROW_CELL.get(stage, ("feedback", "writer")))
         e = estimate({stage: n}, c.get("model"), c.get("pricing") or {}, c.get("reasoning_effort"), hist)
+        cell = ROW_CELL.get(stage, ("feedback", "writer"))
+        half = cell[1] == "writer" and cell[0] in (cfg["pipeline"].get("batch_stages") or []) and c.get("provider") == "anthropic"
         for r in e["rows"]:
             r["model"], r["effort"] = c.get("model"), c.get("reasoning_effort") or "default"
+            r["usd"] = round(r["usd"] * (0.5 if half else 1), 3)
             rows.append(r)
             total += r["usd"]
     models = sorted({r["model"] for r in rows})

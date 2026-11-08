@@ -92,6 +92,8 @@ DEFAULTS: dict[str, Any] = {
         "verify_screening": "off",    # a second agent (the stage's verifier) reads screening decisions: off | pending | full_text | all
                                       #   pending: only records undecided after their full text (it decides, or leaves it to a person)
                                       #   full_text: every full-text decision; all: also title/abstract exclusions (disputes go to a person)
+        "batch_stages": [],           # screen, eligibility: those stages' model calls go through Anthropic's Message Batches
+                                      #   (half price; usually within the hour, at most 24 hours; other providers: normal calls)
         "verify_screening_blind": False,   # the screening verifier reads the record and the criteria without the screener's
                                       #   answer; the two readings are compared afterwards (an independent second reading)
         "pdf_parser": "auto",         # auto | azure_cu | pdftotext
@@ -186,6 +188,9 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
         if k not in ("screen", "extraction", "rob", "synthesis") or v not in ("auto", "propose", "manual"):
             raise ValueError(f"update_policy.{k}: {v!r}; keys are screen, extraction, rob, synthesis and values auto, propose or manual")
     p["skip_stages"] = [stagespec.run_until(x) for x in (p.get("skip_stages") or [])]
+    bad = set(p.get("batch_stages") or []) - set(BATCH_STAGES)
+    if bad:
+        raise ValueError(f"pipeline.batch_stages: {', '.join(sorted(bad))}; only {', '.join(BATCH_STAGES)} can run as batches")
     bad = [x for x in p["skip_stages"] if x in ("protocol", "screen", "report")]
     if bad:
         raise ValueError(f"pipeline.skip_stages: {', '.join(bad)} cannot be skipped")
@@ -264,6 +269,7 @@ def _with_model(cfg: dict, base: dict, ov: dict) -> dict:
 MODEL_STAGES = stagespec.model_slots()        # the stages with model cells (models.<stage>.<role>), then feedback
 STAGE_LABELS = {k: stagespec.label(k) for k in MODEL_STAGES}
 EVAL_ROLES = ("judge", "judge2", "reviewer")
+BATCH_STAGES = ("screen", "eligibility")      # the stages whose bulk calls can go through a batch API
 EFFORTS = {"anthropic": ("low", "medium", "high", "xhigh", "max"), "openai": ("low", "medium", "high"),
            "gemini": ("low", "medium", "high")}
 _FACTS = ("model", "provider", "pricing", "base_url", "reasoning_effort", "fallbacks",
