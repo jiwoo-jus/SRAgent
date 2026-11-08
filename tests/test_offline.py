@@ -632,6 +632,41 @@ def test_reply_that_is_not_one_object_is_asked_again(tmp_path):
     assert llm.chat([{"role": "user", "content": "check"}], tag="t") == {"support": "supported", "issues": []}
 
 
+def test_open_access_copies_are_tried_in_order_and_the_one_used_is_recorded(tmp_path, monkeypatch):
+    """Repositories before publishers in each source; OpenAlex is asked when no Unpaywall copy can be fetched; a link
+    already tried is not fetched twice; the exact copy used is recorded with its version and license."""
+    from types import SimpleNamespace as NS
+    import requests
+    from sragent import pipeline, studies
+    from sragent.sources import europepmc, openalex, unpaywall
+    from sragent.stages import fulltext
+    ctx = make_ctx(tmp_path, fulltexts=(), extra_cfg={"contact_email": "a@b.org", "pipeline": {"fulltext": True}})
+    pipeline.run(ctx, until="search")
+    monkeypatch.setattr(europepmc, "pmcid_for", lambda *a: "")
+    loc = lambda name, host: {"pdf": f"https://x/{name}.pdf", "url": "", "host": host, "version": "acceptedVersion", "license": f"lic-{name}"}
+    monkeypatch.setattr(unpaywall, "locations", lambda doi, email: [{**loc("A", "publisher"), "source": "unpaywall"}, {**loc("B", "repository"), "source": "unpaywall"}])
+    monkeypatch.setattr(openalex, "work", lambda *a: {})
+    monkeypatch.setattr(openalex, "oa_locations", lambda w: [{**loc("C", "publisher"), "source": "openalex"}, {**loc("B", "repository"), "source": "openalex"}, {**loc("D", "repository"), "source": "openalex"}])
+    calls = []
+
+    def get(url, **kw):
+        calls.append(url.rsplit("/", 1)[1])
+        ok = url.endswith("D.pdf")
+        return NS(status_code=200 if ok else 403, content=b"%PDF-1" if ok else b"", url=url + "?final" if ok else url)
+
+    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr(fulltext, "_parse", lambda c, p: ("word " * 1000, "pdftotext"))
+    rec = ctx.store.get("rec:1001")["data"]
+    rec["doi"] = rec.get("doi") or "10.1/x"
+    d = fulltext.fetch_one(ctx, "1001")
+    assert calls == ["B.pdf", "A.pdf", "D.pdf"] and d["kind"] == "fulltext" and d["origin"] == "open-access copy (repository)"
+    assert d["oa_used"]["used_url"] == "https://x/D.pdf?final" and d["oa_used"]["license"] == "lic-D" and d["oa_used"]["source"] == "openalex"
+    assert d["oa_used"]["version"] == "acceptedVersion" and d["oa_used"]["retrieved"]
+    by = {l["pdf"].rsplit("/", 1)[1]: l for l in d["oa_locations"]}
+    assert by["A.pdf"]["download_status"] == 403 and by["D.pdf"]["downloaded"] and "C.pdf" in by
+    assert studies.study_detail(ctx, "1001")["source"]["oa_used"]["license"] == "lic-D"
+
+
 def test_one_unusable_reply_does_not_stop_the_stage(tmp_path):
     """A record the model never answers with valid JSON is skipped and reported, the others are screened, the bad reply
     is kept, the retry says where the JSON broke, and running the stage again retries it. A budget stop still stops."""

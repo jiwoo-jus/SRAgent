@@ -19,5 +19,4 @@ def locations(doi: str, email: str) -> list[dict]:
         out.append({"pdf": l.get("url_for_pdf"), "url": l.get("url_for_landing_page") or l.get("url"),
                     "host": l.get("host_type"), "version": l.get("version"), "license": l.get("license"),
                     "source": "unpaywall"})
-    # repositories first (they usually allow direct download), then publishers
-    return sorted(out, key=lambda x: (x["host"] != "repository", not x["pdf"]))
+    return out

@@ -963,7 +963,7 @@ function renderStudy(){
      <h2>${esc(r.title)}</h2><div class="au">${esc(r.authors)}</div><div class="small mut"><i>${esc(r.journal)}</i> ${esc(r.year)}</div>
      <div class="row" style="margin-top:12px">${badge(d.status, chipFor(d.status), "dot")}${d.reason ? `<span class="small mut">${esc(d.reason)}</span>` : ""}
        ${d.pdf_wanted ? badge("waiting for your PDF","warn") : ""}${d.pdf_unavailable ? badge("marked not obtainable") : ""}</div>
-     ${d.source ? `<div class="src">Source used by the agent: <b style="color:var(--fg-2)">${esc(d.source.kind)}</b> · ${esc(d.source.origin)} · ${Number(d.source.chars).toLocaleString()} characters
+     ${d.source ? `<div class="src">Source used by the agent: <b style="color:var(--fg-2)">${esc(d.source.kind)}</b> · ${esc(d.source.origin)}${(u => u && /^https?:/.test(u.used_url || "") ? ` · <a href="${esc(u.used_url)}" target="_blank" rel="noopener">copy used</a> (${esc([u.version, u.license, u.source].filter(Boolean).join(", "))}; retrieved ${esc(u.retrieved || "")})` : "")(d.source.oa_used)} · ${Number(d.source.chars).toLocaleString()} characters
        ${d.source.local_file ? ` · <a target="_blank" href="/files/fulltext/${encodeURIComponent(d.source.local_file)}?config=${encodeURIComponent(CFG)}">your file ${ic("ext","sm")}</a>` : ""}
        ${d.source.auto_pdf ? ` · <a target="_blank" href="/files/fulltext/${encodeURIComponent(d.source.auto_pdf)}?config=${encodeURIComponent(CFG)}">PDF the agent fetched ${ic("ext","sm")}</a>` : ""}
        ${d.source.auto_text ? ` · <a target="_blank" href="/files/fulltext/${encodeURIComponent(d.source.auto_text)}?config=${encodeURIComponent(CFG)}">text ${ic("ext","sm")}</a>` : ""}

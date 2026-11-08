@@ -14,6 +14,7 @@ after adding files; it converts them and re-screens / re-extracts the affected s
 from __future__ import annotations
 
 import csv
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -62,8 +63,8 @@ def contact_email(ctx: Ctx) -> str:
 
 
 def _download_oa(ctx: Ctx, rid: str, locs: list[dict]) -> Path | None:
-    """Try the legal open-access copies (repository first). Publisher sites often refuse scripts;
-    then the URLs are listed in the PDF request so a person can download them in a browser."""
+    """Try the legal open-access copies. Publisher sites often refuse scripts; then the URLs are listed in the PDF
+    request so a person can download them in a browser. The copy downloaded is marked with its final address."""
     import requests
     d = fulltext_dir(ctx) / "auto"
     for l in locs:
@@ -79,7 +80,7 @@ def _download_oa(ctx: Ctx, rid: str, locs: list[dict]) -> Path | None:
                 d.mkdir(parents=True, exist_ok=True)
                 p = d / f"{rid}.pdf"
                 p.write_bytes(r.content)
-                l["downloaded"] = True
+                l.update(downloaded=True, used_url=r.url or url)
                 return p
             l["download_status"] = r.status_code
     return None
@@ -161,6 +162,7 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
     text, kind, pmcid, origin, parser = "", "abstract", rec.get("pmcid", ""), "abstract", ""
     parse_failed = False
     oa_locs: list[dict] = []
+    oa_used = None
     listed_supp: list[dict] = []
     if local is not None:
         dig = provenance.file_digest(local)
@@ -186,14 +188,24 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
     if kind != "fulltext" and ctx.cfg["pipeline"].get("fulltext", True) and ctx.cfg["pipeline"].get("open_access_lookup", True):
         from ..sources import openalex, unpaywall
         email = contact_email(ctx)
-        oa_locs = unpaywall.locations(rec.get("doi", ""), email) if email else []
-        if not oa_locs:
-            oa_locs = openalex.oa_locations(openalex.work(rec.get("pmid", ""), rec.get("doi", "")))
-        got = _download_oa(ctx, rid, oa_locs) if oa_locs else None
-        if got is not None:
+        finders = (lambda: unpaywall.locations(rec.get("doi", ""), email) if email else [],   # the next one if none of these works
+                   lambda: openalex.oa_locations(openalex.work(rec.get("pmid", ""), rec.get("doi", ""))))
+        seen: set = set()
+        for find in finders:
+            found = [l for l in sorted(find(), key=lambda x: (x["host"] != "repository", not x["pdf"]))   # repositories usually allow download
+                     if (l.get("pdf") or l.get("url")) not in seen]
+            seen |= {l.get("pdf") or l.get("url") for l in found}
+            oa_locs += found
+            got = _download_oa(ctx, rid, found) if found else None
+            if got is None:
+                continue
             raw, parser = _parse(ctx, got)
             if len(raw) > 1500:
-                text, kind, origin = raw, "fulltext", f"open-access copy ({next((l['host'] for l in oa_locs if l.get('downloaded')), '')})"
+                used = next(l for l in found if l.get("downloaded"))
+                text, kind, origin = raw, "fulltext", f"open-access copy ({used['host']})"
+                oa_used = {**{k: used.get(k) for k in ("used_url", "host", "version", "license", "source")},
+                           "retrieved": time.strftime("%Y-%m-%d %H:%M")}
+                break
     supp_used = []
     if kind == "fulltext":
         for sp in supplement_files(fulltext_dir(ctx), rid):
@@ -206,8 +218,9 @@ def fetch_one(ctx: Ctx, rid: str) -> dict:
     data = {"kind": kind, "origin": origin, "parser": parser, "pmcid": pmcid, "chars": len(text), "text": text[:maxc],
             "truncated": len(text) > maxc,
             "parse_failed": parse_failed and kind != "fulltext",
-            "oa_locations": [{k: l.get(k) for k in ("url", "pdf", "host", "version", "license", "source", "download_status")}
-                             for l in oa_locs][:5],
+            "oa_used": oa_used,
+            "oa_locations": [{k: l.get(k) for k in ("url", "pdf", "host", "version", "license", "source", "download_status", "downloaded")}
+                             for l in oa_locs][:10],
             "supplements_listed": listed_supp[:10], "supplements_used": supp_used,
             "local_file": local.name if local else None}
     if kind == "fulltext" and local is None:        # fetched by the agent: kept as files beside the user's PDFs
