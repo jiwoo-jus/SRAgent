@@ -53,6 +53,11 @@ class Truncated(RuntimeError):
         self.pin, self.pout = pin, pout
 
 
+class UnusableReply(RuntimeError):
+    """The model answered, but no attempt gave a usable reply for this item (not valid JSON, or too long to fit).
+    A bulk stage skips the item and carries on (context.Ctx.map); running the stage again retries it."""
+
+
 class QuotaExhausted(RuntimeError):
     """The provider's daily quota for a model is used up: stop now (retrying cannot help today)."""
 
@@ -108,6 +113,13 @@ class CostTracker:
                                         "usd": 0.0 if cached else round(cost, 6),
                                         "seconds": round(seconds, 2), "cached": cached,
                                         "endpoint": endpoint, "provider": provider}) + "\n")
+
+    def bad_reply(self, stage: str | None, role: str, model: str, tag: str, error: str, text: str) -> None:
+        """Keep a reply that could not be used (bad_replies.jsonl next to usage.jsonl), to see what was wrong with it."""
+        if self.log_path:
+            with self.lock, open(self.log_path.with_name("bad_replies.jsonl"), "a") as f:
+                f.write(json.dumps({"ts": time.time(), "stage": stage, "role": role, "model": model, "tag": tag,
+                                    "error": error, "reply": text}) + "\n")
 
     def summary(self) -> dict:
         return {"spent_usd": round(self.spent, 4), "spent_this_session_usd": round(self.spent - self.spent_at_start, 4),
@@ -165,8 +177,8 @@ def _parse_json(text: str) -> Any:
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t.strip(), flags=re.S)
     try:
         return json.loads(t)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as e:
+        err = e
     # the first balanced {...} or [...]; it must begin at the text's first bracket: an object found further on
     # is an inner piece of a reply that was cut off, not the reply
     first = min((i for i in (t.find("{"), t.find("[")) if i >= 0), default=-1)
@@ -197,7 +209,7 @@ def _parse_json(text: str) -> Any:
                         except json.JSONDecodeError:
                             break
             break   # only the value at the first bracket counts; anything after a cut-off one is a fragment
-    raise ValueError(f"could not parse JSON from: {t[:300]}")
+    raise ValueError(f"could not parse JSON: {err.msg} at character {err.pos}, near {t[max(0, err.pos - 60):err.pos + 60]!r}")
 
 
 # ------------------------------------------------------------------ client
@@ -276,7 +288,7 @@ class LLM:
                 return val
 
         msgs = list(messages)
-        last_err = None
+        last_err, unusable = None, False
         for attempt in range(self.c["max_retries"] + 1):
             self.tracker.check()   # before every paid call, retries included
             t0 = time.time()
@@ -289,13 +301,13 @@ class LLM:
                 raise
             except Truncated as e:   # paid for, recorded; asked again with room for the whole reply
                 self.tracker.add(self.stage, self.role, self.model, tag, e.pin, e.pout, self._cost(e.pin, e.pout), time.time() - t0, False)
-                last_err = e
+                last_err, unusable = e, True
                 if max_tokens >= MAX_OUTPUT_TOKENS:
-                    raise RuntimeError(f"{self.name}: the reply did not fit in {max_tokens} output tokens (tag={tag})") from e
+                    raise UnusableReply(f"{self.name}: the reply did not fit in {max_tokens} output tokens (tag={tag})") from e
                 max_tokens = min(max_tokens * 2, MAX_OUTPUT_TOKENS)
                 continue
             except Exception as e:  # network / rate limit / server errors
-                last_err = e
+                last_err, unusable = e, False
                 if "per_day" in str(e).lower() or "PerDay" in str(e):
                     raise QuotaExhausted(f"{self.name}: daily request quota used up: {str(e)[:300]}") from e
                 if any(k in str(e) for k in FATAL_ERRORS):
@@ -309,9 +321,10 @@ class LLM:
                 try:
                     val = json_object(text)
                 except ValueError as e:
-                    last_err = e
+                    last_err, unusable = e, True
+                    self.tracker.bad_reply(self.stage, self.role, self.model, tag, str(e), text)
                     msgs = messages + [{"role": "assistant", "content": text[:4000]},
-                                       {"role": "user", "content": "Your reply was not one valid JSON object. "
+                                       {"role": "user", "content": f"Your reply was not one valid JSON object ({e}). "
                                         "Return ONLY the JSON object the instructions describe, nothing else."}]
                     continue
             else:
@@ -322,7 +335,7 @@ class LLM:
                 except Exception as e:   # a locked or full cache must never cost a second API call
                     print(f"[llm] cache write failed ({str(e)[:80]}); the answer is used without caching", flush=True)
             return val
-        raise RuntimeError(f"LLM call failed after retries ({self.name}, tag={tag}): {last_err}")
+        raise (UnusableReply if unusable else RuntimeError)(f"LLM call failed after retries ({self.name}, tag={tag}): {last_err}")
 
     def _local_chat(self, messages, json_out, tag, max_tokens, temperature, use_cache):
         from .local import completion, LocalRequestError
@@ -365,11 +378,12 @@ class LLM:
                                  endpoint=entry["_key"], provider="local")
                 try:
                     value = json_object(text) if json_out else text
-                except ValueError:
+                except ValueError as exc:
+                    self.tracker.bad_reply(self.stage, self.role, actual_model, tag, str(exc), text)
                     if attempt == self.c["max_retries"]:
-                        raise LocalRequestError("Local model did not return valid JSON after repair attempts")
+                        raise UnusableReply(f"{self.name}: did not return valid JSON after repair attempts (tag={tag}): {exc}")
                     payload["messages"] = messages + [{"role": "assistant", "content": text[:4000]},
-                        {"role": "user", "content": "Return ONLY valid JSON, without commentary."}]
+                        {"role": "user", "content": f"Return ONLY valid JSON, without commentary ({exc})."}]
                     continue
                 # Do not cache a response under a different discovered model's identity.
                 if use_cache and self.cache and actual_model == model:

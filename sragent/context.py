@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .llm import LLMHub
+from .llm import LLMHub, Refused, UnusableReply
 from .sources import http, pubmed
 from .store import ReviewStore
 
@@ -89,17 +89,32 @@ class Ctx:
 
     def map(self, fn, items):
         """Parallel map over items, in chunks with a save after each, so the interface shows progress during a long
-        stage and finished work is never lost if a call fails midway (e.g. quota); the stage resumes where it stopped."""
+        stage and finished work is never lost if a call fails midway (e.g. quota); the stage resumes where it stopped.
+        An item the model gives no usable reply for is skipped and reported, so one bad reply does not stop the stage;
+        running the stage again retries it. Returns the results of the items that worked. Anything else (budget, quota,
+        a network or account problem) still stops the job."""
         items = list(items)
-        out = []
+        out, skipped = [], []
+
+        def one(item):
+            try:
+                return fn(item)
+            except (UnusableReply, Refused) as e:
+                skipped.append(item)
+                self.log(f"[skipped] {item}: {e}")
+                return skipped          # the marker of a skipped item: never a result
+
         try:
             for i in range(0, len(items), self.SAVE_EVERY):
-                out += self.writer.map(fn, items[i:i + self.SAVE_EVERY])
+                out += self.writer.map(one, items[i:i + self.SAVE_EVERY])
                 if i + self.SAVE_EVERY < len(items):
                     self.save()
-            return out
+            return [r for r in out if r is not skipped]
         finally:
             self.save()
+            if skipped:
+                self.log(f"[skipped] {len(skipped)} of {len(items)} item(s) had no usable model reply ({', '.join(map(str, skipped[:20]))}); "
+                         "they are left to do: run this stage again to retry them (replies kept in bad_replies.jsonl)")
 
     @property
     def writer(self):

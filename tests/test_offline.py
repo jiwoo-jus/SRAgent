@@ -632,6 +632,41 @@ def test_reply_that_is_not_one_object_is_asked_again(tmp_path):
     assert llm.chat([{"role": "user", "content": "check"}], tag="t") == {"support": "supported", "issues": []}
 
 
+def test_one_unusable_reply_does_not_stop_the_stage(tmp_path):
+    """A record the model never answers with valid JSON is skipped and reported, the others are screened, the bad reply
+    is kept, the retry says where the JSON broke, and running the stage again retries it. A budget stop still stops."""
+    import pytest
+    from sragent import pipeline
+    from sragent.llm import BudgetExceeded
+    ctx = make_ctx(tmp_path)
+    retries = []
+
+    def broken(messages, mode):
+        u = messages[-1]["content"]
+        if "not one valid JSON object" in u:
+            retries.append(u)
+            return '{"criteria": [{"id": "I1" "assessment": "met"}]}'
+        return '{"criteria": [{"id": "I1" "assessment": "met"}]}' if "case series" in u else mock_fn(messages, mode)
+
+    ctx.hub.mock_fn = broken
+    pipeline.run(ctx, until="screen")
+    st = ctx.store
+    assert st.get("screen:1003") is None and st.get("screen:1001") and st.get("screen:1002")
+    assert "at character" in retries[0] and len(retries) == ctx.cfg["llm_defaults"]["max_retries"]
+    bad = [json.loads(l) for l in (ctx.run_dir / "bad_replies.jsonl").read_text().splitlines()]
+    assert bad[0]["tag"] == "screen_title_abstract" and bad[0]["reply"].startswith('{"criteria"') and bad[0]["stage"] == "screen"
+    assert "1 of" in (ctx.run_dir / "run.log").read_text().split("[skipped] ")[-1]
+    ctx.hub.mock_fn = mock_fn
+    ctx.hub._clients.clear()
+    pipeline.run(ctx, until="screen")
+    assert st.get("screen:1003")
+
+    def over(item):
+        raise BudgetExceeded("Budget exhausted")
+    with pytest.raises(BudgetExceeded):
+        ctx.map(over, ["a"])
+
+
 # ---------------------------------------------------------------- integrity of accepted proposals and human decisions
 def test_accepting_a_proposal_keeps_what_the_sandbox_created(tmp_path):
     """Nodes the sandbox created on the way (here the full-text node of a record the feedback forwarded)

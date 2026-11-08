@@ -416,7 +416,8 @@ A run is one file in `configs/<benchmark|review>/<topic>/` that includes the fol
 | `report.md` | report-only view (methods, PRISMA counts, excluded-with-reasons table, study table, RoB table, synthesis, references) |
 | `report_evidence.html` | evidence-linked view, laid out as a formal review document (PRISMA 2020 / Cochrane conventions; prints to A4): status notice, structured summary, methods (PICO, criteria, search, selection, data items, quality domains), PRISMA 2020 flow diagram, numbered tables of study characteristics, results and quality judgements (traffic-light table and summary figure), synthesis with numbered Vancouver citations, references, and appendices with the evidence (statements with links to cited studies and self-check results, each extracted value with its located sentences (click to open the numbered source with the sentence highlighted), DB ids, RoB rationales and evidence, populations of the studies each statement cites, criterion-level decisions for every record, open flags, revision history, feedback boxes) |
 | `feedback/FB*.json`, `RR*.json`, `UP*.json` | change sets from feedback, re-runs and updates after your edits (feedback, verdict, explanation, located evidence, every changed node before/after, impact assessments, cost, time, status) |
-| `usage.jsonl`, `cost.json` | every LLM call (role, model, tag, tokens, USD, seconds, cache hit) |
+| `usage.jsonl`, `cost.json` | every LLM call (stage, role, model, tag, tokens, USD, seconds, cache hit) |
+| `bad_replies.jsonl` | model replies that could not be used (not valid JSON), with the error; the item is skipped and retried when the stage is run again |
 | `run.log` | stage log |
 | `human_decisions.jsonl` | every answer given in the to-do list (time, item, option, note, applied or queued) |
 | `fulltext/` | your PDFs / text files, `needed_pdfs.csv`, `README.txt` |
@@ -463,7 +464,7 @@ These run during every review, not only in evaluation.
 | 9.6b | **Check-and-repair after a revision** | Every revised extracted value is checked again against the source text, and every revised statement against the data it cites, by the feedback verifier (`models.feedback.verifier`, else `models.default.verifier`, else the default writer; a model of another family is the more independent check). Problems get one repair round. | yes |
 | 9.6c | **Review-wide audit** | After a dependency-aware revision, a consistency audit over all statements catches ones the citation graph did not reach (e.g. "all studies showed ...") and revises them. | yes |
 | 9.6d | **Split and clarify** | Feedback without a target is split into one request per affected output ("re-check every population"). Feedback the agent cannot interpret becomes a clarification question on Needs you list instead of a guess. | yes |
-| 9.7 | **Budget guard** | Cumulative USD per run directory from `usage.jsonl`; the run stops cleanly at `budget_usd`. A stage that fails midway (quota, network) still saves finished work. | no |
+| 9.7 | **Budget guard** | Cumulative USD per run directory from `usage.jsonl`; the run stops cleanly at `budget_usd`. A stage that fails midway (quota, network) still saves finished work. An item the model gives no usable reply for is skipped and reported, without stopping the stage; running the stage again retries it. | no |
 
 ---
 
