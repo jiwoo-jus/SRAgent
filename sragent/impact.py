@@ -57,6 +57,8 @@ def _changed(live, after, nid: str) -> str | None:
         return f"{_short(nid)}: {b['data'].get('decision')} → {a['data'].get('decision')}"
     if a["status"] != b["status"]:
         return f"{_short(nid)}: {b['status']} → {a['status']}"
+    if a["data"] == b["data"]:      # only marked current with the new protocol
+        return None
     what = "; ".join(diff_summary(a["type"], b["data"], a["data"]))
     return f"{_short(nid)}: {what[:140]}" if what else None
 

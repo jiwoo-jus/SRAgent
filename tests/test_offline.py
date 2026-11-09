@@ -1281,6 +1281,15 @@ def test_the_criteria_preview_offers_both_choices_and_the_edit_keeps_the_one_cho
     assert not ops.run(ctx, "protocol.edit_criteria", {"criteria": [{"id": "E9", "text": "x"}], "reassess_excluded": "some"})["ok"]
 
 
+def test_the_preview_names_only_the_criteria_that_changed(tmp_path):
+    from sragent import ops
+    ctx = make_ctx(tmp_path)
+    _excluded_on_i1(ctx)
+    p = ops.preview(ctx, "protocol.edit_criteria", {"criteria": [{"id": "I1", "text": "A reworded criterion."}]})
+    lines = next(r for r in p["stages"] if r["stage"] == "protocol")["apply"]
+    assert {line.split(":")[0] for line in lines} == {"I1", "protocol"}
+
+
 def test_by_default_every_excluded_record_is_read_again(tmp_path):
     from sragent.stages import planning
     ctx = make_ctx(tmp_path)
