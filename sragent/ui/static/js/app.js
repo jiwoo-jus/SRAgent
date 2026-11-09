@@ -138,7 +138,17 @@ window.addEventListener("hashchange", route);
 document.querySelectorAll("#tabs a[data-t]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); const t = a.dataset.t; if (t === "studies") { ST.rid = null; ST.d = null; } if (t === "configs") go("#/configs"); else show(t); }));
 
 let NOCFG = null;      // {error, config} when no run file is open or it fails to load
-async function refresh(force){
+let refreshRunning = null, refreshNext = null;
+function refresh(force){   // one /api/state at a time: a poll is skipped while one runs, so slow answers cannot pile up
+  if (refreshRunning) {
+    if (!force) return refreshRunning;
+    // a forced refresh has to see what the action just changed, so it starts after the one running now
+    const next = () => { refreshNext = null; return refresh(true); };
+    return refreshNext = refreshNext || refreshRunning.then(next, next);
+  }
+  return refreshRunning = loadState(force).finally(() => { refreshRunning = null; });
+}
+async function loadState(force){
   let st;
   try { st = await api("/api/state"); } catch(e){ return; }
   if (st && (st.no_config || st.config_error)) {
@@ -593,7 +603,9 @@ function pdfPanel(ft, compact){
           <button class="btn" data-v="${esc(pm.join(","))}" onclick="copyText(this.dataset.v, this)">${ic("copy","sm")} Copy ${pm.length} PMIDs</button>
           ${pm.length ? `<a class="btn" target="_blank" href="https://pubmed.ncbi.nlm.nih.gov/?term=${q}">Open in PubMed ${ic("ext","sm")}</a>` : ""}</div>
         ${dois.length ? `<div class="field" style="margin-top:8px"><input readonly value="${esc(dois.join(", "))}" aria-label="DOIs"><button class="btn" data-v="${esc(dois.join(", "))}" onclick="copyText(this.dataset.v, this)">${ic("copy","sm")} Copy ${dois.length} DOIs</button></div>
-          <div class="hint" style="margin-top:4px">DOIs of records without a PMID.</div>` : ""}</div></div>
+          <div class="hint" style="margin-top:4px">DOIs of records without a PMID.</div>` : ""}
+        <div class="row" style="margin-top:8px"><button class="btn" onclick="exportPdfRequests()">${ic("download","sm")} Export requested papers (CSV)</button>
+          <span class="hint">The papers still missing, with their PMID, DOI and the file name to save each under.</span></div></div></div>
       <div class="fts"><div class="n">2</div><div style="min-width:0"><b>Save each PDF in this folder</b>
         <div class="field"><input readonly value="${esc(S.fulltext.dir)}" aria-label="Folder"><button class="btn" data-v="${esc(S.fulltext.dir)}" onclick="copyText(this.dataset.v, this)">${ic("copy","sm")} Copy path</button></div>
         <div class="hint" style="margin-top:4px">For example <code>${esc((ft.files[0]||{}).filename||"30157389.pdf")}</code>. The file list below has the name for every study.</div></div></div>
@@ -605,6 +617,22 @@ function pdfPanel(ft, compact){
       <details data-k="ftlist" ${compact?"":"open"}><summary>File list (${total})</summary>
         <div class="tw" style="margin-top:10px;background:var(--surface);border:1px solid var(--line);border-radius:10px"><table><thead><tr><th>Status</th><th>File name</th><th>Study</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <div class="row" style="margin-top:10px"><a class="btn sm" href="${U('/needed_pdfs.csv')}">${ic("download","sm")} Download list (CSV)</a></div></details></div></div>`;
+}
+/* the papers still missing as a download list: pmid, doi, save_as (a file name; empty means <PMID>). A record with no
+   PMID is saved under its record id, the name the agent looks for. One with neither PMID nor DOI cannot be looked up. */
+function exportPdfRequests(){
+  const missing = ((S.todos.find(t => t.kind === "fulltexts") || {}).files || []).filter(x => !x.present);
+  const usable = missing.filter(x => x.pmid || x.doi);
+  const cell = v => /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  const csv = [["pmid", "doi", "save_as"], ...usable.map(x => [x.pmid || "", x.doi || "", x.pmid ? "" : x.rid])]
+    .map(r => r.map(cell).join(",")).join("\r\n") + "\r\n";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], {type: "text/csv"}));
+  a.download = "requested_papers.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  const skipped = missing.length - usable.length;
+  toast(`Exported ${usable.length} paper${usable.length === 1 ? "" : "s"}` + (skipped ? `; ${skipped} with neither PMID nor DOI left out (see the file list)` : ""));
 }
 async function pdfUnwant(rid){ await runOp("retrieve.decide_without", {rids:[rid]}, `Decide ${rid} without another full text`); }
 async function pdfUnavailable(rid){ await runOp("retrieve.declare_unobtainable", {rids:[rid]}, `${rid}: not obtainable`); }
