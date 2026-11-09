@@ -79,6 +79,8 @@ DEFAULTS: dict[str, Any] = {
         "fulltext": True,             # try Europe PMC open-access full text
         "fulltext_dir": None,         # where supplied PDFs are read from; None = <run_dir>/fulltext
         "fulltext_unclear": "await",  # still unclear after the full text: await (a person decides) | include | exclude
+        "reassess_excluded": "all",   # after a criterion changes, an excluded record is read again: all = always, so every record
+                                      #   has an answer on every criterion; needed = only if an answer could lift its exclusion
         "fulltext_screen_chars": 15000,   # prompt budget for full-text screening (section-prioritised, see evidence.packed)
         "context_chars": 60000,       # prompt budget for extraction / RoB; longer papers are read in parts
         "max_stored_chars": 400000,   # the whole text is stored; prompts select from it
@@ -176,6 +178,8 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
     if p["human_mode"] == "agent_only" and p["fulltext_unclear"] == "await":
         raise ValueError("pipeline.fulltext_unclear: await leaves records for a person to decide; "
                          "with human_mode: agent_only set it to include or exclude")
+    if p["reassess_excluded"] not in ("needed", "all"):
+        raise ValueError(f"pipeline.reassess_excluded: {p['reassess_excluded']!r}; use needed or all")
     unknown = set(cfg) - set(DEFAULTS) - {"topic", "_config_dir", "_catalog", "job_model"}
     if unknown:
         raise ValueError(f"unknown settings: {', '.join(sorted(unknown))} (configs/README.md lists the run file's sections)")

@@ -143,6 +143,24 @@ def decide(protocol: dict, assessments: list[dict], stage: str, policy: str = "a
     return final, because, by_rule
 
 
+NOT_ASSESSED = "not_assessed"
+
+
+def could_lift_exclusion(protocol: dict, assessments: list[dict], stage: str, crit_ids: list[str]) -> bool:
+    """Whether some answer on these criteria could lift an exclusion: the most favourable answer is tried on the rules."""
+    crits = {c["id"]: c for c in protocol.get("criteria", [])}
+    best = [{"id": i, "assessment": "met" if crits[i]["type"] == "inclusion" else "not_met"} for i in crit_ids]
+    return rule_decision(protocol, [a for a in assessments if a.get("id") not in crit_ids] + best, stage)[0] != "exclude"
+
+
+def mark_not_assessed(assessments: list[dict], crit_ids: list[str]) -> list[dict]:
+    """Assessments with these criteria shown as not read (a later change that needs them has them read then)."""
+    return [a for a in assessments if a.get("id") not in crit_ids] + [
+        {"id": i, "assessment": NOT_ASSESSED, "reason": "Not read again after the criterion changed: this record stays "
+                                                        "excluded on other criteria whatever the answer (pipeline.reassess_excluded)."}
+        for i in crit_ids]
+
+
 def rederive(protocol: dict, d: dict, policy: str = "await") -> tuple[str, list[str], str, str | None]:
     """(decision, because, stage, unclear_by_rule) for a stored decision node's assessments under a (revised)
     protocol (title/abstract: forward or exclude, never include; full text: include, exclude or awaiting)."""

@@ -1221,6 +1221,75 @@ def test_an_answer_after_a_criterion_change_keeps_the_reassessment_pending(tmp_p
     assert by["elig:1002"]["action"] == "recompute" and by["elig:1002"]["criteria"] == ["E1"]
 
 
+def _excluded_on_i1(ctx):
+    """A pipeline-run review with one full-text decision excluded on I1 alone."""
+    from sragent import pipeline
+    pipeline.run(ctx)
+    st = ctx.store
+    n = st.by_type("eligibility", active_only=True)[0]
+    crits = [{"id": c["id"], "assessment": "not_met" if c["id"] == "I1" or c["type"] == "exclusion" else "met"}
+             for c in st.get("protocol")["data"]["criteria"] if c["type"] != "practical"]
+    st.write(n["id"], n["type"], dict(n["data"], decision="exclude", because=["I1"], criteria=crits), depends_on=n["depends_on"], reason="test")
+    return n["id"]
+
+
+def _plan_item(ctx, node):
+    from sragent import engine
+    return next(i for i in engine.plan(ctx)["items"] if i["node"] == node)
+
+
+NEW_E9 = {"id": "E9", "type": "exclusion", "text": "Study is a conference abstract.", "stage": "title_abstract"}
+
+
+def test_reassess_excluded_needed_reads_a_record_only_if_the_answer_could_bring_it_back(tmp_path):
+    from sragent.stages import planning, screening
+    from sragent import engine
+    ctx = make_ctx(tmp_path)
+    nid = _excluded_on_i1(ctx)
+    ctx.cfg["pipeline"]["reassess_excluded"] = "needed"
+    planning.edit_criteria(ctx, [NEW_E9])
+    item = _plan_item(ctx, nid)
+    assert item["action"] == "rederive" and item["not_reassessed"] == ["E9"]    # excluded on I1 whatever E9 says
+    engine.execute(ctx, {"id": "t", "changes": []}, tag="t", render=False)
+    d = ctx.store.get(nid)["data"]
+    assert d["decision"] == "exclude" and {a["id"]: a["assessment"] for a in d["criteria"]}["E9"] == screening.NOT_ASSESSED
+    planning.edit_criteria(ctx, [{"id": "I1", "remove": True}])                 # now E9 matters: it is read
+    item = _plan_item(ctx, nid)
+    assert item["action"] == "recompute" and item["criteria"] == ["E9"]
+
+
+def test_reassess_excluded_needed_still_reads_the_criterion_that_excluded_a_record(tmp_path):
+    from sragent.stages import planning
+    ctx = make_ctx(tmp_path)
+    nid = _excluded_on_i1(ctx)
+    ctx.cfg["pipeline"]["reassess_excluded"] = "needed"
+    planning.edit_criteria(ctx, [{"id": "I1", "text": "reworded"}])
+    item = _plan_item(ctx, nid)
+    assert item["action"] == "recompute" and item["criteria"] == ["I1"]
+
+
+def test_by_default_every_excluded_record_is_read_again(tmp_path):
+    from sragent.stages import planning
+    ctx = make_ctx(tmp_path)
+    nid = _excluded_on_i1(ctx)
+    planning.edit_criteria(ctx, [NEW_E9])
+    item = _plan_item(ctx, nid)
+    assert item["action"] == "recompute" and item["criteria"] == ["E9"]
+
+
+def test_a_removed_criterion_does_not_leave_decisions_out_of_date(tmp_path):
+    from sragent import engine, graph
+    from sragent.stages import planning
+    ctx = make_ctx(tmp_path)
+    nid = _excluded_on_i1(ctx)
+    planning.edit_criteria(ctx, [{"id": "E9", **{k: v for k, v in NEW_E9.items() if k != "id"}}])
+    engine.execute(ctx, {"id": "t", "changes": []}, tag="t", render=False)
+    planning.edit_criteria(ctx, [{"id": "E9", "remove": True}])
+    assert nid in graph.stale(ctx.store)
+    engine.execute(ctx, {"id": "t", "changes": []}, tag="t", render=False)
+    assert not [n for n, why in graph.stale(ctx.store).items() if any(r["dep"] == "crit:E9" for r in why)]
+
+
 def test_engine_plan_is_free_and_execute_keeps_what_people_decided(tmp_path):
     import yaml
     from sragent import actions, engine, pipeline, todos

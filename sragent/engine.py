@@ -30,7 +30,9 @@ MAX_ROUNDS = 4
 # ---------------------------------------------------------------- the plan
 
 def _changed_criteria(st, node: dict, protocol: dict) -> list[str]:
-    """Criteria added or changed since this screen node last saw the protocol (from the protocol's history)."""
+    """Criteria added or changed since this screen node last saw the protocol (from the protocol's history), and
+    those it was never assessed on."""
+    from .stages.screening import NOT_ASSESSED
     rec = (node.get("dep_versions") or {}).get("protocol")
     p = st.get("protocol")
     if not p or rec is None or rec >= p["version"]:
@@ -39,12 +41,13 @@ def _changed_criteria(st, node: dict, protocol: dict) -> list[str]:
     if old is None:
         return [c["id"] for c in protocol.get("criteria", []) if c.get("type") != "practical"]
     before = {c["id"]: c for c in old.get("criteria", [])}
+    assessed = {a.get("id") for a in node["data"].get("criteria", []) if a.get("assessment") != NOT_ASSESSED}
     out = []
     for c in protocol.get("criteria", []):
         if c.get("type") == "practical":
             continue
         b = before.get(c["id"])
-        if b is None or any(b.get(k) != c.get(k) for k in ("type", "text", "stage", "any_of")):
+        if b is None or c["id"] not in assessed or any(b.get(k) != c.get(k) for k in ("type", "text", "stage", "any_of")):
             out.append(c["id"])
     return out
 
@@ -52,6 +55,7 @@ def _changed_criteria(st, node: dict, protocol: dict) -> list[str]:
 def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
     """What is out of date and what to do about it. `roots`: only consequences of these nodes (a feedback
     proposal must not pick up unrelated stale work)."""
+    from .stages.screening import could_lift_exclusion
     st = ctx.store
     protocol = (st.get("protocol") or {}).get("data") or {}
     inc = set(st.included_ids())
@@ -88,6 +92,9 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
                 crits = [c for c in crits if not (stage == "title_abstract" and _crit(protocol, c).get("stage") == "full_text")]
                 if pinned:   # a person decided: the new criteria are assessed and shown beside the decision, which is kept
                     items.append(_item(nid, t, "recompute" if crits else "current", why, True, rid, criteria=crits, stage=stage))
+                elif crits and n["data"]["decision"] == "exclude" and ctx.cfg["pipeline"]["reassess_excluded"] == "needed" \
+                        and not could_lift_exclusion(protocol, n["data"].get("criteria", []), stage, crits):
+                    items.append(_item(nid, t, "rederive", why, False, rid, stage=stage, not_reassessed=crits))
                 else:
                     items.append(_item(nid, t, "recompute" if crits else "rederive", why, False, rid, criteria=crits, stage=stage))
         elif t == "extraction":
@@ -265,7 +272,7 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
             with _because(st, i):
                 _screen(ctx, cs, i, protocol, tag)   # a touch only marks the node current (below): a person's decision stays
         for i in [x for x in todo if x["action"] == "current"]:
-            st.touch(i["node"])
+            st.touch(i["node"], _live_deps(st, i["node"]))
         # 3. statuses follow the included set (free)
         _statuses(ctx, cs)
         # 4. extraction, then risk of bias, for the stale and the missing
@@ -346,6 +353,11 @@ def _record(cs: dict, node: str, before, after, action: str, role: str = "depend
                           **{k: v for k, v in extra.items() if k not in ("ntype", "status_only")}})
 
 
+def _live_deps(st, node_id: str) -> list[str]:
+    """A node's inputs without the criteria removed from the protocol (a retired input would keep it out of date for good)."""
+    return [d for d in st.get(node_id)["depends_on"] if not (d.startswith("crit:") and (st.get(d) or {}).get("status") != "active")]
+
+
 def _screen(ctx: Ctx, cs: dict, i: dict, protocol: dict, tag: str) -> None:
     from .stages import screening
     st = ctx.store
@@ -355,7 +367,7 @@ def _screen(ctx: Ctx, cs: dict, i: dict, protocol: dict, tag: str) -> None:
     before = copy.deepcopy(n["data"])
     rid = i["rid"]
     if n["data"].get("rule"):            # excluded by a screening rule: the rules step decided it; nothing to re-derive
-        st.touch(i["node"])
+        st.touch(i["node"], _live_deps(st, i["node"]))
         return
     if i["action"] == "recompute" and i.get("criteria"):    # only the criteria that changed
         screening.reassess(ctx, protocol, rid, i["criteria"], i["stage"], tag_suffix=f"_{tag}")
@@ -363,13 +375,15 @@ def _screen(ctx: Ctx, cs: dict, i: dict, protocol: dict, tag: str) -> None:
         screening.review_one(ctx, protocol, rid)
     else:   # rederive from the stored assessments (a removed criterion, a changed policy); never includes without a full text
         d = dict(n["data"])
+        if i.get("not_reassessed"):
+            d["criteria"] = screening.mark_not_assessed(d.get("criteria", []), i["not_reassessed"])
         dec, because, stage, by_rule = screening.rederive(protocol, d, ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
         if (dec, because, stage) != (d["decision"], d.get("because"), d["stage"]):
             d.update({"decision": dec, "because": because, "stage": stage})
             d.pop("unclear_by_rule", None)
             if by_rule:
                 d["unclear_by_rule"] = by_rule
-        st.write(n["id"], n["type"], d, depends_on=n["depends_on"], reason=f"{tag}: decision re-derived ({'; '.join(i['why'])[:160]})")
+        st.write(n["id"], n["type"], d, depends_on=_live_deps(st, n["id"]), reason=f"{tag}: decision re-derived ({'; '.join(i['why'])[:160]})")
     after = st.get(i["node"])["data"]
     _record(cs, i["node"], before, after, i["action"], ntype=n["type"])
 
