@@ -1268,6 +1268,19 @@ def test_reassess_excluded_needed_still_reads_the_criterion_that_excluded_a_reco
     assert item["action"] == "recompute" and item["criteria"] == ["I1"]
 
 
+def test_the_criteria_preview_offers_both_choices_and_the_edit_keeps_the_one_chosen(tmp_path):
+    from sragent import ops
+    ctx = make_ctx(tmp_path)
+    nid = _excluded_on_i1(ctx)
+    args = {"criteria": [NEW_E9]}
+    modes = ops.preview(ctx, "protocol.edit_criteria", args)["reassess_excluded"]
+    assert modes["selected"] == "all" and modes["needed"]["reads"] < modes["all"]["reads"]
+    assert ctx.store.get("crit:E9") is None                                    # the preview changed nothing
+    assert ops.run(ctx, "protocol.edit_criteria", {**args, "reassess_excluded": "needed"})["ok"]
+    assert _plan_item(ctx, nid)["not_reassessed"] == ["E9"]
+    assert not ops.run(ctx, "protocol.edit_criteria", {"criteria": [{"id": "E9", "text": "x"}], "reassess_excluded": "some"})["ok"]
+
+
 def test_by_default_every_excluded_record_is_read_again(tmp_path):
     from sragent.stages import planning
     ctx = make_ctx(tmp_path)

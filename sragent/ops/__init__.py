@@ -185,14 +185,26 @@ def preview(ctx, name: str, args: dict | None = None) -> dict:
         fn = get(name.replace(".rerun_all", ".clear")).fn if name.endswith(".rerun_all") else op.fn
         res = fn(sb, _log=False, **{k: v for k, v in args.items() if not (name.endswith(".rerun_all") and k != "note")})
         d = sb_store.diff(st)
-        p = engine.plan(sb)
-        new = [i for i in p["items"] if (i["node"], i["action"]) not in base and i["action"] != "render"]
+
+        def reach(mode=None):
+            return [i for i in engine.plan(sb, reassess_excluded=mode)["items"] if (i["node"], i["action"]) not in base and i["action"] != "render"]
+
+        new = reach()
         changed = sorted(set(d["new"]) | set(d["changed"]))
         stages = impact.table(ctx, st, sb_store, changed, new)
+        modes = {}
+        if name == "protocol.edit_criteria" and res.get("ok", True):    # the person chooses in the preview, seeing both
+            by_mode = {m: reach(m) for m in ("all", "needed")}
+            reads = {m: sum(i["action"] == "recompute" and i["type"] in ("screen", "eligibility") for i in its) for m, its in by_mode.items()}
+            if reads["all"] != reads["needed"]:
+                modes = {"selected": ctx.cfg["pipeline"]["reassess_excluded"],
+                         **{m: {"reads": reads[m], "cost": engine._cost(ctx, its), "stages": impact.table(ctx, st, sb_store, changed, its)}
+                            for m, its in by_mode.items()}}
     by_type: dict[str, list] = {}
     for i in new:
         by_type.setdefault(i["type"], []).append(i["node"])
     return {"op": name, "kind": op.kind, "runs_as_job": op.kind == "llm", "ok": res.get("ok", True), "message": res.get("message", ""),
             "changes": changed, "stages": stages, "items": new, "summary": engine._summary(new),
             "cost": engine._cost(ctx, new), "reach": {t: sorted(v) for t, v in by_type.items()},
-            "kept": [i["node"] for i in new if i["action"] == "kept"], "lines": engine.describe({"items": new})[:30]}
+            "kept": [i["node"] for i in new if i["action"] == "kept"], "lines": engine.describe({"items": new})[:30],
+            **({"reassess_excluded": modes} if modes else {})}

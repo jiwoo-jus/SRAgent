@@ -1259,7 +1259,7 @@ const CF_HELP = {
     <tr><td><code>contact_email</code></td><td>sent to NCBI, Unpaywall, OpenAlex; Unpaywall needs it</td></tr>
     <tr><td><code>pipeline.human_mode</code></td><td><code>human_in_the_loop</code> or <code>agent_only</code></td></tr>
     <tr><td><code>pipeline.fulltext_unclear</code></td><td><code>await</code> · <code>include</code> · <code>exclude</code> (agent_only: not await)</td></tr>
-    <tr><td><code>pipeline.reassess_excluded</code></td><td>after a criterion changes, excluded records read again: <code>all</code> (every one, so each has an answer on every criterion; the default) · <code>needed</code> (only if the answer could bring them back)</td></tr>
+    <tr><td><code>pipeline.reassess_excluded</code></td><td>after a criterion changes, excluded records read again: <code>all</code> (every one, so each has an answer on every criterion; the default) · <code>needed</code> (only if the answer could bring them back). Saving edited criteria lets you choose for that change.</td></tr>
     <tr><td><code>pipeline.max_records</code></td><td>benchmark only: screen a sample</td></tr>
     <tr><td><code>pipeline.citation_chasing</code></td><td>follow references and citations (true)</td></tr>
     <tr><td><code>feedback.auto_accept</code></td><td>apply proposals without confirmation (false)</td></tr>

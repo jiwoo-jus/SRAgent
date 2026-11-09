@@ -157,9 +157,11 @@ def apply_revision(ctx: Ctx, instruction: str, draft: dict) -> dict:
     return {"applied": True, "explanation": explanation, **r}
 
 
-def edit_criteria(ctx: Ctx, criteria: list[dict], note: str = "") -> dict:
+def edit_criteria(ctx: Ctx, criteria: list[dict], note: str = "", reassess_excluded: str = "") -> dict:
     """A person's edits to the criteria from the interface (text, type, stage, any_of; removal; new ones), applied like
-    an edit of protocol.yaml (no model call)."""
+    an edit of protocol.yaml (no model call). `reassess_excluded`: all | needed for this change; empty: the run file's setting."""
+    if reassess_excluded not in ("", "all", "needed"):
+        raise ValueError(f"reassess_excluded: {reassess_excluded!r}; use all or needed")
     st = ctx.store
     cur = (st.get("protocol") or {}).get("data") or {}
     new = json.loads(json.dumps(cur))
@@ -187,7 +189,7 @@ def edit_criteria(ctx: Ctx, criteria: list[dict], note: str = "") -> dict:
     if not _differs(cur, new):
         return {"applied": False, "changed": {}}
     r = apply_protocol(ctx, new, actor="user", reason="criteria edited in the interface" + (f": {note[:100]}" if note else ""),
-                       record={"note": note})
+                       record={"note": note, **({"reassess_excluded": reassess_excluded} if reassess_excluded else {})})
     ctx.log(f"[plan] criteria edited by the review team: {r['changed']}")
     return {"applied": True, **r}
 

@@ -23,10 +23,10 @@ def approve(ctx, note: str = "") -> dict:
 
 
 @operation("protocol.edit_criteria", "protocol", "human", reach=True)
-def edit_criteria(ctx, criteria: list[dict], note: str = "") -> dict:
+def edit_criteria(ctx, criteria: list[dict], note: str = "", reassess_excluded: str = "") -> dict:
     """Change, add or remove criteria by hand (no model call); dependent decisions are re-derived or re-assessed."""
     from ..stages import planning
-    r = planning.edit_criteria(ctx, criteria, note=note)
+    r = planning.edit_criteria(ctx, criteria, note=note, reassess_excluded=reassess_excluded)
     return {"message": "criteria saved; approve the protocol" if r.get("applied") else "nothing changed", **r}
 
 

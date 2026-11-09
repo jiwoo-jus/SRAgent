@@ -52,11 +52,18 @@ def _changed_criteria(st, node: dict, protocol: dict) -> list[str]:
     return out
 
 
-def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
+def _reassess_excluded(ctx: Ctx) -> str:
+    """The choice made with the last change of the criteria; without one, the run file's setting."""
+    revisions = ctx.store.meta.get("protocol_revisions") or [{}]
+    return revisions[-1].get("reassess_excluded") or ctx.cfg["pipeline"]["reassess_excluded"]
+
+
+def plan(ctx: Ctx, roots: set[str] | None = None, reassess_excluded: str | None = None) -> dict:
     """What is out of date and what to do about it. `roots`: only consequences of these nodes (a feedback
-    proposal must not pick up unrelated stale work)."""
+    proposal must not pick up unrelated stale work). `reassess_excluded`: plan under this choice (a preview comparing both)."""
     from .stages.screening import could_lift_exclusion
     st = ctx.store
+    reassess_excluded = reassess_excluded or _reassess_excluded(ctx)
     protocol = (st.get("protocol") or {}).get("data") or {}
     inc = set(st.included_ids())
     scope = None
@@ -92,7 +99,7 @@ def plan(ctx: Ctx, roots: set[str] | None = None) -> dict:
                 crits = [c for c in crits if not (stage == "title_abstract" and _crit(protocol, c).get("stage") == "full_text")]
                 if pinned:   # a person decided: the new criteria are assessed and shown beside the decision, which is kept
                     items.append(_item(nid, t, "recompute" if crits else "current", why, True, rid, criteria=crits, stage=stage))
-                elif crits and n["data"]["decision"] == "exclude" and ctx.cfg["pipeline"]["reassess_excluded"] == "needed" \
+                elif crits and n["data"]["decision"] == "exclude" and reassess_excluded == "needed" \
                         and not could_lift_exclusion(protocol, n["data"].get("criteria", []), stage, crits):
                     items.append(_item(nid, t, "rederive", why, False, rid, stage=stage, not_reassessed=crits))
                 else:

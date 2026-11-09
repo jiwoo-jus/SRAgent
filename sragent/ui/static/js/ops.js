@@ -20,6 +20,14 @@ function impactTable(p){
       ${upd ? `<td>${li(r.update)}${r.usd ? `<div class="xs mut">about ${usd(r.usd)}</div>` : ""}</td>` : ""}</tr>`).join("")}
     </tbody></table></div><p class="xs mut" style="margin:6px 0 0">Stages not listed are not changed.</p>`;
 }
+/* a change of the criteria: whether the papers already excluded are read again, with what each choice reads and costs */
+function reassessChoice(r, mode){
+  const opt = (m, title, sub) => `<button class="choice ${mode === m ? "on" : ""}" data-mode="${m}"><span class="rd"></span>
+    <span><b>${title}</b><div class="xs mut">${sub} ${r[m].reads} papers read, about ${usd(r[m].cost.total_usd || 0)}.</div></span></button>`;
+  return `<div style="margin-bottom:12px"><div class="small" style="font-weight:600;margin-bottom:6px">Papers already excluded</div>
+    <div class="choices col">${opt("all", "Read all of them again", "Every paper gets an answer on this criterion.")}
+      ${opt("needed", "Read only those that could come back", "The others stay excluded and show “Not assessed” on this criterion.")}</div></div>`;
+}
 function previewDialog(name, args, label){
   return new Promise(async resolve => {
     closeModal();
@@ -29,21 +37,32 @@ function previewDialog(name, args, label){
     document.body.appendChild(box);
     const p = await api("/api/preview", {name, args});
     const later = (p.stages || []).some(r => r.update.length) && name !== "update_all";
-    const cost = (p.cost || {}).total_usd;
-    const body = !p.ok && p.message ? `<div class="callout warn">${esc(p.message)}</div>` : `
-      ${!(p.stages || []).length && p.message ? `<p class="small">${esc(p.message)}</p>` : ""}
-      ${impactTable(p)}
+    const modes = p.reassess_excluded;
+    let mode = modes && modes.selected;
+    const draw = () => {
+      const v = modes ? {...p, ...modes[mode]} : p;
+      const cost = (v.cost || {}).total_usd;
+      box.querySelector(".card-b").innerHTML = !p.ok && p.message ? `<div class="callout warn">${esc(p.message)}</div>` : `
+      ${modes ? reassessChoice(modes, mode) : ""}
+      ${!(v.stages || []).length && p.message ? `<p class="small">${esc(p.message)}</p>` : ""}
+      ${impactTable(v)}
       ${(p.kept || []).length ? `<p class="small" style="margin-top:10px">Kept as they are, because you decided or edited them: ${esc(p.kept.join(", "))}.</p>` : ""}
       <p class="small" style="margin-top:10px">${p.runs_as_job ? "Runs as a job with model calls. " : ""}${cost ? `Model calls: about ${usd(cost)}.` : "No model calls."}
         ${later ? "Applying changes only the “When you apply” column; the rest waits until you update outputs (or choose “Apply and update outputs”)." : ""}</p>`;
-    box.querySelector(".card-b").innerHTML = body;
+    };
+    draw();
+    box.querySelector(".card-b").addEventListener("click", e => { const m = e.target.closest("[data-mode]")?.dataset.mode; if (m) { mode = m; draw(); } });
     const f = document.createElement("div"); f.className = "card-f";
     const dis = p.ok === false ? "disabled" : "";
     f.innerHTML = `<button class="btn" data-a="no">Cancel</button><span class="grow"></span>
       ${later && !p.runs_as_job ? `<button class="btn" data-a="apply+update" ${dis}>Apply and update outputs</button>` : ""}
       <button class="btn primary" data-a="apply" ${dis}>${p.runs_as_job ? "Start" : "Apply"}</button>`;
     box.querySelector(".modal-c").appendChild(f);
-    f.addEventListener("click", e => { const a = e.target.closest("button")?.dataset.a; if (!a) return; closeModal(); resolve(a === "no" ? false : a); });
+    f.addEventListener("click", e => {
+      const a = e.target.closest("button")?.dataset.a; if (!a) return;
+      if (mode) args.reassess_excluded = mode;     // runOp sends this same args object
+      closeModal(); resolve(a === "no" ? false : a);
+    });
     box.addEventListener("click", e => { if (e.target === box) { closeModal(); resolve(false); } });
   });
 }
