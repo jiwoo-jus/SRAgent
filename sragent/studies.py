@@ -87,9 +87,11 @@ def _study_nodes(st, rid):
     return [f"{k}:{rid}" for k in ("rec", "screen", "ft", "elig", "ext", "rob") if st.get(f"{k}:{rid}")]
 
 
-def _flags_of(st, rid):
+def _flags_of(st, rid, derived: dict | None = None):
+    """A study's stored flags and derived notes. `derived`: attention.by_node(st), built once for a list of studies
+    (it reads the whole review)."""
     from .attention import by_node
-    derived = by_node(st)
+    derived = by_node(st) if derived is None else derived
     out = []
     for nid in _study_nodes(st, rid):
         for f in st.get(nid)["flags"] + derived.get(nid, []):
@@ -107,12 +109,14 @@ def studies_list(ctx: Ctx) -> list[dict]:
     for n in st.by_type("synthesis", active_only=True):
         for c in n["data"]["cites"]:
             cited.setdefault(c, []).append(n["data"]["id"])
+    from .attention import by_node
+    derived = by_node(st)
     rows = []
     for n in st.by_type("record"):
         rid = n["id"].split(":", 1)[1]
         r = n["data"]
         g, s, why = status_of(st, rid)
-        fl = _flags_of(st, rid)
+        fl = _flags_of(st, rid, derived)
         ext, rob = st.get(f"ext:{rid}"), st.get(f"rob:{rid}")
         ft = (st.get(f"ft:{rid}") or {}).get("data", {})
         rows.append({
