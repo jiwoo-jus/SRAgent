@@ -201,9 +201,25 @@ def _item(node, ntype, action, why, pinned, rid, **extra) -> dict:
     return {"node": node, "type": ntype, "action": action, "why": why, "pinned": pinned, "rid": rid, **extra}
 
 
-def _because(st, i: dict):
+def _because(st, i: dict, local: bool = False):
     """The changes an item writes, recorded as caused by the last change of each input that made it out of date."""
-    return st.because([st.last_change(d) for d in i.get("deps") or []])
+    return st.because([st.last_change(d) for d in i.get("deps") or []], local=local)
+
+
+def _each(ctx: Ctx, cs: dict, items: list[dict], fn, label: str) -> None:
+    """One step for many studies, in parallel and saved as it goes (ctx.map): an update that stops keeps the studies
+    it finished, and run again it continues with the rest (they are no longer out of date). fn(part, item) records
+    its changes in `part`; they are added to the change set in the order of the plan."""
+    st = ctx.store
+
+    def one(i):
+        part = {"changes": []}
+        with _because(st, i, local=True):
+            fn(part, i)
+        return part["changes"]
+
+    for changes in ctx.map(one, items, label=label):
+        cs["changes"] += changes
 
 
 def _summary(items: list[dict]) -> dict:
@@ -274,22 +290,19 @@ def execute(ctx: Ctx, cs: dict | None = None, roots: set[str] | None = None, tag
         # 1. the screening rules (a changed rule set, a disabled rule): deterministic, first
         if any(i["type"] in ("screen", "eligibility") for i in todo) and st.get("cfg:screening_rules"):
             rules.apply(ctx, protocol)
-        # 2. screening: re-assess only the changed criteria; re-derive the rest
-        for i in [x for x in todo if x["type"] in ("screen", "eligibility") and x["action"] != "current"]:
-            with _because(st, i):
-                _screen(ctx, cs, i, protocol, tag)   # a touch only marks the node current (below): a person's decision stays
+        # 2. screening: re-assess only the changed criteria; re-derive the rest (a person's decision stays)
+        _each(ctx, cs, [x for x in todo if x["type"] in ("screen", "eligibility") and x["action"] != "current"],
+              lambda part, i: _screen(ctx, part, i, protocol, tag), "Updating screening decisions")
         for i in [x for x in todo if x["action"] == "current"]:
             st.touch(i["node"], _live_deps(st, i["node"]))
         # 3. statuses follow the included set (free)
         _statuses(ctx, cs)
         # 4. extraction, then risk of bias, for the stale and the missing
         inc = set(st.included_ids())
-        for i in [x for x in todo if x["type"] == "extraction" and x["action"] in ("recompute", "reactivate") and x["rid"] in inc]:
-            with _because(st, i):
-                _extract(ctx, cs, i)
-        for i in [x for x in todo if x["type"] == "rob" and x["action"] == "recompute" and x["rid"] in inc and st.get(f"ext:{x['rid']}")]:
-            with _because(st, i):
-                _rob(ctx, cs, i)
+        _each(ctx, cs, [x for x in todo if x["type"] == "extraction" and x["action"] in ("recompute", "reactivate") and x["rid"] in inc],
+              lambda part, i: _extract(ctx, part, i), "Updating data extraction")
+        _each(ctx, cs, [x for x in todo if x["type"] == "rob" and x["action"] == "recompute" and x["rid"] in inc and st.get(f"ext:{x['rid']}")],
+              lambda part, i: _rob(ctx, part, i), "Updating risk of bias")
         # 5. the synthesis: revise the statements the changes reach, integrate new studies, check what changed
         _synthesis(ctx, cs, [x for x in todo if x["type"] == "synthesis"], tag)
     if deferred:

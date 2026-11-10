@@ -2246,3 +2246,129 @@ def test_reassess_rob_resumes_without_paying_twice(tmp_path):
     done = set(calls)
     r = rob.reassess_all(ctx)                                    # resumes: only what the first pass did not draft
     assert r["redrafted"] == 3 - len(done) and "rob_reassess" not in ctx.store.meta
+
+
+# ---------------------------------------------------------------- long jobs and what goes out of date (06 chunk A)
+
+def test_outputs_go_out_of_date_only_when_the_part_they_read_changes(tmp_path):
+    import yaml
+    from sragent import graph, ops, pipeline
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    assert graph.stale(st) == {}
+    # confirming a risk-of-bias draft changes no rating: the statement that cites the study stays current
+    ops.run(ctx, "rob.confirm", {"rids": ["1001"]})
+    assert st.get("rob:1001")["version"] > st.get("syn:S1")["dep_versions"]["rob:1001"]
+    assert "syn:S1" not in graph.stale(st)
+    # a changed rating reaches it
+    ops.run(ctx, "rob.edit_domains", {"rid": "1001", "changes": [{"domain": "participant_selection", "judgment": "high"}]})
+    assert [r["dep"] for r in graph.stale_reasons(st, "syn:S1")] == ["rob:1001"]
+    # a criterion moved to another stage: the decisions are reached, the search is not
+    pfile = ctx.run_dir / "protocol.yaml"
+    p = yaml.safe_load(open(pfile))
+    p["criteria"][2]["stage"] = "full_text"
+    yaml.safe_dump(p, open(pfile, "w"), sort_keys=False)
+    ops.run(ctx, "protocol.import_file")
+    stale = graph.stale(st)
+    assert "search" not in stale and any(k.startswith(("screen:", "elig:")) for k in stale)
+    # the population the search is built from changes: now the search is out of date
+    p["pico"]["population"] = "adults with haemophilia A"
+    yaml.safe_dump(p, open(pfile, "w"), sort_keys=False)
+    ops.run(ctx, "protocol.import_file")
+    assert [r["dep"] for r in graph.stale_reasons(st, "search")] == ["protocol"]
+
+
+def test_a_long_step_saves_as_it_goes_and_reports_its_progress(tmp_path, monkeypatch):
+    import pytest
+    ctx = make_ctx(tmp_path)
+    monkeypatch.setattr(Ctx, "SAVE_EVERY", 1)       # chunks of 4 (one worker)
+    monkeypatch.setattr(Ctx, "SAVE_SECONDS", 0)     # a save after every chunk
+    saved = []
+    real_save = Ctx.save
+
+    def spy(self):
+        saved.append(sorted(k for k in self.store.nodes if k.startswith("note:")))
+        real_save(self)
+    monkeypatch.setattr(Ctx, "save", spy)
+
+    def one(i):
+        if i == 6:
+            raise RuntimeError("stopped")             # the job stops on the 7th item
+        ctx.store.write(f"note:{i}", "setting", {"value": i})
+        return i
+    with pytest.raises(RuntimeError):
+        ctx.map(one, range(10), label="Testing")
+    assert saved[0] == [f"note:{i}" for i in range(4)]          # the first chunk was saved before the stop
+    p = json.loads((ctx.run_dir / "progress.json").read_text())
+    assert (p["label"], p["done"], p["total"]) == ("Testing", 7, 10)
+
+
+def test_a_copy_of_the_review_never_saves_over_it(tmp_path):
+    import dataclasses
+    ctx = make_ctx(tmp_path)
+    ctx.save()
+    before = (ctx.run_dir / "store.json").read_bytes()
+    sb = dataclasses.replace(ctx, store=ctx.store.clone())     # a proposal's sandbox: same folder
+    sb.store.write("note:x", "setting", {"value": 1})
+    sb.save()
+    sb.map(lambda i: i, [1, 2])
+    assert (ctx.run_dir / "store.json").read_bytes() == before
+    other = tmp_path / "eval_copy"                              # a copy with a folder of its own saves there
+    other.mkdir()
+    s2 = ctx.store.clone()
+    s2.run_dir = other
+    dataclasses.replace(ctx, store=s2, run_dir=other).save()
+    assert (other / "store.json").exists()
+
+
+def _criterion_change_review(tmp_path, concurrency: int) -> Ctx:
+    import yaml
+    from sragent import ops, pipeline
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    ctx = make_ctx(tmp_path, extra_cfg={"llm_defaults": {"concurrency": concurrency}})
+    pipeline.run(ctx)
+    pfile = ctx.run_dir / "protocol.yaml"
+    p = yaml.safe_load(open(pfile))
+    p["criteria"].append({"id": "E1", "type": "exclusion", "text": "studies only in children", "stage": "title_abstract"})
+    yaml.safe_dump(p, open(pfile, "w"), sort_keys=False)
+    ops.run(ctx, "protocol.import_file")
+    return ctx
+
+
+def test_an_update_stopped_partway_keeps_what_it_finished_and_continues(tmp_path, monkeypatch):
+    import pytest
+    from sragent import engine
+    from sragent.stages import screening
+
+    def to_do(c):
+        return sorted(i["node"] for i in engine.plan(c)["items"] if i["action"] == "recompute" and i["type"] in ("screen", "eligibility"))
+
+    def decisions(c):
+        return {r: (SC(c.store, r)["decision"], sorted(a["id"] for a in SC(c.store, r)["criteria"])) for r in ("1001", "1002", "1003", "1004")}
+
+    whole = _criterion_change_review(tmp_path / "whole", concurrency=1)
+    engine.execute(whole, tag="update")
+    ctx = _criterion_change_review(tmp_path / "stopped", concurrency=4)
+    first = to_do(ctx)
+    assert len(first) == 4
+    real, calls = screening.reassess, []
+
+    def stops_on_the_third(*a, **k):
+        calls.append(a[2])
+        if len(calls) == 3:
+            raise RuntimeError("stopped")
+        return real(*a, **k)
+    monkeypatch.setattr(screening, "reassess", stops_on_the_third)
+    with pytest.raises(RuntimeError):
+        engine.execute(ctx, tag="update")
+    monkeypatch.setattr(screening, "reassess", real)
+    again = Ctx.create(ctx.cfg, mock_fn=mock_fn)                 # the review as saved: what was finished is kept
+    again.quiet = True
+    left = to_do(again)
+    assert 0 < len(left) < len(first)
+    engine.execute(again, tag="update")
+    assert to_do(again) == []
+    assert decisions(again) == decisions(whole)                  # the same result as an update that was not stopped
+    p = json.loads((again.run_dir / "progress.json").read_text())
+    assert p["done"] == p["total"]

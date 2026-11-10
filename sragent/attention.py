@@ -92,8 +92,9 @@ def edit_state(st, n: dict) -> dict | None:
         c = st.get(cid)
         if not c or c["status"] != "active" or c["type"] == "report":
             continue
+        from . import graph
         v = (c.get("dep_versions") or {}).get(n["id"])
-        if v is not None and v < n["version"]:
+        if v is not None and any(r["dep"] == n["id"] for r in graph.stale_reasons(st, cid)):
             stale.append(cid)
             seen.append(v)
     return {"dependents": sorted(stale), "from_version": min(seen)} if stale else None

@@ -11,9 +11,7 @@
   },
   "notes_appeared": [],
   "notes_cleared": [],
-  "out_of_date": [
-   "search kept"
-  ],
+  "out_of_date": [],
   "proposals": [],
   "provenance": [],
   "state_nodes": [
@@ -35,9 +33,7 @@
   ],
   "excluded_but_cited": [],
   "has_synthesis": true,
-  "kept": [
-   "search"
-  ],
+  "kept": [],
   "need_extract": [],
   "need_rob": [],
   "new_for_synthesis": [],

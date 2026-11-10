@@ -483,7 +483,18 @@ class App:
                     tail = "\n".join(Path(spec["log"]).read_text(errors="ignore").splitlines()[-80:])
                 out[key] = {k: spec.get(k) for k in ("id", "action", "label", "status", "cmd", "started", "ended", "usd",
                                                      "returncode", "target")} | {"log": tail}
+        if out["current"]:
+            out["current"]["progress"] = self._progress(out["current"].get("started"))
         return out
+
+    def _progress(self, job_started) -> dict | None:
+        """The running job's current step, done of total (progress.json, written by Ctx.map); None before its first
+        long step or when the file is from an earlier job."""
+        try:
+            p = json.loads((self.run_dir / "progress.json").read_text())
+        except (OSError, ValueError):
+            return None
+        return p if job_started and p.get("started", 0) >= job_started - 1 else None
 
     # ------------------------------------------------------------ changes queued while the folder is busy
     def _drain_answers(self):

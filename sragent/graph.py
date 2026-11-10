@@ -2,8 +2,9 @@
 
 Every output is a node whose `depends_on` names the nodes it was derived from. A node also records
 `dep_versions`, the version of each dependency at the time the node was computed, so "is this node
-out of date?" is a comparison, not a guess: a node is stale when a dependency has a newer version, was
-retired, or is gone.
+out of date?" is a comparison, not a guess: a node is stale when a dependency has a newer version that changed
+the part this node reads (READS: the search reads the protocol's question, PICO and key concepts, not its
+criteria), was retired, or is gone.
 
 The review's settings are nodes too (SETTINGS below: the question, the eligibility text, the screening
 rules, the record source, the people mode, one node per extraction field and per risk-of-bias domain).
@@ -139,8 +140,55 @@ def human_pinned(node: dict) -> bool:
     return any(isinstance(v, dict) and v.get("edited") for v in (d.get("fields") or {}).values())
 
 
+def _protocol_for_search(d: dict):
+    return {k: d.get(k) for k in ("question", "pico", "key_concepts")}            # search.build_query, protocol_brief
+
+
+def _extracted_values(d: dict):
+    return {k: (v or {}).get("value") for k, v in (d.get("fields") or {}).items()}    # rob._ext_brief
+
+
+def _extracted_with_quotes(d: dict):
+    return {k: ((v or {}).get("value"), (v or {}).get("quote", "")) for k, v in (d.get("fields") or {}).items()}   # extraction.table_text
+
+
+def _rob_ratings(d: dict):
+    return d.get("overall"), [(x.get("domain"), x.get("judgment")) for x in d.get("domains") or []]   # rob.rob_text
+
+
+# The part of an input that an output of a type reads. A new version of the input makes the output out of date only
+# when this part changed: a criterion edit does not reach the search, a confirmation does not change a risk-of-bias
+# rating. A pair not listed reads the whole input.
+READS = {
+    ("search", "protocol"): _protocol_for_search,
+    ("strategy", "protocol"): _protocol_for_search,
+    ("rob", "extraction"): _extracted_values,
+    ("synthesis", "extraction"): _extracted_with_quotes,
+    ("synthesis", "rob"): _rob_ratings,
+}
+
+
+def data_at(node: dict, version: int) -> dict | None:
+    """A node's data as it was at a version (None when that version is not in its history)."""
+    if version == node["version"]:
+        return node["data"]
+    return next((h["data"] for h in node.get("history", []) if h["version"] == version), None)
+
+
+def _read_part_changed(n: dict, d: dict, seen: int) -> bool:
+    part = READS.get((n["type"], d["type"]))
+    old = data_at(d, seen) if part else None
+    if old is None:
+        return True
+    try:
+        return part(old) != part(d["data"])
+    except (AttributeError, TypeError):
+        return True
+
+
 def stale_reasons(store, node_id: str) -> list[dict]:
-    """Why this node is out of date: each dependency that moved on since the node was computed."""
+    """Why this node is out of date: each dependency that moved on since the node was computed, in the part this
+    node reads (READS)."""
     n = store.get(node_id)
     if not n or n["status"] != "active":
         return []
@@ -152,7 +200,7 @@ def stale_reasons(store, node_id: str) -> list[dict]:
             out.append({"dep": dep, "why": "missing"})
         elif d["status"] not in ("active",):
             out.append({"dep": dep, "why": d["status"]})
-        elif dep in rec and d["version"] > rec[dep]:
+        elif dep in rec and d["version"] > rec[dep] and _read_part_changed(n, d, rec[dep]):
             out.append({"dep": dep, "why": f"v{rec[dep]} -> v{d['version']}"})
     return out
 

@@ -69,10 +69,14 @@ class ReviewStore:
         self.nodes: dict[str, dict] = {}
         self.changelog: list[dict] = []
         self._cause: list[dict] = []          # the cause of the changes being written (because())
+        self._local = threading.local()       # because(local=True): the cause of one parallel worker's changes
         self._last: dict[str, int] = {}       # node id -> seq of its last create / update / status change
         self._seq_base = 0                     # a copy (clone) numbers its entries after the original's
         self.meta: dict[str, Any] = {}
+        self.copied_from: set[Path] = set()    # the folders of the stores this one is a copy of (never saved over)
         self._lock = threading.Lock()   # flag ids and the changelog are written from parallel stage workers
+        self._log_lock = threading.Lock()      # one seq per change-log entry, also from parallel workers
+        self._cohort_lock = threading.RLock()  # the included set is refreshed by one worker at a time
         self._children: dict[str, set] = {}   # reverse index of depends_on
         self._flushed = 0                     # changelog entries already on disk (the file is append-only)
 
@@ -197,7 +201,8 @@ class ReviewStore:
     def _cohort_changed(self) -> None:
         """The included set moved: the `cohort` node follows (state.py), so what depends on it becomes stale."""
         from . import state
-        state.refresh_cohort(self)
+        with self._cohort_lock:
+            state.refresh_cohort(self)
 
     def _next_flag_id(self) -> str:
         """Flag ids come from a counter in meta, so they are unique even when flags are resolved and
@@ -231,27 +236,33 @@ class ReviewStore:
     def _log(self, op, node_id, actor, reason, before, after):
         """One change-log entry. `seq` is its place in the log; `operation` the operation that made it and `caused_by`
         the entries whose changes made it necessary (because()): a change that set off others can be followed."""
-        e = {"ts": time.time(), "op": op, "node": node_id, "actor": actor, "reason": reason, "before": before,
-             "after": after, "seq": self._seq_base + len(self.changelog)}
-        if self._cause:
-            name = next((c["op"] for c in reversed(self._cause) if c["op"]), None)
-            by = next((c["by"] for c in reversed(self._cause) if c["by"]), None)
-            if name:
-                e["operation"] = name
-            if by:
-                e["caused_by"] = by
-        self.changelog.append(e)
-        if op in ("create", "update", "status"):
-            self._last[node_id] = e["seq"]
+        causes = self._cause + getattr(self._local, "cause", [])
+        with self._log_lock:
+            e = {"ts": time.time(), "op": op, "node": node_id, "actor": actor, "reason": reason, "before": before,
+                 "after": after, "seq": self._seq_base + len(self.changelog)}
+            if causes:
+                name = next((c["op"] for c in reversed(causes) if c["op"]), None)
+                by = next((c["by"] for c in reversed(causes) if c["by"]), None)
+                if name:
+                    e["operation"] = name
+                if by:
+                    e["caused_by"] = by
+            self.changelog.append(e)
+            if op in ("create", "update", "status"):
+                self._last[node_id] = e["seq"]
 
     @contextlib.contextmanager
-    def because(self, by: Iterable[int | None] = (), op: str | None = None):
-        """Changes written inside are recorded as made by operation `op` and caused by the change-log entries `by`."""
-        self._cause.append({"by": sorted({b for b in by if b is not None}), "op": op})
+    def because(self, by: Iterable[int | None] = (), op: str | None = None, local: bool = False):
+        """Changes written inside are recorded as made by operation `op` and caused by the change-log entries `by`.
+        local=True: only the changes this thread writes (a parallel worker); they keep the causes set outside too."""
+        if local and not hasattr(self._local, "cause"):
+            self._local.cause = []
+        stack = self._local.cause if local else self._cause
+        stack.append({"by": sorted({b for b in by if b is not None}), "op": op})
         try:
             yield
         finally:
-            self._cause.pop()
+            stack.pop()
 
     def last_change(self, node_id: str | None) -> int | None:
         """seq of the node's last create / update / status entry (what a dependent's change is caused by)."""
@@ -333,6 +344,7 @@ class ReviewStore:
 
     def clone(self) -> "ReviewStore":
         s = ReviewStore(self.run_dir)
+        s.copied_from = self.copied_from | ({Path(self.run_dir).resolve()} if self.run_dir else set())
         s.nodes = copy.deepcopy(self.nodes)
         s.meta = copy.deepcopy(self.meta)
         s._last = dict(self._last)

@@ -21,8 +21,7 @@
    "screen:G04 recompute",
    "screen:G05 recompute",
    "screen:G06 current",
-   "screen:G07 rederive",
-   "search kept"
+   "screen:G07 rederive"
   ],
   "proposals": [],
   "provenance": [

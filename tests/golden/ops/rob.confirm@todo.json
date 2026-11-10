@@ -9,10 +9,7 @@
   "model_calls": {},
   "notes_appeared": [],
   "notes_cleared": [],
-  "out_of_date": [
-   "syn:S1 revise",
-   "syn:S3 revise"
-  ],
+  "out_of_date": [],
   "proposals": [],
   "provenance": [
    "human_judgment:rob.confirm"

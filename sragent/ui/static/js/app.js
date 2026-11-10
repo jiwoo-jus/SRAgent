@@ -197,10 +197,10 @@ function renderChrome(){
   if (j) {
     const el = j.started ? fmtDur(Date.now()/1000 - j.started) : "";
     w = `<div class="jobw run"><div class="h"><span class="spin"></span>Running<span class="mut" style="font-weight:400">${el ? "· " + el : ""}</span></div>
-      <div class="l" title="${esc(j.label||j.action)}">${esc(j.label||j.action)}</div>
+      <div class="l" title="${esc(j.label||j.action)}">${esc(j.label||j.action)}</div>${jobProgress(j.progress)}
       ${S.job.queued ? `<div class="xs mut" style="margin-top:2px">${S.job.queued} more queued</div>` : ""}
       <div class="a"><button class="btn sm" onclick="show('run')">View log</button><button class="btn sm danger" onclick="stopRun()">${ic("stop","sm")} Stop</button></div></div>`;
-    top = `<button class="btn sm" onclick="show('run')" title="${esc(j.label||j.action)}"><span class="spin"></span><span class="hide-sm">Running</span> ${esc(trunc(j.label||j.action, 28))}</button>`;
+    top = `<button class="btn sm" onclick="show('run')" title="${esc(j.label||j.action)}"><span class="spin"></span><span class="hide-sm">Running</span> ${esc(trunc(j.label||j.action, 28))}${j.progress && j.progress.total ? ` · ${j.progress.done}/${j.progress.total}` : ""}</button>`;
   } else if (S.job.last) {
     const L = S.job.last;
     w = `<div class="jobw" style="cursor:pointer" onclick="show('activity')" title="Open Activity"><div class="h">${badge(L.status, tone(L.status), "dot")}<span class="mut xs" style="font-weight:400">last job${L.ended ? " · " + fmtT(L.ended) : ""}</span></div>
@@ -208,6 +208,19 @@ function renderChrome(){
   }
   $("#jobw").innerHTML = w; $("#topjob").innerHTML = top;
   if (typeof stageNav === "function") stageNav();
+}
+
+/* the running job's current step (progress.json): "Updating screening decisions · 340 / 825 · about 12m left" */
+function jobProgress(p){
+  if (!p || !p.total) return "";
+  const pct = Math.min(100, Math.round(100 * p.done / p.total));
+  const took = (p.updated || 0) - (p.started || 0);
+  const left = p.done > 0 && p.done < p.total && took > 20 ? took / p.done * (p.total - p.done) : null;
+  return `<div class="xs" style="margin-top:6px"><div class="row" style="justify-content:space-between;gap:6px">
+      <span class="mut" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.label)}</span>
+      <span class="nowrap">${p.done} / ${p.total}</span></div>
+    <div class="bar" style="margin-top:4px"><i style="width:${pct}%"></i></div>
+    ${left != null ? `<div class="mut" style="margin-top:3px">about ${fmtDur(left)} left</div>` : ""}</div>`;
 }
 
 function render(fromPoll){
