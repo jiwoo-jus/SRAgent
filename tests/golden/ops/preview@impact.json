@@ -13,7 +13,7 @@
   "state_nodes": []
  },
  "result": {
-  "message": "{\"cost\": {\"range_usd\": [0.0, 0.0], \"rows\": [{\"calls\": 1, \"effort\": \"default\", \"in_per_call\": 6000, \"model\": \"mock\", \"out_per_call\": 2000, \"source\": \"defaults\", \"stage\": \"rob\", \"usd\": 0.0}, {\"calls\": 2, \"effort\": \"default\", \"in_per_call\": 12000, \"model\": \"mock\", \"out_per_call\": 4000, \"source\": \"defaults\", \"stage\": \"feedback\", \"usd\": 0.0}, {\"calls\": 2, \"effort\": \"default\", \"in_per_call\": 10000, \"model\": \"mock\", \"out_per_call\": 1500, \"source\": \"defaults\", \"stage\": \"synthesis_verify\", \"usd\": 0.0}], \"total_usd\": 0.0}, \"items\": [{\"action\": \"recompute\", \"deps\": [\"ext:G01\"], \"node\": \"rob:G01\", \"pinned\": false, \"rid\": \"G01\", \"type\": \"rob\", \"why\": [\"ext:G01 v1 -> v2\"]}, {\"action\": \"revise\", \"deps\": [\"ext:G01\"], \"node\": \"syn:S1\", \"pinned\": false, \"rid\": null, \"sources\": [\"ext:G01\"], \"type\": \"synthesis\", \"why\": [\"ext:G01 v1 -> v2\"]}, {\"action\": \"revise\", \"deps\": [\"ext:G01\"], \"node\": \"syn:S3\", \"pinned\": false, \"rid\": null, \"sources\": [\"ext:G01\"], \"type\": \"synthesis\", \"why\": [\"ext:G01 v1 -> v2\"]}], \"lines\": [\"rob:G01: recompute (ext:G01 v1 -> v2)\", \"syn:S1: revise (ext:G01 v1 -> v2)\", \"syn:S3: revise (ext:G01 v1 -> v2)\"], \"node\": \"ext:G01\", \"reach\": {\"rob\": [\"rob:G01\"], \"synthesis\": [\"syn:S1\", \"syn:S3\"]}, \"summary\": {\"rob:recompute\": 1, \"synthesis:revise\": 2}}",
+  "message": "{\"cost\": {\"range_usd\": [0.0, 0.0], \"rows\": [{\"calls\": 1, \"effort\": \"default\", \"in_per_call\": 2766, \"model\": \"mock\", \"out_per_call\": 2000, \"source\": \"this review's papers\", \"stage\": \"rob\", \"usd\": 0.0}, {\"calls\": 2, \"effort\": \"default\", \"in_per_call\": 12000, \"model\": \"mock\", \"out_per_call\": 4000, \"source\": \"defaults\", \"stage\": \"feedback\", \"usd\": 0.0}, {\"calls\": 2, \"effort\": \"default\", \"in_per_call\": 6612, \"model\": \"mock\", \"out_per_call\": 1500, \"source\": \"this review's papers\", \"stage\": \"synthesis_verify\", \"usd\": 0.0}], \"total_usd\": 0.0}, \"items\": [{\"action\": \"recompute\", \"deps\": [\"ext:G01\"], \"node\": \"rob:G01\", \"pinned\": false, \"rid\": \"G01\", \"type\": \"rob\", \"why\": [\"ext:G01 v1 -> v2\"]}, {\"action\": \"revise\", \"deps\": [\"ext:G01\"], \"node\": \"syn:S1\", \"pinned\": false, \"rid\": null, \"sources\": [\"ext:G01\"], \"type\": \"synthesis\", \"why\": [\"ext:G01 v1 -> v2\"]}, {\"action\": \"revise\", \"deps\": [\"ext:G01\"], \"node\": \"syn:S3\", \"pinned\": false, \"rid\": null, \"sources\": [\"ext:G01\"], \"type\": \"synthesis\", \"why\": [\"ext:G01 v1 -> v2\"]}], \"lines\": [\"rob:G01: recompute (ext:G01 v1 -> v2)\", \"syn:S1: revise (ext:G01 v1 -> v2)\", \"syn:S3: revise (ext:G01 v1 -> v2)\"], \"node\": \"ext:G01\", \"reach\": {\"rob\": [\"rob:G01\"], \"synthesis\": [\"syn:S1\", \"syn:S3\"]}, \"summary\": {\"rob:recompute\": 1, \"synthesis:revise\": 2}}",
   "ok": true
  },
  "review": {
@@ -90,6 +90,7 @@
    "identified": 7,
    "included": 2,
    "included_by_rule": 0,
+   "no_article_record": 0,
    "reports_not_retrieved": 1,
    "reports_sought": 4,
    "reports_unreadable": 0,

@@ -9,7 +9,7 @@ import pytest
 import requests
 import yaml
 
-from sragent.config import load_config
+from sragent.config import load_config, unlimited_budget
 from sragent.llm import LLMHub
 from sragent import local
 
@@ -31,7 +31,7 @@ def reply(model, value='ok'):
 def rig(tmp_path, monkeypatch):
     path = tmp_path / 'endpoints.yaml'
     local.write_endpoints(path, [{'url': 'http://a:8000/v1'}])
-    cfg = load_config(None, {'cache_dir': str(tmp_path / 'cache'),
+    cfg = load_config(None, {'cache_dir': str(tmp_path / 'cache'), 'budget': unlimited_budget(5.0),
         'llm_defaults': {'api_env': None, 'max_retries': 1}, 'models': {'default': {'writer': {'provider': 'local', 'model': 'auto'}}},
         'local': {'endpoints_file': str(path), 'poll_interval': .01, 'retry_interval': .03,
                   'probe_timeout': .1, 'wait_timeout': 2}})

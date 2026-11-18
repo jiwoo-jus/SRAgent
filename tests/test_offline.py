@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mock_llm import mock_fn  # noqa: E402
 
-from sragent.config import load_config, model_for  # noqa: E402
+from sragent.config import load_config, model_for, unlimited_budget  # noqa: E402
 from sragent.context import Ctx  # noqa: E402
 from sragent.llm import parse_json  # noqa: E402
 from sragent.store import ReviewStore  # noqa: E402
@@ -65,7 +66,7 @@ def make_ctx(tmp_path, fulltexts=("1001", "1002", "1003"), extra_cfg: dict | Non
             (fdir / f"{r['rid']}.txt").write_text(f"## Title\n{r['title']}\n## Methods\n" + (r["abstract"] + " ") * 25)
     from sragent.config import deep_merge
     cfg = load_config(ROOT / "configs/benchmark/emicizumab_pk/topic.yaml", deep_merge({
-        "run_dir": str(tmp_path / "run"), "cache_dir": str(tmp_path / "cache"), "budget_usd": 1.0,
+        "run_dir": str(tmp_path / "run"), "cache_dir": str(tmp_path / "cache"), "budget": unlimited_budget(1.0),
         "llm_defaults": {"concurrency": 1}, "models": {"default": {"writer": {"provider": "mock", "model": "mock"}}},
         "pipeline": {"fulltext": False, "validate_terms": False, "citation_chasing": False},
         "topic": {"records": {"source": "file", "file": str(recf)}}}, extra_cfg or {}))
@@ -331,10 +332,11 @@ def test_ui_app_state_and_estimate(tmp_path):
     assert job["local"]["endpoints_file"] == str((tmp_path / "local_endpoints.yaml").resolve())
     assert job["job_model"]["provider"] == "local"     # a model picked for one re-run: this job's writers only
     with app.lock:                                     # the worker cannot take these jobs while the lock is held
-        app.submit({"action": "run", "until": "report", "agent": {"provider": "local", "model": "auto"}, "extra_budget": 3})
+        app.submit({"action": "run", "until": "report", "agent": {"provider": "local", "model": "auto"}})
         later = app.submit({"action": "rerun", "rid": "1001", "step": "extract"})   # no model picked for this job
         app.queue.clear()
-    assert "agent" not in later and later["extra_budget"] == 3   # the last Run-page model does not carry over
+    assert "agent" not in later                        # the last Run-page model does not carry over
+    assert "budget" not in yaml.safe_load(app._write_job_config(later).read_text())   # no cap of its own: the run file's
     assert "job_model" not in yaml.safe_load(app._write_job_config(later).read_text())
     job = yaml.safe_load(app._write_job_config({"action": "run", "agent": {"provider": "local", "model": "auto"}}).read_text())
     assert "job_model" not in job                      # pipeline jobs follow models.<stage>.<role>
@@ -525,7 +527,8 @@ def test_config_lock(tmp_path):
     pipeline.run(ctx)
     assert ctx.store.meta["config_lock"]["values"]["pipeline.human_mode"] == "human_in_the_loop"
     cfg = copy.deepcopy(ctx.cfg)
-    cfg["budget_usd"], cfg["contact_email"] = 3.0, "me@example.org"      # free to change at any time
+    cfg["budget"]["total_usd"], cfg["contact_email"] = 3.0, "me@example.org"      # free to change at any time
+    cfg["budget"]["stages"]["screen"] = 0.5
     Ctx.create(cfg, mock_fn=mock_fn)
     cfg["topic"]["extraction_fields"] = cfg["topic"]["extraction_fields"] + [{"name": "new_field", "description": "x"}]
     cfg["pipeline"]["human_mode"], cfg["pipeline"]["fulltext_unclear"] = "agent_only", "include"
@@ -737,7 +740,7 @@ class FakeBatches:
 def _batch_ctx(tmp_path, monkeypatch, budget=None):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only")
     cfg = {"pipeline": {"batch_stages": ["screen"]}, "models": {"screen": {"writer": "claude-haiku-5-5"}}}
-    return make_ctx(tmp_path, extra_cfg={**cfg, **({"budget_usd": budget} if budget is not None else {})})
+    return make_ctx(tmp_path, extra_cfg={**cfg, **({"budget": {"total_usd": budget}} if budget is not None else {})})
 
 
 def test_batched_stage_answers_at_half_price_and_falls_back_to_live_calls(tmp_path, monkeypatch):
@@ -1998,6 +2001,7 @@ run_dir: {tmp_path / 'run'}
 cache_dir: {tmp_path / 'cache'}
 llm_defaults: {{concurrency: 1}}
 models: {{default: {{writer: {{provider: mock, model: mock}}}}}}
+budget: {{total_usd: 1, stages: {{{", ".join(f"{s}: unlimited" for s in __import__("sragent.config").config.MODEL_STAGES)}}}}}
 pipeline: {{fulltext: false, validate_terms: false, citation_chasing: false}}
 topic: {{records: {{source: file, file: {recf}}}}}
 """)
@@ -2372,3 +2376,870 @@ def test_an_update_stopped_partway_keeps_what_it_finished_and_continues(tmp_path
     assert decisions(again) == decisions(whole)                  # the same result as an update that was not stopped
     p = json.loads((again.run_dir / "progress.json").read_text())
     assert p["done"] == p["total"]
+
+
+# ---------------------------------------------------------------- budget: a total and a limit per stage (06 chunk B)
+
+def test_the_budget_section_lists_every_stage_that_calls_a_model():
+    import pytest
+    from sragent.config import MODEL_STAGES, budget_limits, load_config, unlimited_budget
+    ok = unlimited_budget(30)
+    ok["stages"]["screen"] = 5
+    b = budget_limits({"budget": ok})
+    assert b["total_usd"] == 30.0 and b["stages"]["screen"] == 5.0 and b["stages"]["extract"] is None
+    assert set(b["stages"]) == set(MODEL_STAGES)
+    for bad, says in ((None, "budget is required"),
+                      ({"total_usd": 30, "stages": {s: "unlimited" for s in MODEL_STAGES if s != "rob"}}, "missing rob"),
+                      ({"total_usd": 30, "stages": {**ok["stages"], "retrieve": 1}}, "unknown retrieve"),
+                      ({"total_usd": 30, "stages": {**ok["stages"], "screen": "*"}}, "budget.stages.screen"),
+                      ({"total_usd": "unlimited", "stages": ok["stages"]}, "budget.total_usd")):
+        with pytest.raises(ValueError, match=says):
+            budget_limits({"budget": bad})
+    with pytest.raises(ValueError, match="budget_usd was replaced"):
+        load_config(None, {"budget_usd": 5})
+
+
+def test_a_stage_limit_stops_that_stage_only_and_says_which_limit(tmp_path):
+    import pytest
+    from sragent.llm import BudgetExceeded, CostTracker
+    log = tmp_path / "usage.jsonl"
+    log.write_text(json.dumps({"stage": "screen", "usd": 1.5}) + "\n" + json.dumps({"stage": "extract", "usd": 0.5}) + "\n")
+    t = CostTracker({"total_usd": 10.0, "stages": {"screen": 1.5, "extract": None}}, log)
+    assert t.spent == 2.0 and t.by_stage == {"screen": 1.5, "extract": 0.5}       # spending so far, per stage
+    with pytest.raises(BudgetExceeded) as e:
+        t.check("screen")
+    assert e.value.stage == "screen" and e.value.limit == 1.5
+    stop = json.loads((tmp_path / "budget_stop.json").read_text())
+    assert stop["stage"] == "screen" and stop["limit"] == 1.5
+    t.check("extract")                                   # another stage still has room
+    assert t.room("extract") == 8.0 and t.room("screen") == 0.0
+    t.add("extract", "writer", "m", "extract", 0, 0, 8.0, 0.0, False)
+    with pytest.raises(BudgetExceeded) as e:
+        t.check("extract")
+    assert e.value.stage is None and "total budget" in str(e.value)               # the total is the ceiling
+
+
+def test_a_review_stopped_by_a_stage_limit_continues_when_it_is_raised(tmp_path):
+    import pytest
+    from sragent import pipeline
+    from sragent.config import unlimited_budget
+    from sragent.llm import BudgetExceeded
+    stopped = unlimited_budget(1.0)
+    stopped["stages"]["screen"] = 0                      # no room for title/abstract screening
+    ctx = make_ctx(tmp_path, extra_cfg={"budget": stopped})
+    with pytest.raises(BudgetExceeded) as e:
+        pipeline.run(ctx)
+    assert e.value.stage == "screen" and ctx.store.get("protocol") and not ctx.store.by_type("screen")
+    again = make_ctx(tmp_path)                           # the limit raised: the same review, from where it stopped
+    pipeline.run(again)
+    assert again.store.get("report") and len(again.store.by_type("screen")) == 4
+
+
+def test_the_interface_shows_saves_and_estimates_the_budget(tmp_path):
+    import yaml
+    from sragent import pipeline
+    from sragent.ui.configs import Library
+    from sragent.ui.server import App
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx, until="screen")
+    run = tmp_path / "configs" / "review" / "t" / "run.yaml"
+    run.parent.mkdir(parents=True)
+    (tmp_path / "configs" / "models.yaml").write_text((ROOT / "configs/models.yaml").read_text())
+    cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_") and k != "topic"}
+    cfg.update({"models_file": "../../models.yaml", "topic": ctx.cfg["topic"]})
+    run.write_text(yaml.safe_dump(cfg))
+    app, lib = App(str(run)), Library(tmp_path / "configs")
+    b = app.budget_view()
+    assert b["total_usd"] == 1.0 and {x["key"] for x in b["stages"]} == set(cfg["budget"]["stages"])
+    r = app.save_budget({"total_usd": "12", "stages": {**{k: "" for k in cfg["budget"]["stages"]}, "extract": "3"}}, lib)
+    assert r["ok"], r
+    written = yaml.safe_load(run.read_text())["budget"]
+    assert written["total_usd"] == 12 and written["stages"]["extract"] == 3 and written["stages"]["rob"] == "unlimited"
+    assert "  stages:\n    protocol: unlimited" in run.read_text()                         # one stage per line, editable
+    assert not app.save_budget({"total_usd": "12", "stages": {"screen": "lots"}}, lib)["ok"]
+    e = app.run_estimate("extract.run", {})
+    assert e["known"] and e["calls"] > 0 and {x["key"] for x in e["stages"]} >= {"extract"} and e["fits_total"] is not None
+    assert app.run_estimate("retrieve.run", {})["calls"] == 0           # "no model calls" when nothing is left to do
+    assert app.run_estimate("rob.verify", {})["known"] is False          # other jobs: the room left only
+    with app.lock:                                                      # Resume: the same job queued again
+        app.history.append({"id": "j1", "action": "op", "op": "extract.run", "args": {}, "label": "Extract", "status": "budget",
+                            "budget_stop": {"stage": "extract"}, "returncode": 3})
+        res = app.resume("j1")
+        app.queue.clear()
+    assert res["ok"] and res["job"]["op"] == "extract.run" and res["job"]["id"] != "j1" and "budget_stop" not in res["job"]
+
+
+def test_many_decisions_save_once_and_their_preview_never(tmp_path, monkeypatch):
+    from sragent import ops, pipeline
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    for rid in ("1001", "1002"):
+        set_fulltext_decision(ctx.store, rid, decision="awaiting")
+    saves = []
+    real = Ctx.save
+    monkeypatch.setattr(Ctx, "save", lambda self: (self.owns_folder() and saves.append(self.run_dir), real(self)))   # writes only
+    items = [{"rid": "1001", "decision": "include"}, {"rid": "1002", "decision": "exclude", "criterion": "I3"}]
+    ops.preview(ctx, "eligibility.decide_many", {"items": items})
+    assert saves == []                                    # a preview works on a copy that is never saved
+    assert ops.run(ctx, "eligibility.decide_many", {"items": items})["ok"]
+    assert saves == [ctx.run_dir]                          # one save for the whole batch, not one per study
+    assert SC(ctx.store, "1002")["decision"] == "exclude"
+
+
+def test_a_disagreement_names_what_each_agent_said(tmp_path):
+    from sragent import todos
+    ctx = make_ctx(tmp_path)
+    from sragent import pipeline
+    pipeline.run(ctx)
+    # the screener included 1001; the verifier's second reading excludes it on I3: undecided, for a person
+    set_fulltext_decision(ctx.store, "1001", decision="awaiting", because=["I3"],
+                          screen_verify={"decision": "exclude", "agree": False, "outcome": "pending_disagreement"})
+    t = next(x for x in todos.build(ctx) if x["id"] == "elig:1001")
+    assert "the screener says include, the verifier says exclude" in t["why"]
+    assert t["suggest"]["option"] == "exclude" and t["suggest"]["criterion"] == "I3" and "verifier" in t["suggest"]["why"]
+
+
+def test_the_full_text_verify_button_follows_the_verify_setting(tmp_path):
+    """With verify_screening: full_text the button reads every full-text decision not yet read twice, with its count;
+    otherwise only the undecided ones. A person's decision is never read again."""
+    from sragent.stages.screening import verify_todo
+    from sragent.ui.stagepage import _eligibility_verify
+    ctx = make_ctx(tmp_path)
+    st = ctx.store
+    for rid, dec, extra in [("1", "include", {}), ("2", "exclude", {}), ("3", "awaiting", {}),
+                            ("4", "exclude", {"screen_verify": {"outcome": "agreed"}}),
+                            ("5", "include", {"human_decision": {"decision": "include"}})]:
+        st.write(f"rec:{rid}", "record", {"title": rid}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": dec, **extra}, depends_on=[f"screen:{rid}"])
+    assert verify_todo(st, "full_text") == ["1", "2", "3"]
+    assert verify_todo(st, "pending") == ["3"]
+    ctx.cfg["pipeline"]["verify_screening"] = "full_text"
+    (op, label), args, n = _eligibility_verify(ctx)
+    assert (op, label, args, n) == ("eligibility.verify", "Verify unread (3)", {"mode": "full_text"}, 3)
+    ctx.cfg["pipeline"]["verify_screening"] = "pending"
+    assert _eligibility_verify(ctx)[0][1] == "Verify undecided (1)"
+
+
+def test_a_full_text_found_after_it_was_declared_not_obtainable_is_screened(tmp_path):
+    """A study marked not obtainable whose file is added later is read and screened on it at the next run, and the
+    not-obtainable mark is lifted (it no longer applies)."""
+    from sragent import ops, pipeline, state
+    from sragent.stages import fulltext
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    st = ctx.store
+    n = st.get("screen:1004")
+    st.upsert(n["id"], "screen", {**n["data"], "decision": "forward"}, depends_on=n["depends_on"])
+    st.upsert("ft:1004", "fulltext", {"kind": "abstract", "text": ""}, depends_on=["rec:1004"])
+    ops.run(ctx, "retrieve.declare_unobtainable", {"rids": ["1004"]})
+    assert "1004" in state.unavailable(st)
+    from sragent.ui.stagepage import stage_page
+    row = lambda k: next(r for r in stage_page(ctx, k)["items"] if r["rid"] == "1004")
+    assert row("retrieve")["decision"] == "no full text · not obtainable"      # the reason stays beside the mark
+    assert row("eligibility")["decision"] == "not screened: no full text · not obtainable"
+    (fulltext.fulltext_dir(ctx) / "1004.txt").write_text("## Methods\n" + "Emicizumab population PK model in 60 children. " * 60)
+    ops.run(ctx, "eligibility.run", {})
+    assert st.get("ft:1004")["data"]["origin"] == "user file 1004.txt"
+    assert SC(st, "1004")["decision"] in ("include", "exclude", "awaiting")
+    assert "1004" not in state.unavailable(st)
+
+
+def test_the_verifier_can_read_only_where_the_screener_contradicts_itself(tmp_path):
+    """verify_screening: conflict reads the undecided full-text decisions and those whose overall answer differs from
+    the decision the criterion answers give; full_text reads every one; an unknown level is refused."""
+    import pytest
+    from sragent.config import load_config
+    from sragent.stages.screening import self_conflict, verify_todo
+    from sragent.ui.stagepage import _eligibility_verify
+    assert self_conflict("include", "exclude") and self_conflict("include", "uncertain") and self_conflict("exclude", "uncertain")
+    assert not self_conflict("include", "include") and not self_conflict("awaiting", "uncertain") and not self_conflict("exclude", None)
+    ctx = make_ctx(tmp_path)
+    st = ctx.store
+    for rid, dec, lean in [("1", "include", "include"), ("2", "include", "exclude"), ("3", "exclude", "uncertain"),
+                           ("4", "awaiting", "uncertain"), ("5", "exclude", "exclude")]:
+        st.write(f"rec:{rid}", "record", {"title": rid}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": dec, "llm_decision": lean}, depends_on=[f"screen:{rid}"])
+    assert verify_todo(st, "pending") == ["4"]
+    assert verify_todo(st, "conflict") == ["2", "3", "4"]
+    assert verify_todo(st, "full_text") == ["1", "2", "3", "4", "5"]
+    ctx.cfg["pipeline"]["verify_screening"] = "conflict"
+    assert _eligibility_verify(ctx)[0][1] == "Verify undecided and conflicting (3)"
+    p = tmp_path / "bad.yaml"
+    p.write_text("pipeline:\n  verify_screening: sometimes\n")
+    with pytest.raises(ValueError, match="verify_screening"):
+        load_config(str(p))
+
+
+ROWS_FIELD = {"name": "outcome_data", "kind": "rows", "description": "One row per result.",
+              "columns": {"outcome_family": ["trough", "half-life"], "n": "number", "mean": "number",
+                          "unit": {"type": "text", "description": "as written"}, "source": ["text", "table", "figure"]}}
+
+
+def test_a_rows_item_extracts_one_checked_row_per_result_and_exports_them(tmp_path, monkeypatch):
+    """kind: rows. The prompt lists the columns; each row keeps its own cited sentences; numbers become numbers and
+    one found nowhere in the paper is marked; a value off a choice list is kept and marked; the item's value is a
+    summary written by the code; the synthesis reads the rows; meta_rows.csv has one line per row; a person's edit of
+    a number puts what reads the rows out of date; the data-items card writes the columns back unchanged."""
+    import csv
+    import yaml
+    import pytest
+    import mock_llm
+    from sragent import graph, ops, pipeline, rows, schemas
+    from sragent.stages import extraction
+    from sragent.ui.configs import Library
+    seen = []
+
+    def with_rows(messages, mode):
+        out = mock_llm.mock_fn(messages, mode)
+        u = messages[-1]["content"] if isinstance(messages[-1]["content"], str) else ""
+        if "Extract the following items" in u and "outcome_data [rows]" in u:
+            seen.append(u)
+            d = json.loads(out)
+            d["fields"]["outcome_data"] = {"note": "", "rows": [
+                {"outcome_family": "trough", "n": "12", "mean": 52, "unit": "ug/mL", "source": "text", "evidence": ["s3"], "note": ""},
+                {"outcome_family": "Half-life", "n": 12, "mean": 27, "unit": "days", "source": None, "evidence": [], "note": ""},
+                {"outcome_family": "clearance", "n": None, "mean": 99.5, "unit": None, "source": "figure", "evidence": ["s1"], "note": "Fig 2"}]}
+            out = json.dumps(d)
+        return out
+
+    monkeypatch.setattr(sys.modules[__name__], "mock_fn", with_rows)
+    base = yaml.safe_load((ROOT / "configs/benchmark/emicizumab_pk/topic.yaml").read_text())["topic"]["extraction_fields"]
+    (tmp_path / "bad").mkdir()
+    with pytest.raises(ValueError, match="needs columns"):
+        make_ctx(tmp_path / "bad", extra_cfg={"topic": {"extraction_fields": base + [{**ROWS_FIELD, "columns": {}}]}})
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": base + [ROWS_FIELD]}})
+    pipeline.run(ctx)
+    st = ctx.store
+    assert seen and "outcome_family: one of trough | half-life" in seen[0] and "unit: text (as written)" in seen[0]
+    assert "n: a number as written" in seen[0]
+    rid = next(r for r in st.included_ids() if st.get(f"ext:{r}"))
+    item = st.get(f"ext:{rid}")["data"]["fields"]["outcome_data"]
+    r1, r2, r3 = item["rows"]
+    assert (r1["n"], r1["mean"], r2["outcome_family"], r3["outcome_family"]) == (12, 52, "half-life", "clearance")
+    assert r3["off_list"] == ["outcome_family"] and r3["uncovered"] == ["99.5"] and "uncovered" not in r1
+    assert r1["evidence"] and r1["quote"]
+    assert r2["evidence"] and r2["auto_evidence"] == r2["evidence"] and "27" in r2["quote"]   # cited nothing: found by the code
+    assert "Never drop, shorten or merge a row because no sentence" in seen[0]
+    assert item["value"] == "3 rows: trough, half-life, clearance"
+    assert "row 3: outcome_family=clearance; mean=99.5" in extraction.table_text(ctx, [rid])
+    path = ops.run(ctx, "extract.export_rows", {})["path"]
+    lines = list(csv.DictReader(open(path)))
+    assert len(lines) == 3 * sum(1 for r in st.included_ids() if st.get(f"ext:{r}")) and lines[0]["mean"] == "52"
+    # a person corrects a number: the rows are what was edited, and what reads them goes out of date
+    rob_v = st.get(f"rob:{rid}")
+    edited = "\n".join(json.dumps(x) for x in [{"outcome_family": "trough", "n": 12, "mean": 53, "unit": "ug/mL"},
+                                               {"outcome_family": "half-life", "n": 12, "mean": 27, "unit": "days"}])
+    ops.run(ctx, "extract.edit_values", {"rid": rid, "fields": {"outcome_data": edited}})
+    item = st.get(f"ext:{rid}")["data"]["fields"]["outcome_data"]
+    assert [r["mean"] for r in item["rows"]] == [53, 27] and item["edited"]["before_rows"][0]["mean"] == 52
+    assert item["value"] == "2 rows: trough, half-life"
+    assert rob_v and any(x["dep"] == f"ext:{rid}" for x in graph.stale_reasons(st, f"rob:{rid}"))
+    # the data-items card keeps the columns when it writes the list back
+    text = "topic:\n  extraction_fields:\n    - {name: a, description: x}\n  rob_domains: []\n"
+    out = yaml.safe_load(Library.set_topic_list(text, "extraction_fields", [{"name": "a", "description": "x"}, ROWS_FIELD]))
+    assert out["topic"]["extraction_fields"][1] == ROWS_FIELD and out["topic"]["rob_domains"] == []
+    # no union-typed parameter (the API allows 16 per request): every column is a string, "" when not reported
+    sch = json.dumps(schemas.extract(base + [ROWS_FIELD]))
+    assert sch.count("anyOf") == 1 and '"null"' in sch       # only eligibility_doubt, as before
+    assert rows.schema(ROWS_FIELD)["properties"]["rows"]["items"]["properties"]["source"]["enum"] == ["text", "table", "figure", ""]
+    assert rows.clean(ROWS_FIELD, [{"outcome_family": "", "n": "1,024", "mean": "", "unit": "", "source": ""}])[0]["n"] == 1024
+    kept = rows.clean(ROWS_FIELD, [{"outcome_family": "trough", "n": "75-150", "mean": "", "unit": "", "source": ""}])[0]
+    assert kept["n"] == "75-150" and kept["off_list"] == ["n"]        # not one number: kept as written, marked
+
+
+def test_a_reply_shape_the_api_cannot_compile_is_asked_again_in_plain_json(tmp_path):
+    """A 400 "Schema is too complex for compilation" (a wide rows item, say) does not fail the call: it is asked again
+    without the structured-output format, once."""
+    from sragent.config import model_for
+    from sragent.llm import LLM, CostTracker, DiskCache
+    cfg = make_ctx(tmp_path).cfg
+    llm = LLM(cfg, model_for(cfg, None), CostTracker(unlimited_budget(1.0)), DiskCache(tmp_path / "c.sqlite"))
+    seen = []
+
+    def call(msgs, json_out, max_tokens, temperature, schema=None):
+        seen.append(schema)
+        if schema is not None:
+            raise RuntimeError("Error code: 400 - Schema is too complex for compilation.")
+        return '{"ok": true}', 10, 5
+    llm._call = call
+    assert llm.chat([{"role": "user", "content": "x"}], tag="t", schema={"type": "object"}) == {"ok": True}
+    assert seen == [{"type": "object"}, None]
+
+
+def test_figure_only_rows_get_estimates_marked_as_such(tmp_path, monkeypatch):
+    """A row whose result is only in a figure gets its numbers from the page image: only empty columns are filled,
+    each is listed in row["estimated"], the CSV says so, a reported number is never replaced, and a study without a
+    PDF is skipped with the reason."""
+    import csv
+    import yaml
+    from sragent import figures, ops, pipeline
+    base = yaml.safe_load((ROOT / "configs/benchmark/emicizumab_pk/topic.yaml").read_text())["topic"]["extraction_fields"]
+    field = {**ROWS_FIELD, "columns": {"experiment": "text", **ROWS_FIELD["columns"], "sd": "number"}}
+    import mock_llm
+    asked, real = [], mock_llm.mock_fn
+
+    def mock(messages, mode):
+        c = messages[-1]["content"]
+        if isinstance(c, list):                       # the figure call: text + page images
+            asked.append(c)
+            return json.dumps({"rows": [{"row": 1, "readable": True, "how": "panel a, bar 2",
+                                         "values": {"mean": "3.1", "sd": "0.4", "unit": "fold", "n": "99", "outcome_family": "nonsense"}},
+                                        {"row": 2, "readable": False, "values": {}}]})
+        if "Extract the following items" not in c:
+            return real(messages, mode)
+        out = json.loads(real(messages, mode))
+        out["fields"]["outcome_data"] = {"note": "", "rows": [
+            {"experiment": "Fig 3a", "outcome_family": "trough", "n": "12", "mean": "", "unit": "", "source": "figure", "sd": "", "evidence": []},
+            {"experiment": "Figure 3b", "outcome_family": "half-life", "n": "", "mean": "", "unit": "", "source": "figure", "sd": "", "evidence": []},
+            {"experiment": "Table 1", "outcome_family": "trough", "n": "12", "mean": "52", "unit": "ug/mL", "source": "table", "sd": "", "evidence": []}]}
+        return json.dumps(out)
+
+    monkeypatch.setattr(sys.modules[__name__], "mock_fn", mock)
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": base + [field]}})
+    pipeline.run(ctx)
+    st = ctx.store
+    rid = next(r for r in st.included_ids() if st.get(f"ext:{r}"))
+    assert figures.pages_of_figure(["intro, see Fig. 3", "F I G U R E 3 Effects of x", "Fig. 4. Other"], "3") == [2, 1]
+    assert ops.run(ctx, "extract.read_figures", {"rids": [rid]})["skipped"][rid].startswith("no PDF")
+    monkeypatch.setattr(figures, "pdf_of", lambda c, r: Path("x.pdf"))
+    monkeypatch.setattr(figures, "page_texts", lambda p: ["text", "Figure 3. Trough and half-life"])
+    monkeypatch.setattr(figures, "_images", lambda p, pages: ["aGk="] * len(pages))
+    monkeypatch.setattr(figures.shutil, "which", lambda x: "/usr/bin/pdftoppm")
+    res = ops.run(ctx, "extract.read_figures", {"rids": [rid]})
+    assert (res["rows"], res["filled"], res["figures"]) == (2, 1, 1) and "row 3" not in asked[-1][0]["text"]
+    r1, r2, r3 = st.get(f"ext:{rid}")["data"]["fields"]["outcome_data"]["rows"]
+    assert (r1["mean"], r1["sd"], r1["unit"], r1["n"], r1["outcome_family"]) == (3.1, 0.4, "fold", 12, "trough")   # n was reported: kept
+    assert r1["estimated"] == ["mean", "sd", "unit"] and r1["figure_read"]["figure"] == "3" and "uncovered" not in r1
+    assert "estimated" not in r2 and "estimated" not in r3 and r3["mean"] == 52
+    line = next(x for x in csv.DictReader(open(ops.run(ctx, "extract.export_rows", {})["path"])) if x["study_id"] == rid)
+    assert line["estimated_from_figure"] == "mean sd unit" and line["figure"] == "3"
+
+
+def test_pooling_is_computed_by_code_from_the_rows(tmp_path, monkeypatch):
+    """sragent/meta.py: effect sizes from a row's numbers (ratio of means with SD from SEM or a CI, risk ratio from
+    events), one effect per study, random-effects pooling with the Hartung-Knapp interval, reasons for rows left
+    out, and the plan checked against the rows item's columns."""
+    import math
+    import pytest
+    from sragent import meta
+    assert abs(meta.t_quantile(0.975, 4) - 2.7764) < 1e-3 and abs(meta.t_quantile(0.975, 1) - 12.706) < 1e-2
+    col = {"treated": {"n": "nt", "value": "vt", "spread": "st", "upper": "ut"}, "control": {"n": "nc", "value": "vc", "spread": "sc", "upper": "uc"},
+           "value_type": "kind", "spread_type": "sk", "normalised": {"column": "basis", "value": "normalised"}}
+    row = {"nt": 4, "nc": 4, "vt": 2.0, "vc": 1.0, "st": 0.2, "sc": 0.1, "kind": "mean", "sk": "SD"}
+    e, _ = meta.effect_of(row, col)
+    assert e["measure"] == "ratio of means" and abs(e["yi"] - math.log(2)) < 1e-12 and abs(e["vi"] - 0.005) < 1e-12
+    e2, _ = meta.effect_of({**row, "st": 0.1, "sc": 0.05, "sk": "SEM"}, col)                 # SEM x sqrt(n) = the same SD
+    assert abs(e2["vi"] - 0.005) < 1e-12
+    e3, _ = meta.effect_of({**row, "st": 1.804, "ut": 2.196, "sc": 0.902, "uc": 1.098, "sk": "95% CI"}, col)
+    assert abs(e3["vi"] - 0.005) < 1e-4
+    e4, _ = meta.effect_of({**row, "sc": None, "basis": "normalised"}, col)                  # control set to 1: the treated CV
+    assert abs(e4["vi"] - 0.005) < 1e-12 and e4["notes"]
+    rr, _ = meta.effect_of({"nt": 100, "nc": 100, "vt": 10, "vc": 20, "kind": "number of events"}, col)
+    assert rr["measure"] == "risk ratio" and abs(rr["yi"] - math.log(0.5)) < 1e-12 and abs(rr["vi"] - 0.13) < 1e-12
+    assert abs(meta.effect_of({"nt": 100, "nc": 100, "vt": 10, "vc": 20, "kind": "percent or proportion"}, col)[0]["yi"] - math.log(0.5)) < 1e-12
+    pct = {"nt": 3, "nc": 3, "vt": 10, "vc": 20, "st": 1, "sc": 2, "sk": "SD", "kind": "percent or proportion", "unit": "experiments"}
+    assert meta.effect_of(pct, {**col, "binary_only_if": {"column": "unit", "values": ["participants"]}})[0]["measure"] == "ratio of means"
+    assert meta.effect_of({**pct, "unit": "participants"}, {**col, "binary_only_if": {"column": "unit", "values": ["participants"]}})[0]["measure"] == "risk ratio"
+    assert meta.effect_of({**row, "kind": "median"}, col)[1] == "a median without its quartiles or range"
+    robn = {"status": "active", "data": {"overall": "high", "domains": [{"domain": "dose", "judgment": "high"}, {"domain": "bias", "judgment": "low"}]}}
+    assert meta._high_risk(robn, "high") and not meta._high_risk(robn, {"judgment": "high", "domains": ["bias"]}) and meta._high_risk(robn, {"judgment": "high"})
+    med, _ = meta.effect_of({"nt": 30, "nc": 30, "vt": 20, "st": 15, "ut": 28.5, "vc": 10, "sc": 7, "uc": 13, "kind": "median", "sk": "IQR"}, col)
+    mt, mc = (15 + 20 + 28.5) / 3, 10.0
+    assert abs(med["yi"] - math.log(mt / mc)) < 1e-12 and abs(med["vi"] - (100 / (30 * mt ** 2) + (6 / 1.35) ** 2 / (30 * mc ** 2))) < 1e-12 and med["notes"]
+    assert meta._from_median(10, 2, 18, 50, "range") == (10.0, 4.0) and meta._from_median(10, 12, 18, 50, "range") is None
+    assert meta.effect_of({**row, "st": None}, col)[1].startswith("no usable spread")
+    assert meta.effect_of({**row, "nt": None}, col)[1] == "group size missing"
+    same = meta.pool([(math.log(2), 0.01)] * 4)
+    assert same["tau2"] == 0 and same["i2"] == 0 and abs(same["ratio"] - 2) < 1e-9
+    assert abs(same["ci"][1] - same["ci"][0] - 2 * meta.t_quantile(0.975, 3) * 0.05) < 1e-6        # not narrower than classical
+    het = meta.pool([(0.0, 0.01), (1.0, 0.01), (2.0, 0.01)])
+    assert abs(het["log"] - 1.0) < 1e-9 and abs(het["tau2"] - 0.99) < 1e-9 and het["i2"] > 98
+    assert "prediction" not in het and het["prediction_note"]            # three studies cannot support one
+    assert meta.pool([(0.0, 0.01), (1.0, 0.01), (2.0, 0.01)], prediction_min=3)["prediction"][0] < -4
+    assert meta.pool([(0.0, 0.01), (1.0, 0.01), (2.0, 0.01), (0.5, 0.01), (1.5, 0.01)])["prediction"][0] < -1
+    # a whole review: the plan names real columns; one effect per study; a group below min_studies is listed, not pooled
+    field = {"name": "outcome_data", "kind": "rows", "description": "x",
+             "columns": {"family": ["a", "b"], "cmp": ["t vs c", "other"], "nt": "number", "nc": "number", "vt": "number", "vc": "number",
+                         "st": "number", "ut": "number", "sc": "number", "uc": "number", "kind": ["mean", "median"], "sk": ["SD", "SEM"]}}
+    plan = {"field": "outcome_data", "include": {"cmp": ["t vs c"]}, "group_by": ["family"], "min_studies": 2,
+            "columns": {k: v for k, v in col.items() if k != "normalised"}}
+    with pytest.raises(ValueError, match="not columns of outcome_data: nope"):
+        meta.plan_of({"extraction_fields": [field], "meta_analysis": {**plan, "group_by": ["nope"]}})
+    import mock_llm
+    asked = []
+
+    def mock(messages, mode):
+        u = messages[-1]["content"]
+        if "ONE outcome group" in u:
+            asked.append(u)
+            return json.dumps({"statements": [{"text": "Pooled: doubled.", "cites": ["1001", "9999"], "scope": "a"}]})
+        return mock_llm.mock_fn(messages, mode)
+    monkeypatch.setattr(sys.modules[__name__], "mock_fn", mock)
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": [field], "meta_analysis": plan}})
+    st = ctx.store
+    mk = lambda fam, vt, cmp="t vs c": {"family": fam, "cmp": cmp, "nt": 4, "nc": 4, "vt": vt, "vc": 1.0, "st": 0.2, "sc": 0.1, "kind": "mean", "sk": "SD"}
+    data = {"1001": [mk("a", 2.0), mk("a", 2.0), mk("b", 3.0), mk("a", 9.0, "other")], "1002": [mk("a", 2.0), {**mk("a", 2.0), "kind": "median"}]}
+    for rid, rs in data.items():
+        st.write(f"rec:{rid}", "record", {"title": rid, "authors": "Kim A, Lee B", "year": "2020", "pmid": rid}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": "include"}, depends_on=[f"screen:{rid}"])
+        st.write(f"ext:{rid}", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": rs}}}, depends_on=[f"elig:{rid}"])
+    from sragent import ops
+    r = ops.run(ctx, "synthesis.meta_analysis", {})
+    assert (r["rows"], r["rows_used"], r["pooled_groups"], r["groups"]) == (6, 4, 1, 2)
+    assert r["not_used"] == {"not the comparison analysed": 1, "a median without its quartiles or range": 1}
+    res = json.loads((ctx.run_dir / "meta" / "results.json").read_text())
+    a = res["groups"][0]
+    assert a["group"] == {"family": "a"} and a["k"] == 2 and abs(a["pooled"]["ratio"] - 2) < 1e-9
+    assert a["studies"][0]["rows"] == [1, 2] and abs(a["studies"][0]["vi"] - 0.005) < 1e-12 and a["studies"][0]["label"] == "Kim 2020"
+    assert res["groups"][1]["pooled"] is None
+    # the synthesis of a review with a plan: one call per pooled group with its pooled result; never the whole table
+    from sragent.stages import synthesis
+    st.write("protocol", "protocol", {"criteria": []}, depends_on=[])
+    assert synthesis.synthesize(ctx) == 1 and len(asked) == 1
+    assert "pooled ratio 2.00 (95% CI" in asked[0] and "row 1: family=a" in asked[0] and "family=b" not in asked[0]
+    syn = st.get("syn:S1")["data"]
+    assert syn["cites"] == ["1001"] and syn["pooled"].startswith("a (ratio of means, treated / control): pooled ratio 2.00")
+    ev = synthesis.statement_evidence(ctx, syn["cites"], syn["text"], syn["basis"])        # the check reads what the writer read
+    assert ev.startswith("POOLED RESULT") and "[1001] Kim 2020: ratio 2.00" in ev and "row 1: family=a" in ev and "RISK OF BIAS" in ev
+    # finer groups by rule, and two papers of one trial counted once
+    for rid, rs in data.items():
+        for r in rs:
+            r["name"] = "serum PlGF" if r["family"] == "a" else "x"
+    plan2 = {**plan, "refine": [{"when": {"family": "a"}, "column": "cmp", "set": "family", "rules": [{"label": "tc", "pattern": "^T VS"}], "otherwise": "rest"}],
+             "same_study": [["1002", "1001"]], "exclude": [{"column": "family", "pattern": "^b$", "label": "not wanted"}]}
+    ctx.topic["meta_analysis"] = plan2
+    res2 = meta.analyse(ctx)
+    g2 = {tuple(g["group"].values()): g for g in res2["groups"]}
+    assert set(g2) == {("a: tc",)} and res2["not_used"]["left out by rule: not wanted"] == 1 and [s["rid"] for s in g2[("a: tc",)]["studies"]] == ["1002"]
+    assert res2["not_used"]["same trial as another included paper"] == 2 and not res2["possible_duplicates"]
+    assert res["possible_duplicates"] == [{"studies": ["1001", "1002"], "group": {"family": "a"}, "measure": "ratio of means"}]
+    with pytest.raises(ValueError, match="refine"):
+        meta.plan_of({"extraction_fields": [field], "meta_analysis": {**plan, "refine": [{"column": "cmp", "set": "nt", "rules": []}]}})
+    assert (ctx.run_dir / "meta" / "forest_a_ratio_of_means.svg").read_text().startswith("<svg") and (ctx.run_dir / "meta" / "effects.csv").exists()
+
+
+def test_an_estimate_counts_what_a_verifier_and_a_repair_read(tmp_path):
+    """Input tokens per call are measured on the review's own papers before the defaults are used (a long paper costs
+    its length again for the risk-of-bias verifier), and a synthesis with a meta-analysis plan is counted per pooled
+    group, with its checks and repairs."""
+    from sragent import pipeline
+    from sragent.estimate import DEFAULTS, estimate, sizes
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx, until="extract")
+    for n in ctx.store.by_type("fulltext"):
+        n["data"]["chars"] = 70000
+    m = sizes(ctx)
+    assert m["rob"] == m["extract"] == int(60000 / 2.2) + 1500 and m["rob_verify"] > m["rob"] > DEFAULTS["rob"][0]
+    assert m["screen_full_text"] == int(15000 / 2.2) + 1500 and m["synthesis_repair"] > 1000
+    price = {"input_per_m": 2.0, "output_per_m": 10.0}
+    plain = estimate({"rob_verify": 100}, "m", price, "low")
+    sized = estimate({"rob_verify": 100}, "m", price, "low", measured=m)
+    assert sized["total_usd"] > 2.5 * plain["total_usd"] and sized["rows"][0]["source"] == "this review's papers"
+    hist = {("rob_verify", "m"): {"in": 30000, "out": 900, "n": 5}}
+    assert estimate({"rob_verify": 100}, "m", price, "low", hist, m)["rows"][0]["in_per_call"] == 30000      # its own history first
+
+
+def test_the_stage_pages_offer_figure_reading_and_show_the_pooled_results(tmp_path):
+    """Data extraction: studies not extracted can be selected and extracted together, and the figure-only rows left to
+    read are counted (with the studies that have no PDF). Synthesis: the pooled table, computed without a model."""
+    from sragent import figures
+    from sragent.ui.stagepage import stage_page
+    field = {"name": "outcome_data", "kind": "rows", "description": "x",
+             "columns": {"experiment": "text", "family": ["a"], "nt": "number", "nc": "number", "vt": "number", "vc": "number", "st": "number",
+                         "sc": "number", "kind": ["mean"], "sk": ["SD"], "source": ["text", "figure"]}}
+    plan = {"field": "outcome_data", "group_by": ["family"], "min_studies": 2,
+            "columns": {"treated": {"n": "nt", "value": "vt", "spread": "st"}, "control": {"n": "nc", "value": "vc", "spread": "sc"},
+                        "value_type": "kind", "spread_type": "sk"}}
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": [field], "meta_analysis": plan}})
+    st = ctx.store
+    full = {"experiment": "Table 1", "family": "a", "nt": 4, "nc": 4, "vt": 2.0, "vc": 1.0, "st": 0.2, "sc": 0.1, "kind": "mean", "sk": "SD", "source": "text"}
+    fig = {"experiment": "Fig 2a", "family": "a", "nt": 3, "nc": 3, "kind": "mean", "source": "figure"}
+    st.write("protocol", "protocol", {"criteria": []}, depends_on=[])
+    for rid, rs in {"1001": [full, fig], "1002": [full], "1003": None}.items():
+        st.write(f"rec:{rid}", "record", {"title": rid, "authors": "Kim A", "year": "2020"}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": "include"}, depends_on=[f"screen:{rid}"])
+        if rs is not None:
+            st.write(f"ext:{rid}", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": rs}}}, depends_on=[f"elig:{rid}"])
+    assert figures.pending(ctx) == {"rows": 0, "figures": 0, "studies": 0, "no_pdf": ["1001"]}
+    ex = stage_page(ctx, "extract")
+    acts = {r["rid"]: [(a["op"], a["args"]) for a in r["actions"]] for r in ex["items"]}
+    assert acts["1003"] == [("extract.studies", {"rids": ["1003"]})] and acts["1001"][0][0] == "extract.recompute"
+    assert ex["extras"]["figures"]["no_pdf"] == 1 and ex["extras"]["figures"]["rows"] == 0
+    m = stage_page(ctx, "synthesis")["extras"]["meta"]
+    assert (m["rows"], m["rows_used"]) == (3, 2) and m["groups"][0]["k"] == 2 and abs(m["groups"][0]["ratio"] - 2) < 1e-9
+    assert m["groups"][0]["plot"] == "/meta/forest_a_ratio_of_means.svg" and m["not_used"] == {"no values for both groups": 1}
+
+
+def test_a_large_report_is_written_as_a_main_page_and_appendix_pages(tmp_path):
+    """Thousands of screened records and every study's source text do not fit one page a browser can render: Appendix A
+    and C go to pages, the main page lists them, and a link to a study or record leads to the page that holds it."""
+    from sragent import pipeline
+    from sragent.stages import report
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    html = report.report_html(ctx)
+    assert report.split_report(html) == (html, {})                         # a small report stays one page
+    main, parts = report.split_report(html, limit=1000, part_size=4000)
+    a = sorted(n for n in parts if n.startswith("appendix_a_"))
+    c = sorted(n for n in parts if n.startswith("appendix_c_"))
+    assert len(a) >= 2 and len(c) >= 1 and "<div class='study'>" not in main and "<tr id='screen:" not in main
+    rid = ctx.store.included_ids()[0]
+    home = next(n for n in a if f"id='ext:{rid}'" in parts[n])
+    assert f"href='\x00PART:{home}\x00#ext:{rid}'" in main                 # the results section links to the study's page
+    assert sum(parts[n].count("<div class='study'>") for n in a) == html.count("<div class='study'>")
+    assert sum(parts[n].count("<tr id='screen:") for n in c) == html.count("<tr id='screen:")
+    assert "href='\x00MAIN\x00#ref-1'" in parts[home] and f"href='#src-{rid}-" in parts[home]   # back to the references; its own sentences stay local
+    report.SPLIT_OVER, old = 1000, report.SPLIT_OVER
+    try:
+        report.write_reports(ctx)
+    finally:
+        report.SPLIT_OVER = old
+    out = (ctx.run_dir / "report_evidence.html").read_text()
+    page = (ctx.run_dir / "report_parts" / "appendix_c_01.html").read_text()
+    assert "report_parts/appendix_a_01.html" in out and "\x00" not in out and "\x00" not in page and "../report_evidence.html" in page
+    report.write_reports(ctx)                                             # small again: the pages are removed
+    assert not (ctx.run_dir / "report_parts").exists()
+
+
+def test_the_interface_serves_the_report_for_readers(tmp_path):
+    """The planned report is a page of the interface (Output - For readers), built on demand from report_plan.yaml
+    beside the run file; a review without a plan says so instead of linking a page that does not exist."""
+    import yaml
+    from sragent import pipeline
+    from sragent.ui.server import App
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    run = tmp_path / "configs" / "review" / "t" / "run.yaml"
+    run.parent.mkdir(parents=True)
+    (tmp_path / "configs" / "models.yaml").write_text((ROOT / "configs/models.yaml").read_text())
+    cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_") and k != "topic"}
+    cfg.update({"models_file": "../../models.yaml", "topic": ctx.cfg["topic"]})
+    run.write_text(yaml.safe_dump(cfg))
+    app = App(str(run))
+    assert app.state()["run"]["manuscript"] is False
+    assert "no <code>report_plan.yaml</code>" in app.manuscript_page()
+    (run.parent / "report_plan.yaml").write_text(yaml.safe_dump(
+        {"title": "For readers", "sections": [{"title": "Results", "content": [{"p": "{{n:included}} studies."}]}]}))
+    assert app.state()["run"]["manuscript"] is True
+    page = app.manuscript_page()
+    assert "<h1>For readers</h1>" in page and "studies." in page and (ctx.run_dir / "manuscript.html").exists()
+    (run.parent / "report_plan.yaml").write_text(yaml.safe_dump({"title": "x", "sections": [{"title": "s", "content": [{"p": "[@9999]"}]}]}))
+    assert "9999" in app.manuscript_page()                      # a plan with problems says what they are
+
+
+def test_the_interface_says_when_it_is_running_the_code_it_started_with(tmp_path, monkeypatch):
+    """A long-running interface keeps the modules it imported, so an edited source file changes the pages but not
+    what computes them. It says so, on the home view and on the report for readers itself, instead of serving
+    numbers built by code that is no longer on disk."""
+    import yaml
+    from sragent import pipeline
+    from sragent.ui import server as srv
+    ctx = make_ctx(tmp_path)
+    pipeline.run(ctx)
+    run = tmp_path / "configs" / "review" / "t" / "run.yaml"
+    run.parent.mkdir(parents=True)
+    (tmp_path / "configs" / "models.yaml").write_text((ROOT / "configs/models.yaml").read_text())
+    cfg = {k: v for k, v in ctx.cfg.items() if not k.startswith("_") and k != "topic"}
+    cfg.update({"models_file": "../../models.yaml", "topic": ctx.cfg["topic"]})
+    run.write_text(yaml.safe_dump(cfg))
+    (run.parent / "report_plan.yaml").write_text(yaml.safe_dump(
+        {"title": "For readers", "sections": [{"title": "Results", "content": [{"p": "{{n:included}} studies."}]}]}))
+    app = srv.App(str(run))
+
+    monkeypatch.setattr(srv, "_CODE", (0.0, []))
+    monkeypatch.setattr(srv, "_STARTED", time.time() + 10 ** 6)   # nothing on disk is newer than this process
+    assert srv.code_changed() == [] and app.state()["code_changed"] == []
+    assert "code this interface started with" not in app.manuscript_page()
+
+    monkeypatch.setattr(srv, "_CODE", (0.0, []))
+    monkeypatch.setattr(srv, "_STARTED", 0.0)                     # every source file was edited after the start
+    edited = srv.code_changed()
+    assert "reportplan.py" in edited and app.state()["code_changed"] == edited
+    assert "code this interface started with" in app.manuscript_page()   # on the page, not only in the interface
+
+
+def test_a_planned_report_is_checked_and_rendered_from_its_plan(tmp_path):
+    """sragent/reportplan.py: a plan names sections, figures and tables; citations must be included studies, pooled
+    numbers are tokens filled from the computation, figures are drawn from the rows, and a plan with problems is not
+    rendered."""
+    from sragent import reportplan
+    field = {"name": "outcome_data", "kind": "rows", "description": "x",
+             "columns": {"name": "text", "family": ["a", "b"], "tier": ["cells", "people"], "dose": "number", "unit": "text", "nt": "number",
+                         "nc": "number", "vt": "number", "vc": "number", "st": "number", "sc": "number", "kind": ["mean"], "sk": ["SD"],
+                         "direction": ["increase", "decrease", "no change"]}}
+    mplan = {"field": "outcome_data", "group_by": ["family", "tier"], "min_studies": 2,
+             "columns": {"treated": {"n": "nt", "value": "vt", "spread": "st"}, "control": {"n": "nc", "value": "vc", "spread": "sc"},
+                         "value_type": "kind", "spread_type": "sk", "direction": "direction"}}
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": [field], "meta_analysis": mplan}})
+    st = ctx.store
+    row = lambda name, d, dose, unit: {"name": name, "family": "a", "tier": "cells", "dose": dose, "unit": unit, "nt": 4, "nc": 4, "vt": 2.0,
+                                       "vc": 1.0, "st": 0.2, "sc": 0.1, "kind": "mean", "sk": "SD", "direction": d}
+    st.write("protocol", "protocol", {"criteria": []}, depends_on=[])
+    for rid, rs in {"1001": [row("marker one", "increase", 100, "uM"), row("marker two", "decrease", "10-4", "M")],
+                    "1002": [row("marker one", "increase", 2, "mM")]}.items():
+        st.write(f"rec:{rid}", "record", {"title": f"Title {rid}", "authors": "Kim A, Lee B", "year": "2020"}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": "include"}, depends_on=[f"screen:{rid}"])
+        st.write(f"ext:{rid}", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": rs}}}, depends_on=[f"elig:{rid}"])
+    plan = {"title": "A planned report", "summary": ["Pooled: {{pool:a · cells|ratio of means}}."],
+            "concepts": {"column": "name", "domains": [{"key": "d1", "label": "Domain one"}],
+                         "items": [{"name": "One", "domain": "d1", "pattern": "marker one"}, {"name": "Two", "domain": "d1", "pattern": "marker two"}]},
+            "dose": {"value": "dose", "unit": "unit", "factors": {"uM": 1, "mM": 1000, "M": 1000000}, "band": [10, 100], "band_label": "range"},
+            "sections": [{"title": "Results", "content": [
+                {"p": "Shown in {fig:map} and {tab:t1}; see [@@1001; @1002]. {{n:included}} studies."},
+                {"figure": {"id": "map", "type": "evidence_map", "caption": "Where the evidence is."}},
+                {"figure": {"id": "dirs", "type": "direction_plot", "caption": "Directions."}},
+                {"figure": {"id": "mech", "type": "mechanism_map", "caption": "Map.", "intervention": "Treatment", "inputs": ["stress"],
+                            "outputs": ["function"], "panels": [{"domain": "d1", "items": ["One", "Two"]}]}},
+                {"figure": {"id": "dose", "type": "dose_plot", "caption": "Dose."}},
+                {"figure": {"id": "forest", "type": "forest", "group": "a · cells|ratio of means", "caption": "Forest."}},
+                {"table": {"id": "t1", "type": "pooled", "caption": "Pooled."}},
+                {"table": {"id": "t2", "caption": "Written.", "columns": ["A", "B"], "rows": [["x", "see [@1001]"]]}}]}]}
+    D = reportplan.Data(ctx, plan)
+    assert [r["conc"] for r in D.results] == [100.0, 100.0, 2000.0]                # uM as written, 10-4 M, 2 mM
+    assert D.by_concept()["One"]["cells"] == {"1001": "increase", "1002": "increase"}
+    assert reportplan.check(ctx, plan) == []
+    r = reportplan.render(ctx, plan)
+    html = (ctx.run_dir / "manuscript.html").read_text()
+    assert r["ok"] and (r["figures"], r["tables"], r["references"]) == (5, 2, 2)
+    assert "Kim et al. 2020 <span class='cite'>[<a href='#ref-1'>1</a>, <a href='#ref-2'>2</a>]" in html and "2 studies." in html
+    assert "2.00 (95% CI" in html and "<a href='#fig-map'>Figure 1</a>" in html and "<a href='#tab-t1'>Table 1</a>" in html
+    assert html.count("<svg") == 5 and (ctx.run_dir / "manuscript_figures" / "mech.svg").exists() and "2 of 2 studies" in html
+    bad = {**plan, "summary": ["{{pool:nope|x}} [@9999] {fig:none}"]}
+    errs = reportplan.check(ctx, bad)
+    assert any("9999" in e for e in errs)
+    bad2 = {**plan, "summary": ["{{pool:nope|x}} {fig:none}"]}
+    errs = reportplan.check(ctx, bad2)
+    assert len(errs) == 2 and not reportplan.render(ctx, bad2)["ok"]
+    inv = reportplan.inventory(ctx, plan)
+    assert inv["concepts"]["One"] == {"cells": {"increase": 2}} and inv["pooled_groups"][0]["group"] == "a · cells" and "forest" in inv["figure_types"]
+    # a study measured in two models counts once, with "mixed" when its own results disagree
+    st.write("ext:1002", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": [
+        {**row("marker one", "increase", 2, "mM"), "tier": "people"}, {**row("marker one", "decrease", 2, "mM")}]}}}, depends_on=["elig:1002"])
+    D2 = reportplan.Data(ctx, plan)
+    assert D2.study_directions("One") == {"1001": "increase", "1002": "mixed"}
+    assert reportplan.render_text("{{dir:One|increase}} and {{dir:One}}", D2, reportplan.Refs(st), {}, {}) == \
+        "1 of 2 and 1 of 2 studies report increase"
+    assert "not an item" in " ".join(reportplan.check(ctx, {**plan, "summary": ["{{dir:Nope}}"]}))
+
+
+def test_a_group_of_alternatives_is_not_ruled_out_before_all_of_them_are_read(tmp_path):
+    """An any_of group whose remaining alternative is a full-text criterion cannot be declared not met at
+    title/abstract: the record goes forward and is decided when that alternative has been read."""
+    from sragent.stages.screening import rule_decision
+    protocol = {"criteria": [
+        {"id": "I1", "type": "inclusion", "stage": "title_abstract"},
+        {"id": "I2", "type": "inclusion", "stage": "title_abstract", "any_of": "A"},
+        {"id": "I3", "type": "inclusion", "stage": "title_abstract", "any_of": "A"},
+        {"id": "I5", "type": "inclusion", "stage": "full_text", "any_of": "A"}]}
+    no_group = [{"id": "I1", "assessment": "met"}, {"id": "I2", "assessment": "not_met"}, {"id": "I3", "assessment": "not_met"}]
+    assert rule_decision(protocol, no_group, "title_abstract") == ("uncertain", ["I2", "I3"])      # I5 not read yet
+    assert rule_decision(protocol, no_group + [{"id": "I5", "assessment": "not_met"}], "full_text") == ("exclude", ["I2", "I3", "I5"])
+    assert rule_decision(protocol, no_group + [{"id": "I5", "assessment": "met"}], "full_text") == ("include", [])
+    met = [{"id": "I1", "assessment": "met"}, {"id": "I2", "assessment": "met"}, {"id": "I3", "assessment": "not_met"}]
+    assert rule_decision(protocol, met, "title_abstract") == ("include", [])                       # one alternative met: decided
+    same_stage = {"criteria": [c for c in protocol["criteria"] if c["id"] != "I5"]}
+    assert rule_decision(same_stage, no_group, "title_abstract") == ("exclude", ["I2", "I3"])      # no deferred member: unchanged
+
+
+def test_a_concept_map_reads_at_one_level(tmp_path):
+    """Figures group the concepts by domain in the order the plan declares the domains, so a domain never appears as
+    two blocks whatever order its items were written in; a molecule carries the function the plan places it upstream
+    of, so a pathway row is not left hanging; and a leads_to that names nothing is an error."""
+    from sragent import reportplan
+    field = {"name": "outcome_data", "kind": "rows", "description": "x",
+             "columns": {"name": "text", "tier": ["cells"], "nt": "number", "nc": "number", "vt": "number",
+                         "vc": "number", "kind": ["mean"], "direction": ["increase", "decrease"]}}
+    mplan = {"field": "outcome_data", "group_by": ["tier"], "min_studies": 9,
+             "columns": {"treated": {"n": "nt", "value": "vt"}, "control": {"n": "nc", "value": "vc"},
+                         "value_type": "kind", "direction": "direction"}}
+    con = {"column": "name", "tier_column": "tier",
+           "domains": [{"key": "sig", "label": "Signalling"}, {"key": "fn", "label": "Function"}],
+           "items": [{"name": "Kinase", "domain": "sig", "pattern": "kinase", "leads_to": ["Invasion"]},
+                     {"name": "Invasion", "domain": "fn", "pattern": "invasion", "short": "invasion"},
+                     {"name": "Phosphatase", "domain": "sig", "pattern": "phosphatase", "leads_to": ["Invasion"]}]}
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": [field], "meta_analysis": mplan}})
+    st = ctx.store
+    st.write("protocol", "protocol", {"criteria": []}, depends_on=[])
+    for rid, nm in (("1", "kinase"), ("2", "invasion assay"), ("3", "phosphatase")):
+        st.write(f"rec:{rid}", "record", {"title": rid, "authors": "Kim A", "year": "2020"}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": "include"}, depends_on=[f"screen:{rid}"])
+        st.write(f"ext:{rid}", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": [
+            {"name": nm, "tier": "cells", "direction": "increase"}]}}}, depends_on=[f"elig:{rid}"])
+    plan = {"title": "T", "tiers": ["cells"], "concepts": con, "sections": [{"title": "S", "content": [
+        {"figure": {"id": "d", "type": "direction_plot", "caption": "Per study."}},
+        {"table": {"id": "t", "type": "concepts", "caption": "Per concept."}}]}]}
+    D = reportplan.Data(ctx, plan)
+    rows = reportplan._concept_rows(D, {})
+    assert [r["label"] for r in rows] == ["Kinase \u2192 invasion", "Phosphatase \u2192 invasion", "Invasion"]
+    svg = reportplan.FIGURES["direction_plot"](D, {})
+    assert svg.count("Signalling") == 1 and svg.count("Function") == 1       # one block per domain, not two
+    cols, body = reportplan.TABLES["concepts"](D, {})
+    assert body[0][1] == "Kinase \u2192 invasion" and body[2][1] == "Invasion"
+    out = reportplan.render(ctx, plan)
+    assert out["ok"] and "<li id='ref-1'><span>1.</span><span>" in Path(out["path"]).read_text()
+    bad = {**plan, "concepts": {**con, "items": con["items"] + [{"name": "X", "domain": "sig", "pattern": "x",
+                                                                 "leads_to": ["Nothing"]}]}}
+    assert any("leads_to 'Nothing'" in e for e in reportplan.check(ctx, bad))
+
+
+def test_what_was_measured_and_where_are_separate_analyses(tmp_path):
+    """A concentration in blood and the expression of the same molecule in cells are different quantities, so they are
+    never one pooled estimate, one count or one table line: what was measured is a grouping dimension of its own, the
+    plan's settings keep the cells and the women apart, and a pooled name that no longer says which is an error."""
+    from sragent import meta, reportplan
+    field = {"name": "outcome_data", "kind": "rows", "description": "x",
+             "columns": {"name": "text", "sample": "text", "tier": ["cells", "women"], "nt": "number", "nc": "number",
+                         "vt": "number", "vc": "number", "sd_t": "number", "sd_c": "number", "kind": ["mean"],
+                         "disp": ["SD"], "dose": "text", "unit": "text", "direction": ["increase", "decrease", "no change"]}}
+    mplan = {"field": "outcome_data", "group_by": ["name", "tier", "readout"], "min_studies": 2,
+             "classify": [{"set": "readout", "column": "name", "also": ["sample"],
+                           "rules": [{"label": "release / circulating level", "pattern": r"serum|medium"}],
+                           "otherwise": {"label": "expression"}}],
+             "columns": {"treated": {"n": "nt", "value": "vt", "spread": "sd_t"}, "control": {"n": "nc", "value": "vc", "spread": "sd_c"},
+                         "value_type": "kind", "spread_type": "disp", "direction": "direction"}}
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": [field], "meta_analysis": mplan}})
+    st = ctx.store
+    st.write("protocol", "protocol", {"criteria": []}, depends_on=[])
+    def row(sample, tier, vt, dose, unit, way="decrease"):
+        return {"name": "Factor", "sample": sample, "tier": tier, "nt": 3, "nc": 3, "vt": vt, "vc": 10, "sd_t": 1,
+                "sd_c": 1, "kind": "mean", "disp": "SD", "dose": dose, "unit": unit, "direction": way}
+    rows = {"1": [row("maternal serum", "women", 5, "81", "mg/day")],
+            "2": [row("maternal serum", "women", 6, "150", "mg/day")],
+            "3": [row("cell lysate", "cells", 7, "30", "uM")],
+            "4": [row("cell lysate", "cells", 12, "1000", "uM", "increase"),
+                  row("cell lysate", "cells", 12, "1000-2000", "uM", "increase")],
+            "5": [row("culture medium", "cells", 8, "5-50", "uM")]}
+    for rid, rs in rows.items():
+        st.write(f"rec:{rid}", "record", {"title": rid, "authors": f"A{rid} B", "year": "2020"}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": "include"}, depends_on=[f"screen:{rid}"])
+        st.write(f"ext:{rid}", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": rs}}}, depends_on=[f"elig:{rid}"])
+    res = meta.analyse(ctx)
+    pooled = {" \u00b7 ".join(g["group"].values()) for g in res["groups"] if g["pooled"]}
+    assert pooled == {"Factor \u00b7 women \u00b7 release / circulating level", "Factor \u00b7 cells \u00b7 expression"}
+    plan = {"title": "T", "tiers": ["cells", "women"],
+            "settings": [{"key": "cells", "label": "Cells", "short": "cells", "tiers": ["cells"]},
+                         {"key": "women", "label": "Women", "short": "women", "tiers": ["women"]}],
+            "concepts": {"column": "name", "domains": [{"key": "d", "label": "Signalling"}],
+                         "items": [{"name": "Factor", "domain": "d", "pattern": "factor"}]},
+            "dose": {"value": "dose", "unit": "unit", "unit_label": "\u00b5M", "factors": {"uM": 1}, "band": [10, 100],
+                     "clinical": {"unit_label": "mg/day", "factors": {"mg/day": 1}, "band": [75, 150]}},
+            "sections": [{"title": "S", "content": [
+                {"p": "In the cells {{dir:Factor|decrease|cells}}; in the women {{dir:Factor|decrease|women}}. "
+                      "{{dose:cells|concentration|yes}} of {{dose:cells}} cell studies used the human concentration."},
+                {"table": {"id": "t", "type": "concepts", "caption": "Per setting."}},
+                {"table": {"id": "dc", "type": "dose_check", "caption": "The dose question."}}]}]}
+    D = reportplan.Data(ctx, plan)
+    assert len(D.study_directions("Factor", D.tiers_for("cells"))) == 3        # the women are not counted here
+    assert len(D.study_directions("Factor", D.tiers_for("women"))) == 2
+    cols, body = reportplan.TABLES["concepts"](D, {})
+    assert [r[2] for r in body] == ["Cells", "Women"]                          # one line per setting, never added
+    assert body[0][4] == "5\u20132,000 \u00b5M" and body[1][4] == "81\u2013150 mg/day"       # each on its own scale
+    assert body[0][5] == "**decrease** (majority)" and body[1][5] == "**decrease**, 2 studies only"
+    cols, body = reportplan.TABLES["dose_check"](D, {})
+    assert sorted((r[1], r[4]) for r in body) == [("Cells", "no, above it"), ("Cells", "partly"), ("Cells", "yes"),
+                                                  ("Women", "yes"), ("Women", "yes")]
+    assert [r[2] for r in body if r[0] == "[@@4]"] == ["1000 uM; 1000-2000 uM"]    # same render every time, whatever the order of a set
+    html = reportplan.render(ctx, plan)
+    assert html["ok"] and "In the cells 2 of 3; in the women 2 of 2." in Path(html["path"]).read_text()
+    assert "1 of 3 cell studies used the human concentration" in Path(html["path"]).read_text()
+    vague = {**plan, "sections": [{"title": "S", "content": [{"p": "{{pool:Factor|ratio of means}}"}]}]}
+    assert any("names 2 pooled groups" in e for e in reportplan.check(ctx, vague))
+
+
+def test_tissue_from_a_treated_woman_is_not_an_in_vitro_exposure(tmp_path):
+    """A setting is where the aspirin was given, not only what was studied: placental tissue from a woman who took
+    75 mg a day is in-vivo exposure although the model is tissue, and serum that had aspirin added to it in a tube is
+    in-vitro exposure although the material came from a woman. Counts never mix the two."""
+    from sragent import reportplan
+    field = {"name": "outcome_data", "kind": "rows", "description": "x",
+             "columns": {"name": "text", "tier": ["cells", "women"], "dose": "text", "unit": "text", "nt": "number", "nc": "number",
+                         "vt": "number", "vc": "number", "st": "number", "sc": "number", "kind": ["mean"], "disp": ["SD"],
+                         "direction": ["increase", "decrease", "no change"]}}
+    mplan = {"field": "outcome_data", "group_by": ["name", "tier"], "min_studies": 2,
+             "columns": {"treated": {"n": "nt", "value": "vt", "spread": "st"}, "control": {"n": "nc", "value": "vc", "spread": "sc"},
+                         "value_type": "kind", "spread_type": "disp", "direction": "direction"}}
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": [field], "meta_analysis": mplan}})
+    st = ctx.store
+    st.write("protocol", "protocol", {"criteria": []}, depends_on=[])
+    row = lambda tier, dose, unit, way: {"name": "Factor", "tier": tier, "dose": dose, "unit": unit, "nt": 3, "nc": 3, "vt": 5, "vc": 10,
+                                         "st": 1, "sc": 1, "kind": "mean", "disp": "SD", "direction": way}
+    rows = {"1": [row("cells", "100", "uM", "decrease")],                 # aspirin added to the culture
+            "2": [row("cells", "75", "mg/day", "increase")],              # tissue from a woman who took aspirin
+            "3": [row("women", "0.01", "mM", "increase")],                # her serum, with aspirin added in a tube
+            "4": [row("women", "100", "mg/day", "decrease")]}
+    for rid, rs in rows.items():
+        st.write(f"rec:{rid}", "record", {"title": rid, "authors": f"A{rid} B", "year": "2020"}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": "include"}, depends_on=[f"screen:{rid}"])
+        st.write(f"ext:{rid}", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": rs}}}, depends_on=[f"elig:{rid}"])
+    plan = {"title": "T", "tiers": ["cells", "women"],
+            "settings": [{"key": "vitro", "label": "Aspirin added in vitro", "tiers": ["cells", "women"], "given": "in vitro"},
+                         {"key": "exvivo", "label": "Tissue from treated women", "tiers": ["cells"], "given": "in vivo"},
+                         {"key": "women", "label": "Pregnant women", "tiers": ["women"], "given": "in vivo"}],
+            "concepts": {"column": "name", "domains": [{"key": "d", "label": "D"}],
+                         "items": [{"name": "Factor", "domain": "d", "pattern": "factor"}]},
+            "dose": {"value": "dose", "unit": "unit", "factors": {"uM": 1, "mM": 1000},
+                     "clinical": {"unit_label": "mg/day", "factors": {"mg/day": 1}, "band": [75, 150]}},
+            "sections": [{"title": "S", "content": [{"p": "In vitro {{dir:Factor|decrease|vitro}}; ex vivo {{dir:Factor|increase|exvivo}}."}]}]}
+    D = reportplan.Data(ctx, plan)
+    assert {r["rid"]: r["given"] for r in D.results} == {"1": "in vitro", "2": "in vivo", "3": "in vitro", "4": "in vivo"}
+    assert {r["rid"]: r["setting"] for r in D.results} == {"1": "vitro", "2": "exvivo", "3": "vitro", "4": "women"}
+    assert sorted(D.study_directions("Factor", setting="vitro")) == ["1", "3"]       # the serum study is an in-vitro one
+    assert sorted(D.study_directions("Factor", setting="exvivo")) == ["2"]           # and the explant study is not
+    assert D.counts()["studies:vitro"] == 2 and D.counts()["studies:exvivo"] == 1
+    r = reportplan.render(ctx, plan)
+    assert r["ok"] and "In vitro 1 of 2; ex vivo 1 of 1." in Path(r["path"]).read_text()
+
+
+def test_a_pathway_figure_shows_the_chain_and_what_kind_of_change_each_step_shows(tmp_path):
+    """A cascade the plan declares: nodes are laid out one column past their deepest parent, a feedback edge does not
+    deepen the graph, a node linked to a concept is annotated from the data with the kind of change measured, and a
+    node the studies never measured says so."""
+    from sragent import figlib, reportplan
+    nodes = [{"id": "d", "label": "Drug"}, {"id": "k", "label": "Kinase", "concept": "One"},
+             {"id": "m", "label": "Messenger", "concept": "Two"}, {"id": "f", "label": "Function"}]
+    edges = [{"from": "d", "to": "k"}, {"from": "k", "to": "m"}, {"from": "m", "to": "f"}, {"from": "f", "to": "d", "effect": "inhibits"}]
+    assert figlib.layer_of(nodes, edges) == {"d": 0, "k": 1, "m": 2, "f": 3}        # the loop does not push the drug along
+    field = {"name": "outcome_data", "kind": "rows", "description": "x",
+             "columns": {"name": "text", "level": ["protein", "mRNA"], "tier": ["cells"], "nt": "number", "nc": "number", "vt": "number",
+                         "vc": "number", "kind": ["mean"], "direction": ["increase", "decrease", "no change"]}}
+    plan = {"field": "outcome_data", "group_by": ["tier", "readout"], "min_studies": 9,
+            "classify": [{"set": "readout", "column": "name", "also": ["level"],
+                          "rules": [{"label": "phosphorylation (activation)", "pattern": r"\bp-|phospho"},
+                                    {"label": "protein level", "pattern": "protein"}],
+                          "otherwise": {"column": "level", "map": {"mRNA": "mRNA level"}}}],
+            "columns": {"treated": {"n": "nt", "value": "vt"}, "control": {"n": "nc", "value": "vc"}, "value_type": "kind", "direction": "direction"}}
+    con = {"column": "name", "domains": [{"key": "d1", "label": "Signalling"}], "items": [{"name": "One", "domain": "d1", "pattern": "kinase"}, {"name": "Two", "domain": "d1", "pattern": "nothing-matches-this"}]}
+    ctx = make_ctx(tmp_path, extra_cfg={"topic": {"extraction_fields": [field], "meta_analysis": plan}})
+    st = ctx.store
+    st.write("protocol", "protocol", {"criteria": []}, depends_on=[])
+    rows = {"1001": [{"name": "p-kinase", "level": "protein", "tier": "cells", "direction": "increase", "nt": 3, "nc": 3, "vt": 2, "vc": 1, "kind": "mean"}],
+            "1002": [{"name": "kinase mRNA", "level": "mRNA", "tier": "cells", "direction": "decrease", "nt": 3, "nc": 3, "vt": 1, "vc": 2, "kind": "mean"}]}
+    for rid, rs in rows.items():
+        st.write(f"rec:{rid}", "record", {"title": rid, "authors": "Kim A", "year": "2020"}, depends_on=[])
+        st.write(f"screen:{rid}", "screen", {"stage": "title_abstract", "decision": "forward"}, depends_on=[f"rec:{rid}"])
+        st.write(f"elig:{rid}", "eligibility", {"stage": "full_text", "decision": "include"}, depends_on=[f"screen:{rid}"])
+        st.write(f"ext:{rid}", "extraction", {"fields": {"outcome_data": {"value": "x", "rows": rs}}}, depends_on=[f"elig:{rid}"])
+    full = {"title": "T", "concepts": con, "sections": [{"title": "S", "content": [
+        {"figure": {"id": "pw", "type": "pathway", "nodes": nodes, "edges": edges, "caption": "Chain."}},
+        {"table": {"id": "mod", "type": "modulation", "caption": "What changed."}}]}]}
+    D = reportplan.Data(ctx, full)
+    assert D.readouts("One") == {"phosphorylation (activation)": {"increase": ["1001"]}, "mRNA level": {"decrease": ["1002"]}}
+    cols, body = reportplan.TABLES["modulation"](D, {})
+    assert [r[3] for r in body] == ["phosphorylation (activation)", "mRNA level"] and body[0][4] == "increase 1"
+    svg = reportplan.FIGURES["pathway"](D, full["sections"][0]["content"][0]["figure"])
+    assert "Kinase" in svg and "1 of 2 studies" in svg and "not measured" in svg       # Messenger was never measured
+    assert svg.count("mixed") == 1                                                    # only in the legend: the node is not mixed
+    assert reportplan.check(ctx, full) == [] and reportplan.render(ctx, full)["ok"]
+    bad = {**full, "sections": [{"title": "S", "content": [{"figure": {"id": "pw", "type": "pathway", "caption": "",
+                                                                      "nodes": [{"id": "a", "label": "A", "concept": "Nope"}],
+                                                                      "edges": [{"from": "a", "to": "ghost"}]}}]}]}
+    errs = reportplan.check(ctx, bad)
+    assert any("ghost" in e for e in errs) and any("Nope" in e for e in errs)

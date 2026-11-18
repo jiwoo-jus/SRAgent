@@ -530,7 +530,9 @@ REGISTERED_AS = {"propagate_edit": "edit.update_dependents", "eligibility.overtu
 NOT_IN_04 = {"edit.dependents_fine", "eligibility.decide_many", "feedback.clarify", "feedback.disagreement", "comment.resolve", "flag.answer",
              "screen.run", "retrieve.run", "eligibility.run", "extract.run", "rob.run", "search.run", "synthesis.write",
              "protocol.draft", "report.render", "eligibility.decide", "update_all",
-             "screen.rerun_all", "eligibility.rerun_all", "extract.rerun_all", "rob.rerun_all", "synthesis.rerun_all"}
+             "screen.rerun_all", "eligibility.rerun_all", "extract.rerun_all", "rob.rerun_all", "synthesis.rerun_all",
+             "extract.export_rows", "extract.studies", "extract.read_figures", "synthesis.meta_analysis",
+             "report.manuscript", "report.inventory", "search.bibliography"}
 
 
 def test_the_operations_are_the_registry():

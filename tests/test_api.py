@@ -41,7 +41,7 @@ def test_unsupported_provider():
         load_config(None, {"llm_defaults": {"model": "gpt-6.1-sol"}})
 
 def test_example_configs():
-    runs = [p for kind in ("benchmark", "review") for p in (ROOT / "configs" / kind).rglob("*.yaml") if p.name != "topic.yaml"]
+    runs = [p for kind in ("benchmark", "review") for p in (ROOT / "configs" / kind).rglob("*.yaml") if p.name not in ("topic.yaml", "report_plan.yaml")]
     assert runs
     for path in runs:
         cfg = load_config(path)
