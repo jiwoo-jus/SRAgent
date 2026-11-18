@@ -17,7 +17,7 @@ Items keep their numbers; new items are `N1`-`N8`. The chunks below are in the o
 | Plan | All settings visible (6-8) | Chunk D |
 | Plan | Small page fixes (9-12) | Chunk C |
 | Plan | Remaining phase 5 (13-17) | Chunk E |
-| Plan | GPT and Gemini parity (18-20) | Chunk I |
+| Plan | OpenAI and Google parity (18-20) | Chunk I |
 | Plan | Phase 6 (21-26) | Chunks F and H |
 | Plan | Checks (27-31) | Chunk G |
 | This review | "1 output is out of date (1 search)" after a criterion stage edit: a false alarm | N3 |
@@ -39,12 +39,15 @@ Items keep their numbers; new items are `N1`-`N8`. The chunks below are in the o
 
 ## The current run (`aspirin_placental_mechanisms`)
 
-- The out-of-date search: **leave it; don't run that update.** Planning the search again costs a model
-  call and could change the 6,860 records for no reason. N3 clears the warning.
-- The forwarded count: 825 is correct (80 included, 186 excluded on full text, 557 waiting for a PDF,
-  2 unreadable). N4 fixes the row.
-- Until N3 lands: avoid confirming risk-of-bias drafts **after** a synthesis exists, because each
-  confirmation would mark the statements that cite that study for a paid revision.
+Checked against the run's store on 2026-11-17.
+
+- 6,860 records screened at title/abstract: 825 forwarded. Of those, 635 screened on the full text (172 included,
+  463 excluded) and 190 still waiting for full-text screening, most of them brought back by the any-of group fix
+  (07, "A screening bug"; estimated at about $2.15, not run yet).
+- Every full-text decision has had a second reading (635 verifier calls).
+- 172 included studies extracted and assessed for risk of bias; 56 synthesis statements.
+- The earlier notes here (the false out-of-date search, the forwarded count, not confirming risk-of-bias drafts
+  after a synthesis exists) are settled: N3 is done, and N4 is a display fix only.
 
 ---
 
@@ -144,6 +147,12 @@ cap goes; no limits per role.
 | N11 | Read scanned PDFs with local text recognition | All 19 "unreadable file" studies in the current run are scans with no text layer (pdftotext gives 1-588 characters). `vision_pages` only adds to a PDF that already has text, and Azure isn't configured. Add a free fallback in `docparse.parse_file`: when pdftotext gives under 1,500 characters, render the pages (`pdftoppm -r 300`) and read them with `tesseract` (installed here). Tested on 1407882.pdf: 7 pages, 34,600 characters of clean text in 46 s. Parser shown as "pdftotext + OCR". Parse in parallel; 19 files take about 10 minutes. |
 | N12 | Stage pages: bulk selection and clearer labels (done 2026-11-10) | Checkboxes with select-all on rows whose operation takes a list of studies (Not obtainable, Restore, Confirm). Removed the "Decided by you" tab; a person's decision shows a "by you" badge. Full texts page: "no full text" / "unreadable file", and the By column says where the text came from ("your file", "agent: …", "abstract only"). Full-text screening page: those studies show "not screened: no full text". "Decide without" now shows only for a study a reviewer asked a PDF for; on a study with no full text it recorded nothing. Full-text screening's Verify button follows `pipeline.verify_screening`: with `full_text` it reads every full-text decision not yet read twice ("Verify unread (436)"), with a cost estimate from this review's own verifier calls. |
 
+**Status (checked in the code 2026-11-17):** N12 done. Open: N4 (`ui/steps.py:20` still counts every stored
+full text), N5 (no group names yet), N6 (`todos.py:136` still ignores `any_of`), N7 (`retrieve.process_added_files`
+still exists), N10 (Next step still says "Continue the review: extraction, risk of bias and synthesis" while 190
+studies wait for full-text screening), N11 (no text recognition step), 12 ("To-do list" still in 8 places). Not
+checked: 9-11.
+
 **N7 in detail.** Today the button reads the new PDFs, screens those studies, and then runs the whole
 update (`sync.py:66`). That includes extraction and risk of bias for every included study, not only the
 new ones. Texts the agent fetched itself aren't screened by it. Replacement:
@@ -193,10 +202,10 @@ new ones. Texts the agent fetched itself aren't screened by it. Replacement:
 | # | Check | Cost |
 |---|---|---|
 | 27 | First real run of structured outputs (your next Run) | Part of that run |
-| 28 | First real run of Claude batches | Cents, if you turn it on |
-| 29 | Blind vs anchored verifier on all benchmark records | About $1 with Haiku |
+| 28 | First real run of message batches | Cents, if you turn it on |
+| 29 | Blind vs anchored verifier on all benchmark records | About $1 with a low-cost model |
 | 30 | Add `contact_email` to the benchmark, to recover the 8 missing full texts | Free |
-| 31 | Final end-to-end run after the changes; include a criteria edit partway through, a stop and a Resume, and an added PDF | About $1 with Haiku on the benchmark sample |
+| 31 | Final end-to-end run after the changes; include a criteria edit partway through, a stop and a Resume, and an added PDF | About $1 with a low-cost model on the benchmark sample |
 
 ## Chunk H · Rest of phase 6
 
@@ -207,15 +216,15 @@ new ones. Texts the agent fetched itself aren't screened by it. Replacement:
 | 25 | Feedback agent that can read sources | Only if a benchmark shows it helps |
 | 26 | Planning sessions for protocol and search | Lowest priority |
 
-## Chunk I · GPT and Gemini parity (build is free; checks need those API keys)
+## Chunk I · OpenAI and Google parity (build is free; checks need those API keys)
 
 | # | Item |
 |---|---|
-| 18 | Batch processing for OpenAI and Gemini, checking their current terms first |
-| 19 | Structured outputs for OpenAI and Gemini; Gemini may need its schemas adjusted |
+| 18 | Batch processing for OpenAI and Google, checking their current terms first |
+| 19 | Structured outputs for OpenAI and Google; Google's may need its schemas adjusted |
 | 20 | A log line when a batch stage uses a model that can't batch (today it switches to live calls silently) |
 
-Last, because the budget is Claude-only: it can be built and tested offline, but stays unproven on the
+Last, because the API budget covers one provider only: it can be built and tested offline, but stays unproven on the
 real services until someone spends a few cents on each.
 
 ## Chunk J · Quantitative synthesis (meta-analysis)
@@ -228,15 +237,15 @@ and sFlt-1/PlGF (cells and clinical trials) as the first outcome groups to pool.
 | Step | What | Status |
 |---|---|---|
 | J1 | **Rows items.** `kind: rows` with `columns` (a list of values, `number` or `text`) in `topic.extraction_fields` (`sragent/rows.py`). One row per result; each row cites its own sentences; every number is checked against them (found nowhere: `uncovered`); a value off a choice list is kept and marked. The model copies numbers as written and computes nothing; a figure-only result is a row with source `figure` and no numbers. The item's `value` is a summary written by the code, so every reader of `value` works unchanged; the synthesis input, the out-of-date check (`graph.READS`), hand edits (JSON lines on the study page), feedback revisions and the data-items card (columns kept) read the rows. Every column is a string in the reply schema: the API's structured outputs allow at most 16 union-typed (nullable) parameters per request. A reply shape the API cannot compile is asked again in plain JSON mode. `meta_rows.csv` (Data extraction page, `sragent op extract.export_rows`, and with every report). Reviews without a rows item send byte-identical prompts. Evidence is support, not a gate: a row's citations are optional (at most 2), the prompt says never to drop or shorten a row for lack of a sentence, and the code finds the sentences that hold the row's numbers itself (`_best_sentences`). | done |
-| J2 | **Columns for the aspirin review** (`topic.yaml`, `outcome_data`, 31 columns), strengthened for pooling: `experiment` (rows sharing a control group), `comparison_design` (independent or paired), `unit_of_n`, `value_type` (mean, median, proportion, number of events: binary clinical outcomes use the count with n as group size), `measure_basis` (raw, normalised to control, change from baseline), dispersion with an upper bound for intervals, `effect_reported`, `p_value`, `direction`, `aspirin_form`, `source`. `models.extract.writer` runs at medium effort. | written 2026-11-10; the topic change needs Accept in the interface; the outcome list is the team's to adjust before the pilot |
-| J3 | **Pilot on 8-10 included studies** (the extraction writer at medium effort, about $1): how many results exist only in figures, whether the columns fit, whether `n` is independent experiments or replicates. Then adjust the columns. | after J2 |
-| J4 | **Extract every included study** (about $0.10 per study with the extraction writer at medium effort and ~10 rows: $15-20 for ~180; the total budget has to be raised). | after J3 |
+| J2 | **Columns for the aspirin review** (`topic.yaml`, `outcome_data`, 31 columns), strengthened for pooling: `experiment` (rows sharing a control group), `comparison_design` (independent or paired), `unit_of_n`, `value_type` (mean, median, proportion, number of events: binary clinical outcomes use the count with n as group size), `measure_basis` (raw, normalised to control, change from baseline), dispersion with an upper bound for intervals, `effect_reported`, `p_value`, `direction`, `aspirin_form`, `source`. `models.extract.writer` runs at medium effort. | done: used for the extraction of every included study (J4) |
+| J3 | **Pilot on 8-10 included studies** (the extraction writer at medium effort, about $1): how many results exist only in figures, whether the columns fit, whether `n` is independent experiments or replicates. Then adjust the columns. | done (superseded by J4) |
+| J4 | **Extract every included study** (about $0.10 per study with the extraction writer at medium effort and ~10 rows: $15-20 for ~180; the total budget has to be raised). | done (checked 2026-11-17): 172 included studies extracted, 147 with rows, 879 rows |
 | J5 | **Pooling by code** (`sragent/meta.py`, `synthesis.meta_analysis`; no model calls, no numpy or scipy). General code; what is specific to a review is its `topic.meta_analysis` plan (the rows item, which rows count, grouping, minimum studies, which columns hold n, value, spread). Log ratio of means (SD from SEM or 95% CI; a control normalised to 1 gets the treated CV, marked), log risk ratio from events or percentages, one effect per study and group (rows averaged, variance too), DerSimonian-Laird with the Hartung-Knapp interval, I², prediction interval, sensitivity without figure estimates and without high risk of bias, rows left out counted by reason. Writes `<run>/meta/`: `results.json`, `effects.csv`, `summary.md`, one forest plot (SVG) per pooled group. First run on the aspirin review (before figure reading): 261 of 879 rows gave an effect, 15 of 40 groups pooled. Added the same day: `refine` (finer groups from a text column by rules: clinical outcomes into preeclampsia, growth restriction, ... without re-extracting), `same_study` (papers of one trial count once in a group; identical effects are listed as possible duplicates), `binary_only_if` (a percentage counts events only for participants). **Synthesis:** a review with a plan is written per pooled group (`SYNTH_POOLED`: the pooled result and that group's rows) plus one call for what was not pooled (`SYNTH_UNPOOLED`: studies by direction); a statement keeps its pooled result (`pooled`), which its check and repair see; the whole extraction table is no longer sent in one prompt (it was 907,000 characters here). The single-call prompt no longer names PK findings. **Report:** the pooled table in `report.md`, the forest plots in `report_evidence.html`. **2026-11-11, without model calls:** medians with quartiles or range are converted to mean and SD (Wan 2014; 25 more rows used); `exclude` rules (46 rows of animal experiments reported inside included papers had been placed in the human tiers); `risk_of_bias_high` can name domains (the overall rating was "high" for 142 of 172 studies because dose and model relevance count like bias; on the four internal-validity domains 18 of the 64 studies in the analysis are high, so the sensitivity analysis means something); a statement's check and repair read exactly what it was written from (`basis`) - the first run had shown the check less than the writer, every statement was faulted and repaired by the synthesis writer ($14 lost); `pooled_sentence` writes a group's pooled finding by rule; the estimate measures input sizes on the review's own papers and counts a grouped synthesis with its checks and repairs; Data extraction has Read figures and selectable Extract, Synthesis has the pooled table with forest plots. **Figure estimates checked by eye against the page images: 24 rows in 8 studies, all 24 values matched the plot**; one comparator was wrong (Richards 2025, Fig 4e: the TNFα row was compared with the untreated control; corrected). The 56 statements of the aspirin review were brought to the recomputed results by rule (pooled findings) and by hand (the rest). **Still to do:** a revision of a pooled statement by the update engine does not recompute its pooled text or basis (use `pooled_sentence`); change scores with negative values make meaningless ratios (Mulcahy 2019); rows that merge several analytes or doses. The report of this review was 59 MB in one page (Appendix C, every eligibility decision of 6,860 records: 43 MB; Appendix A with each study's source text: 14.5 MB) and browsers could not render it: `report.split_report` now writes a report over 4 million characters as a main page (1.1 MB here, with the pooled table and forest plots after the synthesis) and appendix pages of about 2 MB in `report_parts/`, with links between pages kept; the interface serves the same pages (`/report`, `/report_parts/<page>`), built once per version of the store. | built 2026-11-10, checked 2026-11-11 |
-| J6 | **Figure-only results** (`sragent/figures.py`, `extract.read_figures`): the PDF page that carries a row's figure is shown to the extraction model with that figure's rows; what it reads goes only into empty columns, each listed in `row["estimated"]` (study page: ≈ and "estimated from Fig N"; CSV: `estimated_from_figure`). Pilot 2026-11-10 on 3 PDFs: 27 of 28 figure rows read for $0.15; direction agreed with the text in all; one page (Fig 3 of 31004367, 7 rows) checked by eye and matched. Limits: studies whose text came from PMC without a PDF are skipped (56 of 179 have no PDF of their own); small panels of dense figures are less precise; a row that merges several analytes is not read. Not yet: run automatically after extraction (a pipeline setting), fetch missing PMC PDFs. | built; pilot done |
+| J6 | **Figure-only results** (`sragent/figures.py`, `extract.read_figures`): the PDF page that carries a row's figure is shown to the extraction model with that figure's rows; what it reads goes only into empty columns, each listed in `row["estimated"]` (study page: ≈ and "estimated from Fig N"; CSV: `estimated_from_figure`). Pilot 2026-11-10 on 3 PDFs: 27 of 28 figure rows read for $0.15; direction agreed with the text in all; one page (Fig 3 of 31004367, 7 rows) checked by eye and matched. Limits: studies whose text came from PMC without a PDF are skipped (56 of 179 have no PDF of their own); small panels of dense figures are less precise; a row that merges several analytes is not read. Not yet: run automatically after extraction (a pipeline setting), fetch missing PMC PDFs. | built; run on the aspirin review: 132 figure calls, 260 rows hold estimates |
 
 ## Order
 
-**A → B → C → D → E → F → G → H → I**; J runs alongside (J1 done; J2-J4 are this review's work, J5-J6 code).
+**A → B → C → D → E → F → G → H → I**; J ran alongside: J1-J6 done; what is left is under J5, "Still to do".
 
 | Dependency | Why |
 |---|---|
