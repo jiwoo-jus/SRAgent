@@ -173,9 +173,15 @@ def rederive(protocol: dict, d: dict, policy: str = "await") -> tuple[str, list[
 def rule_decision(protocol: dict, assessments: list[dict], stage: str) -> tuple[str, list[str]]:
     """Exclude if an inclusion criterion is not met or an exclusion criterion is met; uncertain if any is
     unclear; else include. Inclusion criteria that share an `any_of` label are alternatives: the group
-    is met when any member is met, not met only when every member is not met, otherwise unclear."""
+    is met when any member is met, not met only when every member is not met, otherwise unclear.
+
+    A group whose remaining alternatives are only read at the full text cannot be ruled out at title/abstract: it is
+    unclear there, so the record goes forward and the deferred alternative is assessed on the full text."""
     crits = {c["id"]: c for c in protocol.get("criteria", [])}
     failed, unclear = [], []
+    deferred = {str(c["any_of"]) for c in crits.values()
+                if c.get("any_of") and c["type"] == "inclusion" and stage == "title_abstract"
+                and c.get("stage", "title_abstract") == "full_text"}
     groups: dict[str, list[tuple[str, str]]] = {}
     for a in assessments:
         cid, val = a.get("id"), a.get("assessment")
@@ -191,11 +197,13 @@ def rule_decision(protocol: dict, assessments: list[dict], stage: str) -> tuple[
             failed.append(cid)
         elif val == "unclear":
             unclear.append(cid)
-    for members in groups.values():
+    for name, members in groups.items():
         vals = [v for _, v in members]
         if "met" in vals:
             continue
-        if all(v == "not_met" for v in vals):
+        if name in deferred:                 # an alternative of this group is only read at the full text
+            unclear += [cid for cid, _ in members]
+        elif all(v == "not_met" for v in vals):
             failed += [cid for cid, _ in members]
         else:
             unclear += [cid for cid, v in members if v != "not_met"]
@@ -251,7 +259,7 @@ def screen_one(ctx: Ctx, protocol: dict, rid: str, stage: str = "title_abstract"
             evidence.append(attach(a, cites, text, f"{a.get('id')}={a.get('assessment')}", src_node))
     decision, because, by_rule = decide(protocol, assessments, stage, ctx.cfg["pipeline"].get("fulltext_unclear", "await"))
     verify = None
-    if _verify_wanted(ctx, stage, decision):
+    if _verify_wanted(ctx, stage, decision, out.get("decision")):
         verify, decision, because, by_rule = verify_screen(ctx, protocol, rid, stage, text, limit, assessments, decision, because, by_rule)
     data = {"stage": stage, "decision": decision, "because": because, "criteria": assessments,
             "source_kind": "title_abstract" if stage == "title_abstract" else st.text_of(rid)[1],
@@ -330,16 +338,30 @@ def reassess(ctx: Ctx, protocol: dict, rid: str, crit_ids: list[str], stage: str
     return d   # a reading that differs from a person's decision is a derived note (attention.py)
 
 
-def _verify_wanted(ctx: Ctx, stage: str, decision: str) -> bool:
-    """pipeline.verify_screening: full_text checks every full-text decision; all also checks title/abstract
-    exclusions (the recall-critical decision; forwarded records are checked by the full text anyway)."""
+VERIFY_MODES = ("off", "pending", "conflict", "full_text", "all")   # each level reads what the one before it reads, and more
+_UNDECIDED = ("uncertain", "awaiting")
+
+
+def self_conflict(decision: str | None, overall: str | None) -> bool:
+    """The screener's overall answer differs from the decision its own criterion answers give (an undecided answer
+    and an undecided decision agree)."""
+    if overall not in ("include", "exclude", "uncertain") or decision not in ("include", "exclude", "awaiting"):
+        return False
+    return (overall in _UNDECIDED) != (decision in _UNDECIDED) or (overall not in _UNDECIDED and overall != decision)
+
+
+def _verify_wanted(ctx: Ctx, stage: str, decision: str, overall: str | None = None) -> bool:
+    """pipeline.verify_screening, from least to most read: pending (full-text decisions the screener could not make),
+    conflict (also those where its overall answer differs from its criterion answers), full_text (every full-text
+    decision), all (also every title/abstract exclusion, the recall-critical one; forwarded records are checked
+    by the full text anyway)."""
     mode = ctx.cfg["pipeline"].get("verify_screening") or "off"
     if mode == "off":
         return False
     if stage == "full_text":
         if decision == "awaiting":
-            return mode in ("pending", "full_text", "all")     # the screener could not decide: a second reading
-        return mode in ("full_text", "all")
+            return True                                        # the screener could not decide: a second reading
+        return mode in ("full_text", "all") or (mode == "conflict" and self_conflict(decision, overall))
     return mode == "all" and decision == "exclude"
 
 
@@ -379,7 +401,7 @@ def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, lim
     for d in differs:
         d["evidence"] = [sp.get("sid") for sp in resolve(d.get("evidence") or [], text).get("spans", []) if sp.get("sid")]
     rec = {"by": checker.name, "blind": blind, "decision": own, "agree": agree, "explanation": str(out.get("explanation") or "")[:400],
-           "differs_on": differs, "ts": time.strftime("%Y-%m-%d %H:%M")}
+           "differs_on": differs, "screener": decision, "ts": time.strftime("%Y-%m-%d %H:%M")}
     if decision == "awaiting":   # the screener could not decide: the verifier's reading decides, or it stays with a person
         if own in ("include", "exclude"):
             rec["outcome"] = "decided_by_verifier"
@@ -406,13 +428,11 @@ def verify_screen(ctx: Ctx, protocol: dict, rid: str, stage: str, text: str, lim
     return rec, new, ids, (policy if new != "awaiting" else None)
 
 
-def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: list[str] | None = None) -> dict:
-    """The second reading for records already screened (pipeline.verify_screening was off then): the records undecided
-    after their full text (every mode), with "full_text" every full-text include/exclude too, with "all" every
-    title/abstract exclusion by the agent as well; decisions a person made and records already read twice are skipped.
-    Outcomes are applied as at screening time."""
-    from collections import Counter
-    st = ctx.store
+def verify_todo(st, mode: str = "full_text", only: list[str] | None = None) -> list[str]:
+    """The records a second reading in this mode would read (pipeline.verify_screening): undecided after the full
+    text (every mode), full-text decisions the screener's overall answer disagrees with ("conflict"), every full-text
+    include/exclude ("full_text"), and title/abstract exclusions by the agent too ("all"). Decisions a person made,
+    rule exclusions and records already read twice are left out."""
     todo = []
     for n in [decision_node(st, r) for r in sorted({x["id"].split(":", 1)[1] for x in st.by_type("screen")})]:
         if n is None or n["status"] != "active":
@@ -422,13 +442,26 @@ def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: lis
         if only and rid not in only:
             continue
         if d.get("human_decision") or d.get("rule") or d.get("screen_verify") or d.get("eligibility_review"):
-            continue                                           # decided by a person, by rule, or already read twice
+            continue
         if d["stage"] == "full_text" and d["decision"] == "awaiting":
-            todo.append(rid)                                   # every mode: the records the screener could not decide
+            todo.append(rid)
         elif mode in ("full_text", "all") and d["stage"] == "full_text" and d["decision"] in ("include", "exclude"):
+            todo.append(rid)
+        elif mode == "conflict" and d["stage"] == "full_text" and self_conflict(d["decision"], d.get("llm_decision")):
             todo.append(rid)
         elif mode == "all" and d["stage"] == "title_abstract" and d["decision"] == "exclude":
             todo.append(rid)
+    return todo
+
+
+def verify_existing(ctx: Ctx, protocol: dict, mode: str = "full_text", only: list[str] | None = None) -> dict:
+    """The second reading for records already screened (pipeline.verify_screening was off then): the records undecided
+    after their full text (every mode), with "full_text" every full-text include/exclude too, with "all" every
+    title/abstract exclusion by the agent as well; decisions a person made and records already read twice are skipped.
+    Outcomes are applied as at screening time."""
+    from collections import Counter
+    st = ctx.store
+    todo = verify_todo(st, mode, only)
     ctx.log(f"[screen] second reading of {len(todo)} decisions ({mode})")
 
     def one(rid):
@@ -522,6 +555,9 @@ def retrieve_one(ctx: Ctx, rid: str, refetch: bool = False) -> tuple[str, bool]:
         ft = fulltext.fetch_one(ctx, rid)
         fetched = True
     if ft.get("kind") == "fulltext":
+        from .. import state
+        if state.pdf_request(st, rid).get("unavailable"):     # declared not obtainable, then found after all
+            state.set_pdf_request(st, rid, actor="agent", unavailable=False)
         return "fulltext", fetched
     if ft.get("parse_failed"):
         _mark_retrieval(ctx, rid, "parse_failed", f"the supplied file {ft.get('local_file')} has no usable text")

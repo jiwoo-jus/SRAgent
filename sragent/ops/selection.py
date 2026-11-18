@@ -202,7 +202,8 @@ def eligibility_recompute(ctx, rid: str, note: str = "", propagate: bool = True,
 
 @operation("eligibility.verify", "eligibility", "llm")
 def eligibility_verify(ctx, rids: list[str] | None = None, mode: str = "pending") -> dict:
-    """A second reading by the verifier: the undecided full-text decisions ('pending'), or all of them ('full_text')."""
+    """A second reading by the verifier: the undecided full-text decisions ('pending'), also those the screener's
+    overall answer disagrees with ('conflict'), or all of them ('full_text')."""
     from ..stages.screening import verify_existing
     r = verify_existing(ctx, ctx.store.get("protocol")["data"], mode=mode, only=rids or None)
     return {"message": f"{r['checked']} read again: {r['outcomes']}", **r}

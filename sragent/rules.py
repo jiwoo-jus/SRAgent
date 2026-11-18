@@ -11,6 +11,7 @@ the UI) and can be restored with one click.
   erratum                corrections / errata / retractions
   editorial              editorials and news (comments that are letters or case reports are kept)
   review                 narrative or systematic reviews (no original data)  [topic decides]
+  book_chapter           a book or book chapter the database returned (GeneReviews and the like), not an article
   off_topic_no_abstract  no abstract AND the title mentions none of the review's key concepts
                          (or their database synonyms), e.g. "PRISMA statement."
 """
@@ -20,8 +21,8 @@ import re
 
 from .selection import human_decided
 
-RULES_VERSION = 2   # bump when patterns change, so existing reviews are re-checked automatically
-DEFAULT_RULES = ["empty_record", "conference_abstract", "erratum", "editorial", "off_topic_no_abstract"]
+RULES_VERSION = 3   # bump when patterns change, so existing reviews are re-checked automatically
+DEFAULT_RULES = ["empty_record", "conference_abstract", "erratum", "editorial", "off_topic_no_abstract", "book_chapter"]
 
 _ABSTRACT_TITLE = re.compile(
     r"\babstracts?\b|\babstract book\b|^(oral|poster|posters?|speaker|invited)\s+(presentations?|abstracts?)\b|"
@@ -53,6 +54,8 @@ def classify(rec: dict, key_terms: list[str], enabled: list[str]) -> tuple[str, 
             return "conference_abstract", f"Meeting-abstract supplement (DOI {doi}); abstract-only publication."
         if _ABSTRACT_CODE.match(title) and not abstract and rec.get("source") == "crossref":
             return "conference_abstract", "Coded meeting abstract (e.g. ISPOR / EULAR poster code); abstract-only publication."
+    if "book_chapter" in enabled and ptypes & {"book chapter", "books and documents"}:
+        return "book_chapter", "Book or book chapter (e.g. GeneReviews), not a journal article."
     if "editorial" in enabled and ("editorial" in ptypes or "news" in ptypes) and not (ptypes & {"letter", "case reports"}):
         return "editorial", "Editorial / news item (no original data)."
     if "review" in enabled and ptypes & {"review", "systematic review", "meta-analysis"} and not (

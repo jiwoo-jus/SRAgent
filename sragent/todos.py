@@ -44,6 +44,17 @@ def _short(text: str, n: int = 6) -> str:
     return " ".join(w[:n]).rstrip(".,;") + ("…" if len(w) > n else "")
 
 
+def _screener_before_verify(st, rid: str) -> str:
+    """The screener's decision before the verifier's second reading (a reading stored before the verifier's record
+    named it: the last version of the decision node without that reading)."""
+    for nid in (f"elig:{rid}", f"screen:{rid}"):
+        n = st.get(nid)
+        for h in reversed((n or {}).get("history") or []):
+            if not (h.get("data") or {}).get("screen_verify"):
+                return h["data"].get("decision", "?")
+    return "?"
+
+
 def build(ctx: Ctx) -> list[dict]:
     from . import provenance
     st = ctx.store
@@ -99,7 +110,7 @@ def build(ctx: Ctx) -> list[dict]:
         "id": "fields", "step": "extract", "kind": "fields", "priority": 9, "optional": True,
         "title": "Data items and quality domains",
         "question": "What the agent extracts from every included study, and the quality domains it judges.",
-        "fields": [{k: f.get(k) for k in ("name", "kind", "description") if f.get(k)} for f in tp.get("extraction_fields") or []],
+        "fields": [{k: f.get(k) for k in ("name", "kind", "description", "columns") if f.get(k)} for f in tp.get("extraction_fields") or []],
         "domains": [{k: d.get(k) for k in ("name", "description") if d.get(k)} for d in tp.get("rob_domains") or []],
         "tool": tp.get("rob_tool_name", ""), "n_included": len(inc_ids),
         "n_extracted": sum(1 for r in inc_ids if st.get(f"ext:{r}")),
@@ -129,9 +140,12 @@ def build(ctx: Ctx) -> list[dict]:
         rv = d.get("eligibility_review") or {}
         sv = d.get("screen_verify") or {}
         if sv.get("outcome") == "pending_disagreement":
-            why = f"screener says {'exclude' if d.get('because') else 'include'}, the verifier says {sv.get('decision')}"
-            suggest = {"option": "include" if sv.get("decision") == "include" else "exclude",
-                       "criterion": (d.get("because") or [None])[0], "why": "the two agents disagree after full-text screening; read both and decide"}
+            first = sv.get("screener") or _screener_before_verify(st, rid)
+            why = f"the screener says {first}, the verifier says {sv.get('decision')}"
+            crit_v = (d.get("because") or [None])[0] if sv.get("decision") == "exclude" else None
+            suggest = {"option": "include" if sv.get("decision") == "include" else "exclude", "criterion": crit_v,
+                       "why": f"the agents disagree: this is the verifier's reading{f' ({crit_v} not met)' if crit_v else ''}, "
+                              f"the screener said {first}. Read both and decide"}
         elif not_met:
             suggest = {"option": "exclude", "criterion": not_met[0], "why": f"agent: {not_met[0]} fails"}
         elif read_full and not rv and not sv:   # the paper was read in full and is still unclear: a judgment, not a missing file

@@ -14,6 +14,7 @@ STAGE_OF_TYPE = {t: s.key for s in STAGES for t in s.produces if not t.startswit
 STAGE_OF_TYPE["record"] = "search"
 
 ACTION_WORDS = {"retire": "set aside", "reactivate": "brought back", "recompute": "redone by the model",
+                "first": "done by the model for the first time (newly included)",
                 "rederive": "decided again from the stored answers (no model call)", "revise": "revised by the model",
                 "current": "marked current (nothing to redo)", "kept": "kept unchanged (you decided or edited it)",
                 "render": "rendered again", "take_in": "taken into the synthesis (the model revises the statements)"}
@@ -68,6 +69,8 @@ def _grouped(items: list[dict]) -> list[str]:
     by: dict[str, list[str]] = {}
     for i in items:
         action = "take_in" if i["node"].startswith("syn:+") else i["action"]
+        if action == "recompute" and any(str(w).startswith("included, not") for w in i.get("why") or []):
+            action = "first"          # an output that does not exist yet (engine.plan: "included, not extracted")
         by.setdefault(action, []).append(i["rid"] or _short(i["node"]))
     out = []
     for action, ids in by.items():

@@ -201,6 +201,7 @@ def search(ctx: Ctx, protocol: dict) -> list[dict]:
             r["rid"] = synergy.rid_for(r)
 
     recs, dups = dedup(recs)
+    strategy["n_returned"] = len(res["pmids"]) if kind not in ("synergy", "file") else len(recs) + len(dups)
     strategy["n_identified"] = len(recs) + len(dups)
     strategy["n_duplicates"] = len(dups)
 

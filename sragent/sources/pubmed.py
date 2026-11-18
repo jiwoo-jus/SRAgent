@@ -40,9 +40,13 @@ def efetch(pmids: list[str]) -> list[dict]:
         if not xml:
             continue
         root = ET.fromstring(xml)
-        for art in root.findall(".//PubmedArticle"):
-            pmid = _text(art.find(".//MedlineCitation/PMID"))
-            title = _text(art.find(".//ArticleTitle"))
+        # a query returns book chapters (GeneReviews, for example) as PubmedBookArticle. They are records the search
+        # found, so they are parsed too and marked as book chapters; a screening rule then excludes them with a
+        # reason, which keeps the PRISMA counts equal to what the query returned.
+        for art in root.findall(".//PubmedArticle") + root.findall(".//PubmedBookArticle"):
+            book = art.tag == "PubmedBookArticle"
+            pmid = _text(art.find(".//PMID"))
+            title = _text(art.find(".//ArticleTitle")) or _text(art.find(".//BookTitle"))
             parts = []
             for ab in art.findall(".//Abstract/AbstractText"):
                 lab = ab.get("Label")
@@ -52,12 +56,15 @@ def efetch(pmids: list[str]) -> list[dict]:
                 for el in art.findall(".//Article/ELocationID"):
                     if el.get("EIdType") == "doi":
                         ids["doi"] = _text(el)
-            year = _text(art.find(".//JournalIssue/PubDate/Year")) or _text(art.find(".//JournalIssue/PubDate/MedlineDate"))[:4]
+            year = (_text(art.find(".//JournalIssue/PubDate/Year")) or _text(art.find(".//Book/PubDate/Year"))
+                    or _text(art.find(".//JournalIssue/PubDate/MedlineDate"))[:4])
             out.append({
                 "pmid": pmid, "title": title, "abstract": "\n".join(parts),
                 "doi": (ids.get("doi") or "").lower(), "pmcid": ids.get("pmc", ""),
-                "year": year, "journal": _text(art.find(".//Journal/Title")),
-                "pub_types": [_text(p) for p in art.findall(".//PublicationType")],
+                "year": year, "journal": _text(art.find(".//Journal/Title")) or _text(art.find(".//BookTitle")),
+                "volume": _text(art.find(".//JournalIssue/Volume")), "issue": _text(art.find(".//JournalIssue/Issue")),
+                "pages": _text(art.find(".//Pagination/MedlinePgn")) or _text(art.find(".//Pagination/StartPage")),
+                "pub_types": [_text(p) for p in art.findall(".//PublicationType")] + (["Book Chapter"] if book else []),
                 "mesh": [_text(m.find("DescriptorName")) for m in art.findall(".//MeshHeading")],
                 "authors": ", ".join(f"{_text(a.find('LastName'))} {_text(a.find('Initials'))}".strip()
                                      for a in art.findall(".//AuthorList/Author")[:6]),

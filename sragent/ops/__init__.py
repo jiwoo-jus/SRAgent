@@ -58,11 +58,15 @@ def operation(name: str, stage: str, kind: str, reach: bool = False, category: s
                     provenance.require_judgment_allowed(ctx, name)
                 except provenance.NotAllowed as e:
                     return {"ok": False, "message": str(e)}
+            depth = getattr(ctx.store, "op_depth", 0)   # an operation run by another one (decide_many: decide per study)
+            ctx.store.op_depth = depth + 1
             try:
                 with ctx.store.because(op=name):
                     res = fn(ctx, *a, **kw)
             except ValueError as e:
                 res = {"ok": False, "message": str(e)}
+            finally:
+                ctx.store.op_depth = depth
             res = res if isinstance(res, dict) else {"ok": True, "result": res}
             res.setdefault("ok", True)
             res.setdefault("message", "done" if res["ok"] else "refused")
@@ -74,7 +78,7 @@ def operation(name: str, stage: str, kind: str, reach: bool = False, category: s
                     target = args.get("rid") or args.get("node") or args.get("target") or args.get("rids")
                     provenance.record(ctx, category, name, target=target if not isinstance(target, list) else None,
                                       rid=args.get("rid"), rids=args.get("rids"), note=note)
-            if res["ok"] and kind != "read":
+            if res["ok"] and kind != "read" and depth == 0:   # saved once, by the outermost operation
                 ctx.save()
             return res
 
@@ -181,6 +185,7 @@ def preview(ctx, name: str, args: dict | None = None) -> dict:
                 shutil.copy2(ctx.run_dir / f, tmp / f)
         sb_store = st.clone()
         sb_store.run_dir = tmp
+        sb_store.copied_from = sb_store.copied_from | {tmp.resolve()}   # a preview is never saved (a large review: ~10 s each)
         sb = dataclasses.replace(ctx, store=sb_store, run_dir=tmp)
         fn = get(name.replace(".rerun_all", ".clear")).fn if name.endswith(".rerun_all") else op.fn
         res = fn(sb, _log=False, **{k: v for k, v in args.items() if not (name.endswith(".rerun_all") and k != "note")})

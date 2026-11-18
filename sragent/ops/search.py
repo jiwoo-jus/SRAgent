@@ -74,3 +74,27 @@ def run(ctx) -> dict:
     from .. import pipeline
     pipeline.run(ctx, until="search")
     return {"message": "search done"}
+
+
+@operation("search.bibliography", "search", "deterministic")
+def bibliography(ctx, only_included: bool = True) -> dict:
+    """Complete the reference details of the included studies from PubMed (journal, volume, issue, pages); no model
+    call. A reference list needs them and the search did not keep them. Screening, extraction and quality
+    assessment do not read them (graph.READS), so nothing goes out of date."""
+    from ..sources import pubmed
+    st = ctx.store
+    ids = list(st.included_ids()) if only_included else [k.split(":", 1)[1] for k in st.nodes if k.startswith("rec:")]
+    todo = [r for r in ids if (st.get(f"rec:{r}") or {}).get("data", {}).get("pmid")
+            and not (st.get(f"rec:{r}") or {}).get("data", {}).get("pages")]
+    pubmed.configure(ctx.cfg.get("contact_email", ""), ctx.cfg.get("ncbi_api_key", ""))
+    got, n = {r["pmid"]: r for r in pubmed.efetch([(st.get(f"rec:{r}") or {})["data"]["pmid"] for r in todo])}, 0
+    for rid in todo:
+        node = st.get(f"rec:{rid}")
+        new = got.get(node["data"].get("pmid"))
+        add = {k: new[k] for k in ("journal", "volume", "issue", "pages") if new and new.get(k)} if new else {}
+        if add and any(node["data"].get(k) != v for k, v in add.items()):
+            st.annotate(f"rec:{rid}", {**node["data"], **add}, actor="agent", reason="reference details from PubMed")
+            n += 1
+    ctx.save()
+    return {"message": f"reference details completed for {n} of {len(todo)} studies that lacked them",
+            "updated": n, "looked_up": len(todo)}

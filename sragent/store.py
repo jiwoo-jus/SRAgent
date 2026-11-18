@@ -74,6 +74,7 @@ class ReviewStore:
         self._seq_base = 0                     # a copy (clone) numbers its entries after the original's
         self.meta: dict[str, Any] = {}
         self.copied_from: set[Path] = set()    # the folders of the stores this one is a copy of (never saved over)
+        self.op_depth = 0                      # operations running (ops.operation): only the outermost one saves
         self._lock = threading.Lock()   # flag ids and the changelog are written from parallel stage workers
         self._log_lock = threading.Lock()      # one seq per change-log entry, also from parallel workers
         self._cohort_lock = threading.RLock()  # the included set is refreshed by one worker at a time
