@@ -66,6 +66,21 @@ function previewDialog(name, args, label){
     box.addEventListener("click", e => { if (e.target === box) { closeModal(); resolve(false); } });
   });
 }
+/* Before a model job: what it may cost and whether the budget has room (/api/run_estimate). "Run up to here" is
+   estimated from the work left; other jobs show the room left. */
+async function costQuestion(name, args, label){
+  const e = await api("/api/run_estimate", {op: name, args}).catch(() => null);
+  const head = `${label || name}: runs as a job.`;
+  if (!e || !e.budget || e.budget.error) return `${head} It may make model calls. Start it?`;
+  const room = `Budget left: ${usd(e.room_total_usd)} of the ${usd(e.budget.total_usd)} total.`;
+  if (!e.known) return `${head} It makes model calls (no estimate for this kind of job). ${room}\n\nStart it?`;
+  if (!e.calls) return `${head} No model calls are expected: nothing is left to do with a model up to this stage.\n\nStart it?`;
+  const lines = (e.stages || []).map(x => `  ${x.label}: about ${usd(x.usd)}` + (x.limit_usd != null
+      ? ` (limit ${usd(x.limit_usd)}, ${usd(Math.max(0, x.room_usd))} left)${x.fits ? "" : "  ⚠ may not fit"}` : ""));
+  const warn = !e.fits_total || (e.stages || []).some(x => !x.fits)
+      ? "\n\n⚠ This may not fit the budget. It will stop cleanly at the limit and keep what it finished; raise the limit and Resume to continue." : "";
+  return `${head} About ${e.calls} model calls, estimated ${usd(e.total_usd)} (${usd(e.range_usd[0])}–${usd(e.range_usd[1])}).\n${lines.join("\n")}\n${room}${warn}\n\nStart it?`;
+}
 async function runOp(name, args, label, extra){   // extra: {agent} a model picked for this one job
   await loadOps();
   const o = OPS[name] || {};
@@ -77,7 +92,7 @@ async function runOp(name, args, label, extra){   // extra: {agent} a model pick
            : o.reach ? [name, args] : null;
   let choice = "apply";
   if (pv) { choice = await previewDialog(pv[0], pv[1], label); if (!choice) return null; }
-  else if (o.kind === "llm" && !confirm(`${label || name}: runs as a job with model calls. Start it?`)) return null;
+  else if (o.kind === "llm" && !confirm(await costQuestion(name, args, label))) return null;
   const r = await api("/api/op", {name, args, ...(extra || {})});
   toast(r.message || r.error || (r.ok ? "Done" : "Failed"), !r.ok);
   if (r.ok && choice === "apply+update") {         // the update was previewed with the change: no second question

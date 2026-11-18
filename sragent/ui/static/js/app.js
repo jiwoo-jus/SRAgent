@@ -176,10 +176,13 @@ function renderNoRun(){
   $("#mode").innerHTML = NOCFG.changes ? badge("settings changed", "warn", "dot") : NOCFG.error ? badge("config error", "bad", "dot") : "";
   document.querySelectorAll("#tabs a[data-t]").forEach(a => a.classList.toggle("off", a.dataset.t !== "configs"));
   $("#reportlink").classList.add("off");
+  $("#manuscriptlink").classList.add("off");
 }
 function renderChrome(){
   document.querySelectorAll("#tabs a.off").forEach(a => a.classList.remove("off"));
   $("#reportlink").href = U("/report");
+  $("#manuscriptlink").href = U("/manuscript");
+  $("#manuscriptlink").classList.toggle("off", !S.run.manuscript);   // only when the review has a report_plan.yaml
   document.title = S.run.name + " · SRAgent";
   $("#runname").textContent = S.run.name;
   $("#runname").parentElement.title = S.run.run_dir;
@@ -187,7 +190,7 @@ function renderChrome(){
   $("#topic").title = S.run.topic || "";
   const ao = S.run.human_mode === "agent_only";
   $("#mode").innerHTML = `<span class="badge ${ao ? "info" : ""} dot" title="${ao ? "Agent-only: the agent makes every judgment; people may only supply the full texts it asks for." : "Human in the loop: you approve, correct and confirm the agent's work."}">${ao ? "Agent-only" : "Human in the loop"}</span>`;
-  $("#spent").textContent = usd(S.run.spent_usd);
+  $("#spent").textContent = usd(S.run.spent_usd) + (S.budget && S.budget.total_usd != null ? ` of ${usd(S.budget.total_usd, 0)}` : "");
   $("#needs-n").textContent = S.todos.filter(t => !t.snoozed && !t.optional).length || "";
   const ft = S.todos.find(t => t.kind === "fulltexts");
   // (the Full texts count is on the retrieve stage in the stage list)
@@ -201,6 +204,8 @@ function renderChrome(){
       ${S.job.queued ? `<div class="xs mut" style="margin-top:2px">${S.job.queued} more queued</div>` : ""}
       <div class="a"><button class="btn sm" onclick="show('run')">View log</button><button class="btn sm danger" onclick="stopRun()">${ic("stop","sm")} Stop</button></div></div>`;
     top = `<button class="btn sm" onclick="show('run')" title="${esc(j.label||j.action)}"><span class="spin"></span><span class="hide-sm">Running</span> ${esc(trunc(j.label||j.action, 28))}${j.progress && j.progress.total ? ` · ${j.progress.done}/${j.progress.total}` : ""}</button>`;
+  } else if (S.job.last && S.job.last.status === "budget") {
+    w = budgetStop(S.job.last);
   } else if (S.job.last) {
     const L = S.job.last;
     w = `<div class="jobw" style="cursor:pointer" onclick="show('activity')" title="Open Activity"><div class="h">${badge(L.status, tone(L.status), "dot")}<span class="mut xs" style="font-weight:400">last job${L.ended ? " · " + fmtT(L.ended) : ""}</span></div>
@@ -208,6 +213,29 @@ function renderChrome(){
   }
   $("#jobw").innerHTML = w; $("#topjob").innerHTML = top;
   if (typeof stageNav === "function") stageNav();
+}
+
+/* a job stopped by a limit of budget:: which limit, a box to raise it, and Resume (it continues where it stopped) */
+let BSTOP = {};
+function budgetStop(L){
+  const b = L.budget_stop || {}, st = b.stage, cur = st ? ((S.budget.stages || []).find(x => x.key === st) || {}).limit_usd : S.budget.total_usd;
+  if (BSTOP.id !== L.id) BSTOP = {id: L.id, value: Math.ceil(((cur || b.limit || 0) + (st ? 2 : 5)) * 2) / 2};
+  const what = st ? `${esc(b.label || st)} limit` : "total budget";
+  return `<div class="jobw" style="border-color:var(--warn-line);background:var(--warn-bg)"><div class="h">${badge("stopped", "warn", "dot")}<span class="mut xs" style="font-weight:400">${L.ended ? fmtT(L.ended) : ""}</span></div>
+    <div class="l">${esc(L.label||L.action)}</div>
+    <div class="xs" style="margin-top:4px">The ${what} of ${usd(b.limit)} is reached (spent ${usd(b.spent)}). What it finished is saved.</div>
+    <div class="row" style="gap:6px;margin-top:6px"><div class="field" style="max-width:110px"><span class="mut">$</span><input type="number" min="0" step="0.5" value="${esc(BSTOP.value)}" oninput="BSTOP.value=this.value" aria-label="New limit"></div>
+      <button class="btn sm primary" onclick="resumeAfterBudget('${esc(L.id)}', ${st ? `'${esc(st)}'` : "null"})">${ic("play","sm")} Raise and resume</button></div></div>`;
+}
+async function resumeAfterBudget(id, stage){
+  const b = S.budget, v = Number(BSTOP.value);
+  const stages = Object.fromEntries(b.stages.map(x => [x.key, x.limit_usd == null ? "" : x.limit_usd]));
+  if (stage) stages[stage] = v;
+  const r = await api("/api/budget", {total_usd: stage ? b.total_usd : v, stages});
+  if (!r.ok) { toast(r.message || "Could not save the limit", true); return; }
+  const j = await api("/api/job_resume", {id});
+  toast(j.message || (j.ok ? "Resumed" : "Could not resume"), !j.ok);
+  BG = null; refresh();
 }
 
 /* the running job's current step (progress.json): "Updating screening decisions · 340 / 825 · about 12m left" */
@@ -283,7 +311,7 @@ function renderSteps(fromPoll){
     ${kpi("Included", v(g("included")), "after full-text review", "included", "var(--ok)")}
     ${kpi("Pending", v(g("pending")), "undecided or waiting for a PDF", "pending", "var(--warn)")}
     ${kpi("Excluded", v(g("excluded")), `${S.ruled.length} by publication-type rules`, "excluded", "var(--mut-2)")}
-    ${kpi("Spent", usd(S.run.spent_usd), "API cost, this run folder", null)}</div>`;
+    ${kpi("Spent", usd(S.run.spent_usd), S.budget && S.budget.total_usd != null ? `of ${usd(S.budget.total_usd, 0)} · <a href="javascript:void(0)" onclick="event.stopPropagation();editBudget()">Edit</a>` : "API cost, this run folder", null)}</div>`;
   const nDone = S.steps.filter(s => s.status === "done").length;
   const rows = S.steps.map((s, i) => {
     const st = s.status === "done" ? "done" : s.status === "needs you" ? "you" : s.status === "ready to run" ? "ready" : "todo";
@@ -300,9 +328,11 @@ function renderSteps(fromPoll){
   const stale = S.stale || {n:0};
   const staleBox = stale.n ? `<div class="callout warn">${ic("refresh")}<div class="grow">${stale.n} output${stale.n>1?"s are":" is"} out of date: a dependency changed after ${stale.n>1?"they were":"it was"} computed (${Object.entries(stale.by_type||{}).map(([t,n]) => `${n} ${t}`).join(", ")}${stale.pinned ? `; ${stale.pinned} decided or edited by you, kept` : ""}).${stale.est_usd != null ? ` Updating costs about ${usd(stale.est_usd)}.` : ""}
       <button class="link" onclick="goTodoGroup('sync')">See the plan and update</button></div></div>` : "";
+  const edited = S.code_changed || [];
+  const codeBox = edited.length ? `<div class="callout warn">${ic("refresh")}<div class="grow">This interface is running the code it started with: ${edited.length} source file${edited.length>1?"s have":" has"} been edited since (${esc(edited.slice(0,6).join(", "))}${edited.length>6?` and ${edited.length-6} more`:""}). Everything it computes, including the report for readers, still uses the old code. Restart it to pick the edits up.</div></div>` : "";
   const of = S.open_flags || {n:0};
   const flagBox = of.n && (S.run||{}).human_mode === "agent_only" ? `<div class="callout info">${ic("flag")}<div class="grow">${of.n} open flag${of.n>1?"s":""} need${of.n>1?"":"s"} a person (${Object.entries(of.by_source||{}).map(([k,n]) => `${n} ${k}`).join(", ")}). In agent-only mode nobody answers them during the run; they are listed in the report under "Open flags".</div></div>` : "";
-  $("#v-steps").innerHTML = nextBanner() + staleBox + flagBox + kpis + `
+  $("#v-steps").innerHTML = nextBanner() + codeBox + staleBox + flagBox + kpis + `
     <div class="card"><div class="card-h"><div class="grow"><h2>Review pipeline</h2><div class="sub">${nDone} of ${S.steps.length} steps done</div></div>
       <div style="width:160px" class="bar" title="${nDone} of ${S.steps.length} done"><i style="width:${Math.round(100*nDone/S.steps.length)}%"></i></div></div>
       <ol class="stepper">${rows}</ol></div>
@@ -419,10 +449,10 @@ const FC = {edit:null, busy:""};
 function fieldsCard(t){
   const e = FC.edit;
   const frow = (f, i) => e ? `<tr style="${f.remove ? "opacity:.45" : ""}"><td><input class="mono" style="width:170px" value="${esc(f.name||"")}" oninput="FC.edit.fields[${i}].name=this.value" placeholder="item_name"></td>
-      <td><select onchange="FC.edit.fields[${i}].kind=this.value"><option value="" ${!f.kind?"selected":""}>text</option><option value="drug" ${f.kind==="drug"?"selected":""}>drug (term check)</option><option value="disease" ${f.kind==="disease"?"selected":""}>disease (term check)</option></select></td>
+      <td>${f.kind === "rows" ? `<span class="small mut" title="Its columns are edited in the topic file (Configs page)">rows · ${Object.keys(f.columns || {}).length} columns</span>` : `<select onchange="FC.edit.fields[${i}].kind=this.value"><option value="" ${!f.kind?"selected":""}>text</option><option value="drug" ${f.kind==="drug"?"selected":""}>drug (term check)</option><option value="disease" ${f.kind==="disease"?"selected":""}>disease (term check)</option></select>`}</td>
       <td><textarea rows="2" style="width:100%" oninput="FC.edit.fields[${i}].description=this.value">${esc(f.description||"")}</textarea>
         <button class="link small" onclick="FC.edit.fields[${i}].remove=!FC.edit.fields[${i}].remove;renderTodo()">${f.remove ? "keep" : "remove"}</button></td></tr>`
-    : `<tr><td class="mono" style="font-weight:600">${esc(f.name)}</td><td class="small mut">${esc(f.kind || "text")}</td><td>${esc(f.description)}</td></tr>`;
+    : `<tr><td class="mono" style="font-weight:600">${esc(f.name)}</td><td class="small mut">${esc(f.kind === "rows" ? `rows · ${Object.keys(f.columns || {}).length} columns` : f.kind || "text")}</td><td>${esc(f.description)}${f.kind === "rows" ? `<div class="xs mut" style="margin-top:4px">${Object.keys(f.columns || {}).map(esc).join(" · ")}</div>` : ""}</td></tr>`;
   const drow = (d, i) => e ? `<tr style="${d.remove ? "opacity:.45" : ""}"><td><input class="mono" style="width:170px" value="${esc(d.name||"")}" oninput="FC.edit.domains[${i}].name=this.value" placeholder="domain_name"></td>
       <td colspan="2"><textarea rows="2" style="width:100%" oninput="FC.edit.domains[${i}].description=this.value">${esc(d.description||"")}</textarea>
         <button class="link small" onclick="FC.edit.domains[${i}].remove=!FC.edit.domains[${i}].remove;renderTodo()">${d.remove ? "keep" : "remove"}</button></td></tr>`
@@ -605,7 +635,7 @@ function pdfPanel(ft, compact){
   const rows = ft.files.map(x => `<tr><td>${x.present ? badge("added","ok","dot") : badge("missing","","dot")}</td>
       <td class="nowrap"><code style="word-break:normal">${esc(x.filename)}</code></td>
       <td><div>${esc(x.title)}</div><div class="xs mut" style="margin-top:2px">${esc(x.why)}${x.open_access_url?` · <a target="_blank" href="${esc(x.open_access_url)}">open-access copy ${ic("ext","sm")}</a> (the server could not download it; your browser usually can)`:""}</div></td>
-      <td class="nowrap r">${x.priority===1 && !x.present ? `<button class="btn sm" onclick="pdfUnwant('${x.rid}')">Decide without it</button>` : ""}
+      <td class="nowrap r">${x.priority===2 && !x.present ? `<button class="btn sm" onclick="pdfUnwant('${x.rid}')">Decide without it</button>` : ""}
         ${!x.present ? `<button class="btn sm" onclick="pdfUnavailable('${x.rid}')">Not obtainable</button>` : ""}</td></tr>`).join("");
   return `<div class="card">
     <div class="card-h"><div class="grow"><h3>${added} of ${total} added</h3><div class="sub">Name each file <code>&lt;PMID&gt;.pdf</code>; the agent picks them up when you process them.</div></div>
@@ -779,7 +809,7 @@ async function submitTodo(id){
 }
 
 /* ---------------- run ---------------- */
-const runOpts = {action:"run", until:"report", suite:"all", n_cases:"", max_records:"", extra_budget:2, agent:null, judge:null, effort:"low"};
+const runOpts = {action:"run", until:"report", suite:"all", n_cases:"", max_records:"", agent:null, judge:null, effort:"low"};
 async function loadModels(){
   const m = await api("/api/models");
   if (!m || m.error || !m.current) return;
@@ -787,7 +817,6 @@ async function loadModels(){
   const st = M.settings || {};
   if (!runOpts.agent) runOpts.agent = st.agent || {provider:M.current.writer.provider, model:M.current.writer.model, effort:M.current.writer.reasoning_effort||"low"};
   if (!runOpts.judge) runOpts.judge = st.judge || {provider:M.current.judge.provider, model:M.current.judge.model, effort:"low"};
-  if (st.extra_budget) runOpts.extra_budget = st.extra_budget;
   if (st.max_records && M.benchmark) runOpts.max_records = st.max_records;
   SM.edit = Object.fromEntries((M.models || []).flatMap(r => Object.entries(r.cells).map(([role, c]) => [`${r.stage}.${role}`, c.set ? {...c.set} : null])));
   SM.dirty = false;
@@ -1057,12 +1086,13 @@ function renderStudy(){
   if (d.extraction) {
     const x = d.extraction, editing = E.kind === "ext";
     const rows = x.fields.map(f => `<tr><td style="width:150px"><b>${esc(human(f.name))}</b></td>
-        <td style="min-width:240px">${editing ? `<textarea oninput="ST.edit.fields['${f.name}']=this.value">${esc(E.fields[f.name])}</textarea>` : esc(f.value)}
+        <td style="min-width:240px">${editing ? `<textarea ${f.columns ? `class="mono" rows="${Math.min(14, 2 + (f.rows || []).length)}" title="One row per line, as JSON; remove a line to remove a row"` : ""} oninput="ST.edit.fields['${f.name}']=this.value">${esc(E.fields[f.name])}</textarea>` : esc(f.value) + (f.columns && (f.rows || []).length ? ` <a class="xs" href="#s-rows-${esc(f.name)}" onclick="document.getElementById('s-rows-${esc(f.name)}').scrollIntoView({block:'start'});return false">table below</a>` : "")}
           ${f.edited?`<div class="xs mut" style="margin-top:4px">${ic("edit","sm")} edited by you; was “${esc(String(f.edited.before).slice(0,120))}”</div>`:""}
           ${(f.terms||[]).map(t => `<div class="small" style="margin-top:4px">${badge(human(t.status), t.status==="validated"?"ok":t.status==="not_found"?"bad":"warn","sq")} ${esc(t.term)} <span class="xs mut mono">${esc(Object.entries(t.ids||{}).map(([k,v]) => k+":"+v).join(" "))}</span></div>`).join("")}</td>
         <td style="min-width:280px">${evList(f.evidence)}${f.check && f.check!=="located"?`<div style="margin-top:4px">${badge(f.check==="none" ? "no source sentence" : f.check,"warn")}</div>`:""}${f.note ? `<div class="xs mut" style="margin-top:4px"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em">Agent</span> ${esc(f.note)}</div>` : ""}${(f.uncovered||[]).length ? `<div class="xs mut" style="margin-top:4px" title="A sum, a rounding or a different spelling in the paper is the usual reason; nothing is required of you">not found as written in the paper: ${esc(f.uncovered.join(", "))}</div>` : ""}</td></tr>`).join("");
     out.push(sec(`Extracted data <span class="small mut" style="font-weight:400">v${x.version} · from ${esc(x.source_kind)}${x.status!=="active"?" · "+esc(x.status):""}</span>`,
       `<div class="tw" style="margin:-16px -18px"><table><thead><tr><th>Item</th><th>Value</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table></div>
+       ${editing ? "" : x.fields.filter(f => f.columns && (f.rows || []).length).map(rowsTable).join("")}
        ${editing?`<div style="margin-top:28px">${editBar("Save (no LLM)")}</div>
        <div class="hint" style="margin-top:8px">The cited sentences stay as the agent's evidence; your value is marked as edited, and the outputs that use it are listed in the To-do list for an optional update.</div>`:""}`,
       editing || !judging() ? "" : `<button class="btn sm" onclick="editExt()">${ic("edit","sm")} Edit values</button>`, "s-ext"));
@@ -1141,7 +1171,22 @@ function impactLine(){
 }
 function editNote(){ return `<div class="form" style="margin-top:12px"><label>Note (kept in the history)</label><input placeholder="Optional" value="${esc((ST.edit||{}).note||"")}" oninput="ST.edit.note=this.value"></div>`; }
 function editSyn(id){ const s = ST.d.synthesis.find(x => x.id === id); ST.edit = {kind:"syn", node:id, text:s.text, cites:s.cites.join(", "), note:""}; renderStudy(); }
-function editExt(){ const f = {}; ST.d.extraction.fields.forEach(x => f[x.name] = x.value); ST.edit = {kind:"ext", fields:f, orig:{...f}, note:""}; renderStudy(); }
+function editExt(){ const f = {}; ST.d.extraction.fields.forEach(x => f[x.name] = x.columns ? rowsJson(x) : x.value); ST.edit = {kind:"ext", fields:f, orig:{...f}, note:""}; renderStudy(); }
+/* a rows item (one row per result, for a quantitative synthesis): its table, and its rows as editable JSON lines */
+function rowsJson(f){
+  return (f.rows || []).map(r => JSON.stringify(Object.fromEntries([...f.columns.filter(c => r[c] != null).map(c => [c, r[c]]),
+                                                                    ["evidence", (r.evidence || []).map(e => e.sid)]]))).join("\n");
+}
+function rowsTable(f){
+  const cols = f.columns.filter(c => f.rows.some(r => r[c] != null));
+  const body = f.rows.map((r, i) => `<tr><td class="mono xs">${i + 1}</td>${cols.map(c => `<td class="small"${(r.off_list || []).includes(c) ? ` title="not one of the listed values"` : ""}>${r[c] == null ? `<span class="mut">·</span>` : ((r.estimated || []).includes(c) ? `<span title="estimated from the figure, not a reported number" style="font-style:italic">≈ ${esc(String(r[c]))}</span>` : esc(String(r[c])))}${(r.off_list || []).includes(c) ? " " + badge("off list", "warn") : ""}</td>`).join("")}
+      <td style="min-width:260px">${evList(r.evidence)}${r.check && r.check !== "located" ? `<div style="margin-top:4px">${badge(r.check === "none" ? "no source sentence" : r.check, "warn")}</div>` : ""}
+        ${(r.uncovered || []).length ? `<div class="xs mut" style="margin-top:4px">not found as written in the paper: ${esc(r.uncovered.join(", "))}</div>` : ""}
+        ${r.figure_read ? `<div class="xs mut" style="margin-top:4px">${badge("estimated from Fig " + r.figure_read.figure, "warn")} ${esc(r.figure_read.how || "")}</div>` : ""}
+        ${r.note ? `<div class="xs mut" style="margin-top:4px"><span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em">Agent</span> ${esc(r.note)}</div>` : ""}</td></tr>`).join("");
+  return `<div id="s-rows-${esc(f.name)}" style="margin-top:28px"><div class="small" style="font-weight:600;margin-bottom:6px">${esc(human(f.name))} · ${f.rows.length} row${f.rows.length > 1 ? "s" : ""}</div>
+    <div class="tw" style="margin:0 -18px"><table><thead><tr><th>#</th>${cols.map(c => `<th>${esc(human(c))}</th>`).join("")}<th>Evidence</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
 function editRob(){ ST.edit = {kind:"rob", changes: ST.d.rob.domains.map(x => ({domain:x.domain, judgment:x.judgment, rationale:x.rationale||""})), note:""}; renderStudy(); }
 async function saveEdit(){
   const E = ST.edit, d = ST.d; let body;
@@ -1268,13 +1313,15 @@ const KIND_SUB = {run:"A run = the folder's topic + the models it chooses + run 
 const CF_HELP = {
   run:`<p style="margin-top:0"><code>include:</code> loads this folder's <code>topic.yaml</code>; keys written here override it, and nested sections merge key by key. Anything not written takes its default. Models are chosen by name per stage and role (<code>models.default.writer</code>, <code>models.&lt;stage&gt;.writer</code> or <code>.verifier</code>, <code>eval.models.judge</code>); their provider and price come from <code>configs/models.yaml</code>.</p>
     <table class="sumt keys"><tbody>
-    <tr><td><code>budget_usd</code></td><td>hard cost cap for the run folder (5.0)</td></tr>
+    <tr><td><code>budget</code></td><td>required: <code>total_usd</code> (hard ceiling of the run folder) and <code>stages</code>, a limit for every stage that calls a model (a number or <code>unlimited</code>); Settings → Budget edits it</td></tr>
     <tr><td><code>contact_email</code></td><td>sent to NCBI, Unpaywall, OpenAlex; Unpaywall needs it</td></tr>
     <tr><td><code>pipeline.human_mode</code></td><td><code>human_in_the_loop</code> or <code>agent_only</code></td></tr>
     <tr><td><code>pipeline.fulltext_unclear</code></td><td><code>await</code> · <code>include</code> · <code>exclude</code> (agent_only: not await)</td></tr>
     <tr><td><code>pipeline.reassess_excluded</code></td><td>after a criterion changes, excluded records read again: <code>all</code> (every one, so each has an answer on every criterion; the default) · <code>needed</code> (only if the answer could bring them back). Saving edited criteria lets you choose for that change.</td></tr>
     <tr><td><code>pipeline.max_records</code></td><td>benchmark only: screen a sample</td></tr>
-    <tr><td><code>pipeline.citation_chasing</code></td><td>follow references and citations (true)</td></tr>
+    <tr><td><code>pipeline.verify_screening</code></td><td>which screening decisions a second agent reads: <code>off</code> · <code>pending</code> (undecided) · <code>conflict</code> (also where the screener's overall answer and its criterion answers disagree) · <code>full_text</code> (every full-text decision) · <code>all</code> (also title/abstract exclusions)</td></tr>
+    <tr><td><code>pipeline.verify_rob</code></td><td><code>off</code> (flagged risk-of-bias drafts go to you) · <code>flagged</code> (the verifier reads them first)</td></tr>
+    <tr><td><code>pipeline.citation_chasing</code></td><td>follow references and citations of included studies (true); <code>false</code> skips it</td></tr>
     <tr><td><code>feedback.auto_accept</code></td><td>apply proposals without confirmation (false)</td></tr>
     <tr><td><code>eval.budget_usd</code></td><td>benchmark only, per evaluation (8.0)</td></tr></tbody></table>
     <p class="hint" style="margin-bottom:0">Every key is listed in <code>configs/README.md</code>. API keys never go here; they live in <code>api_env.yaml</code>.</p>`,
@@ -1284,7 +1331,7 @@ const CF_HELP = {
     <tr><td><code>seed_eligibility</code></td><td>eligibility in plain words; the agent turns it into atomic criteria you approve</td></tr>
     <tr><td><code>screening_rules</code></td><td>exclusions before any LLM call: empty_record, conference_abstract, erratum, editorial, review, off_topic_no_abstract</td></tr>
     <tr><td><code>records.source</code></td><td><code>pubmed</code> (with <code>pubmed_retmax</code>, <code>maxdate</code>), <code>file</code> (a JSONL path) or <code>synergy</code> (benchmark)</td></tr>
-    <tr><td><code>extraction_fields</code></td><td><code>{name, description, kind}</code>; kind <code>drug</code> or <code>disease</code> turns on term checks</td></tr>
+    <tr><td><code>extraction_fields</code></td><td><code>{name, description, kind}</code>; kind <code>drug</code> or <code>disease</code> turns on term checks; kind <code>rows</code> with <code>columns</code> (each a list of values, <code>number</code> or <code>text</code>) extracts one row per result for a quantitative synthesis</td></tr>
     <tr><td><code>rob_tool_name</code>, <code>rob_domains</code></td><td>quality tool and its domains <code>{name, description}</code></td></tr></tbody></table>`,
   catalog:`<p style="margin-top:0">One entry per model under <code>models:</code>. Only facts about the model go here; choices (effort, <code>max_tokens</code>, <code>concurrency</code>, <code>api_env</code>) go in the run file.</p>
     <table class="sumt keys"><tbody>
@@ -1605,8 +1652,8 @@ function peopleFields(o){
     <label>Agent model</label><div><div class="row"><select onchange="setNf('agent_model',this.value,true)">${catOptions(o.agent_model, true)}</select>
       ${o.agent_model === "local" ? "" : `<select onchange="setNf('agent_effort',this.value)">${["low","medium","high"].concat(((CF.L.catalog_models||[]).find(m => m.name === o.agent_model) || {}).provider === "anthropic" ? ["xhigh","max"] : []).map(x => `<option ${o.agent_effort===x?"selected":""}>${x}</option>`).join("")}<option value="null" ${o.agent_effort==="null"?"selected":""}>model default</option></select>`}</div>
       <div class="hint">From the model catalog (<code>${esc(CF.L.catalog)}</code>). Give single stages another model or effort later on the Run page (Models per stage).</div></div>
-    <label>Budget</label><div><div class="field" style="max-width:180px"><span class="mut">$</span><input type="number" min="0" step="1" style="flex:0 1 120px" value="${esc(o.budget_usd)}" oninput="setNf('budget_usd',this.value)"></div>
-      <div class="hint">Hard cap for the whole run folder; the run stops cleanly when it is reached.</div></div>
+    <label>Total budget</label><div><div class="field" style="max-width:180px"><span class="mut">$</span><input type="number" min="0" step="1" style="flex:0 1 120px" value="${esc(o.budget_usd)}" oninput="setNf('budget_usd',this.value)"></div>
+      <div class="hint">The most this run folder may spend; a job stops cleanly when it is reached. Limits per stage can be set later in Settings → Budget (none at first).</div></div>
     <label>Contact email</label><div><input type="email" style="width:100%;max-width:360px" placeholder="you@example.org" value="${esc(o.contact_email)}" oninput="setNf('contact_email',this.value)">
       <div class="hint">Sent to NCBI, Unpaywall and OpenAlex. Unpaywall needs it to find open-access full texts.</div></div>`;
 }

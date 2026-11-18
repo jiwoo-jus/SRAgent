@@ -14,14 +14,14 @@ from pathlib import Path
 
 import yaml
 
-from ..config import DEFAULTS, EVAL_ROLES, MODEL_STAGES, default_run_dir, is_benchmark, load_catalog, load_config, model_for
+from ..config import DEFAULTS, EVAL_ROLES, MODEL_STAGES, budget_limits, default_run_dir, is_benchmark, load_catalog, load_config, model_for
 from ..stagespec import roles_of
 from ..config_lock import pending
 
 KINDS = ("review", "benchmark")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
 TOPIC_KEYS = {"key", "question", "seed_eligibility", "screening_rules", "records", "extraction_fields",
-              "rob_tool_name", "rob_domains", "protocol_file"}
+              "rob_tool_name", "rob_domains", "protocol_file", "meta_analysis"}
 RUN_KEYS = set(DEFAULTS) | {"include", "topic"}
 SECTIONS = ("pipeline", "feedback", "eval", "local")
 
@@ -66,6 +66,13 @@ def _folded(s: str, indent: int = 4) -> str:
     return ">-\n" + "\n".join(pad + x for x in lines)
 
 
+def budget_lines(total_usd: float) -> list[str]:
+    """The budget: section of a new run file: the total, and every stage that calls a model unlimited."""
+    from ..config import MODEL_STAGES, UNLIMITED
+    return ["budget:                  # USD limits of this run folder: the total, and each stage that calls a model "
+            "(a number or unlimited)", f"  total_usd: {total_usd:g}", "  stages:"] + [f"    {s}: {UNLIMITED}" for s in MODEL_STAGES]
+
+
 class Library:
     def __init__(self, root: str | os.PathLike):
         self.root = Path(root).resolve()
@@ -99,6 +106,8 @@ class Library:
             return "catalog"
         if p.name == "topic.yaml":
             return "topic"
+        if p.name == "report_plan.yaml":      # the plan of the report for readers (sragent/reportplan.py), not a run file
+            return "other"
         parts = p.relative_to(self.root).parts
         if len(parts) >= 3 and parts[0] in KINDS:
             return "run"
@@ -123,7 +132,7 @@ class Library:
         locked = [c["key"] for c in pending(cfg, rd)]
         return {**row, "config_changed": locked, "agent": f"{a.get('provider')}:{a.get('model')}", "human_mode": cfg["pipeline"]["human_mode"],
                 "records": (topic.get("records") or {}).get("source", ""), "max_records": cfg["pipeline"]["max_records"],
-                "benchmark": is_benchmark(cfg), "question": topic.get("question", ""), "budget_usd": cfg.get("budget_usd"),
+                "benchmark": is_benchmark(cfg), "question": topic.get("question", ""), "budget_usd": (cfg.get("budget") or {}).get("total_usd"),
                 "run_dir": self.rel(rd), "status": run_status(rd), "spent_usd": _spent(rd)}
 
     def listing(self) -> dict:
@@ -259,8 +268,11 @@ class Library:
         for i, f in enumerate(t.get("extraction_fields") or []):
             if not isinstance(f, dict) or not f.get("name"):
                 errors.append(f"topic.extraction_fields[{i}] needs a name")
+            elif f.get("kind") == "rows":
+                from ..rows import check_field
+                errors.extend(check_field(f))
             elif f.get("kind") not in (None, "drug", "disease"):
-                warnings.append(f"extraction field {f['name']}: kind is drug or disease (or left out)")
+                warnings.append(f"extraction field {f['name']}: kind is drug, disease or rows (or left out)")
         if not t.get("extraction_fields"):
             warnings.append("no extraction_fields: nothing will be extracted from included studies")
         for i, d in enumerate(t.get("rob_domains") or []):
@@ -292,6 +304,10 @@ class Library:
             return
         finally:
             tmp.unlink(missing_ok=True)
+        try:
+            budget_limits(cfg)    # a run file lists its limits: the total and every stage that calls a model
+        except ValueError as e:
+            errors.append(str(e))
         if not data.get("run_dir"):
             cfg["run_dir"] = default_run_dir(p)
         topic = cfg.get("topic") or {}
@@ -324,7 +340,7 @@ class Library:
         out["summary"] = {"run_dir": self.rel(rd), "agent": f"{a.get('provider')}:{a.get('model')}",
                           "judge": f"{j.get('provider')}:{j.get('model')}", "human_mode": cfg["pipeline"]["human_mode"],
                           "records": (topic.get("records") or {}).get("source", ""), "benchmark": bench,
-                          "budget_usd": cfg.get("budget_usd"), "max_records": cfg["pipeline"]["max_records"],
+                          "budget_usd": (cfg.get("budget") or {}).get("total_usd"), "max_records": cfg["pipeline"]["max_records"],
                           "status": run_status(rd), "question": topic.get("question", "")}
         shown = {k: v for k, v in cfg.items() if not k.startswith("_")}
         out["resolved"] = yaml.safe_dump(shown, sort_keys=False, allow_unicode=True, width=110)
@@ -374,6 +390,11 @@ class Library:
         pad = " " * (indent + 2)
         new = []
         for it in items:
+            if it.get("columns"):      # a rows item: block style, its columns one per line
+                block = yaml.safe_dump([{k: it[k] for k in ("name", "kind", "description", "columns") if k in it}],
+                                       sort_keys=False, allow_unicode=True, default_flow_style=None, width=200)
+                new += [pad + l for l in block.rstrip("\n").splitlines()]
+                continue
             parts = [f"name: {it['name']}"]
             if it.get("kind"):
                 parts.append(f"kind: {it['kind']}")
@@ -385,15 +406,18 @@ class Library:
         return "\n".join(lines[:i] + [head] + new + lines[j:]) + "\n"
 
     @staticmethod
-    def set_block(text: str, key: str, value: dict, comment: str = "") -> str:
+    def set_block(text: str, key: str, value: dict, comment: str = "", flow: bool = True) -> str:
         """Replace (or add, or remove when empty) one top-level mapping in YAML text, keeping the rest of the
-        file, comments included, as written. Each entry is written on one line in flow style."""
+        file, comments included, as written. Each entry is written on one line in flow style (flow=False: nested
+        mappings one key per line)."""
         lines = text.splitlines()
         i = next((n for n, l in enumerate(lines) if re.match(rf"^{re.escape(key)}\s*:", l)), None)
         block = []
         if value:
             block = [f"{key}:" + (f"                 # {comment}" if comment else "")]
-            for k, v in value.items():
+            if not flow:
+                block += ["  " + l for l in yaml.safe_dump(value, default_flow_style=False, sort_keys=False).splitlines()]
+            for k, v in (value.items() if flow else ()):
                 block.append(f"  {k}: " + yaml.safe_dump(v, default_flow_style=True, width=10**6).strip())
         if i is None:
             if not block:
@@ -459,14 +483,14 @@ class Library:
         lines = [f"# {kind.capitalize()} run: {folder.name} · {models} · {mr or 'all'} records · {people}.",
                  "include:", "  - topic.yaml", *model_lines,
                  "cache_dir: .cache",
-                 f"budget_usd: {float(b.get('budget_usd') or 10.0):g}           # hard cost cap for this run folder",
+                 *budget_lines(float(b.get('budget_usd') or 10.0)),
                  f"contact_email: {_q(b.get('contact_email') or '')}          # Unpaywall open-access full texts need it",
                  "pipeline:", f"  human_mode: {mode}"]
         if unclear != "await":
             lines.append(f"  fulltext_unclear: {unclear}")
         if mode != "agent_only":
             lines.append("  confirm_search: true     # the search runs with the query you confirm in the To-do list")
-            lines.append("  verify_screening: pending   # a second agent reads the records the screener could not decide; still undecided -> you (full_text / all check every decision)")
+            lines.append("  verify_screening: pending   # a second agent reads the records the screener could not decide; still undecided -> you (conflict: also where its overall answer and its criterion answers disagree; full_text / all: every decision)")
             lines.append("  verify_rob: flagged      # risk-of-bias drafts with a reason for a second look go to the verifier; what it cannot settle -> you")
             lines.append("  wait_for_pdfs: true      # the synthesis waits until the requested PDFs are supplied or declared not obtainable")
         if mr:

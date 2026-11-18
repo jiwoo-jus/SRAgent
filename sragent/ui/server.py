@@ -27,10 +27,40 @@ from .. import stagespec, state
 from ..config import EFFORTS, MODEL_STAGES, STAGE_LABELS, is_benchmark, load_config, load_secrets, model_for
 from ..config_lock import ConfigChanged
 from ..context import Ctx
+from ..llm import BUDGET_STOP
 from .configs import Library
 
 STATIC = Path(__file__).parent / "static"
 STAGE_JOBS = ("run", "pdfs", "sync", "reassess_rob")   # pipeline work: every stage uses its own models (models.<stage>.<role>)
+
+_STARTED = time.time()
+_CODE: tuple[float, list[str]] = (0.0, [])
+
+
+def _restart_notice(edited: list[str]) -> str:
+    """Said on the page itself, because a page built by old code looks like a page with wrong numbers."""
+    from .. import figlib
+    names = ", ".join(figlib.x(n) for n in edited[:6]) + (f" and {len(edited) - 6} more" if len(edited) > 6 else "")
+    return (f"<div style='background:#fff4e5;border:1px solid #e0a800;border-radius:6px;padding:12px 16px;margin:0 0 24px'>"
+            f"<b>This page was built by the code this interface started with, not the code on disk.</b> "
+            f"{len(edited)} source file{'s were' if len(edited) > 1 else ' was'} edited since then ({names}). "
+            f"Restart the interface to build it with the current code.</div>")
+
+
+def code_changed() -> list[str]:
+    """The package's own source files that were edited after this process started. Python keeps the modules it
+    imported at startup, so from then on the interface computes everything with the old code while the pages,
+    which are read from disk, look current. Only a restart picks the edits up."""
+    global _CODE
+    if time.time() - _CODE[0] < 5:
+        return _CODE[1]
+    root = Path(__file__).resolve().parent.parent
+    try:
+        names = sorted(str(f.relative_to(root)) for f in root.rglob("*.py") if f.stat().st_mtime > _STARTED)
+    except OSError:
+        names = _CODE[1]
+    _CODE = (time.time(), names)
+    return names
 
 
 class App:
@@ -290,7 +320,7 @@ class App:
                             "stage-wise review also build it (about $0.35)."}
         if action in STAGE_JOBS or not opts.get("agent"):   # each kind of call with its stage's model
             from ..estimate import estimate_stages
-            est = estimate_stages(calls, self.cfg, history(self.run_dir.parent))
+            est = estimate_stages(calls, self.cfg, history(self.run_dir.parent), _sizes(self.ctx()))
             est["spent_so_far"] = round(self.spent(), 4)
             return est
         m = self.model_entry(opts.get("agent") or {})
@@ -316,12 +346,11 @@ class App:
         spec = {**spec, "id": uuid.uuid4().hex[:8], "status": "queued", "created": time.time()}
         spec["label"] = spec.get("label") or self.label_for(spec)
         # a job carries a model only when the person picked one for that job; otherwise every call follows
-        # models.<stage>.<role>. The last budget top-up carries over.
-        spec.update({k: v for k, v in self._last_budget().items() if k not in spec})
+        # models.<stage>.<role>. Spending follows the run file's budget: (no cap of its own per job).
         self._record(spec)
         if spec.get("action") in ("run", "pdfs", "sync", "eval"):
             (self.run_dir / "ui_settings.json").write_text(json.dumps(
-                {k: spec.get(k) for k in ("agent", "judge", "max_records", "until", "extra_budget", "suite")}, indent=1))
+                {k: spec.get(k) for k in ("agent", "judge", "max_records", "until", "suite")}, indent=1))
         with self.lock:
             self.queue.append(spec)
         return spec
@@ -340,8 +369,6 @@ class App:
             over["eval"] = {"models": {"judge": self.model_cell(spec["judge"])}}
         if spec.get("max_records") not in (None, "", 0):
             over["pipeline"] = {"max_records": int(spec["max_records"])}
-        extra = float(spec.get("extra_budget") or 2.0)
-        over["budget_usd"] = round(self.spent() + extra, 4)
         p = self.run_dir / "ui_job_config.yaml"
         p.write_text(yaml.safe_dump(over, sort_keys=False))
         return p
@@ -410,7 +437,10 @@ class App:
                     spec["pid"] = proc.pid
                     rc = proc.wait()
                 spec["returncode"] = rc
-                spec["status"] = "done" if rc == 0 else ("stopped" if spec.get("stop_requested") else "failed")
+                spec["status"] = "done" if rc == 0 else ("stopped" if spec.get("stop_requested") else
+                                                         "budget" if rc == BUDGET_STOP else "failed")
+                if spec["status"] == "budget":   # which limit: the interface offers to raise it and resume
+                    spec["budget_stop"] = self._budget_stop(spec["started"])
                 spec["usd"] = round(self.spent() - spent0, 4)
             except Exception as e:
                 spec["status"], spec["error"] = "failed", str(e)
@@ -452,7 +482,7 @@ class App:
     def jobs(self) -> dict:
         def view(j):
             return {k: j.get(k) for k in ("id", "action", "label", "rid", "target", "status", "created", "started", "ended",
-                                          "usd", "returncode", "cmd", "error", "note", "text")} | \
+                                          "usd", "returncode", "cmd", "error", "note", "text", "budget_stop")} | \
                    {"model": ((j.get("agent") or {}).get("model") if isinstance(j.get("agent"), dict) else j.get("model"))
                              or model_for(self.cfg, None).get("model", "")}
         with self.lock:
@@ -482,7 +512,7 @@ class App:
                 if spec.get("log") and Path(spec["log"]).exists():
                     tail = "\n".join(Path(spec["log"]).read_text(errors="ignore").splitlines()[-80:])
                 out[key] = {k: spec.get(k) for k in ("id", "action", "label", "status", "cmd", "started", "ended", "usd",
-                                                     "returncode", "target")} | {"log": tail}
+                                                     "returncode", "target", "budget_stop")} | {"log": tail}
         if out["current"]:
             out["current"]["progress"] = self._progress(out["current"].get("started"))
         return out
@@ -521,7 +551,7 @@ class App:
         self.pending_answers = []
         self.saved()
         for j in jobs:
-            self.queue.append({**self._last_budget(), **j, "id": uuid.uuid4().hex[:8], "status": "queued"})
+            self.queue.append({**j, "id": uuid.uuid4().hex[:8], "status": "queued"})
 
     def _apply_op(self, ctx, op: dict) -> dict:
         """Every change the interface makes is an operation (sragent/ops)."""
@@ -569,14 +599,6 @@ class App:
             r = {**r, "job": spec}
         return r
 
-    def save_settings(self, b: dict) -> dict:
-        """The spending cap of the next jobs (ui_settings.json; the run file keeps the review's own settings)."""
-        s = self._settings()
-        if b.get("extra_budget") not in (None, ""):
-            s["extra_budget"] = float(b["extra_budget"])
-        (self.run_dir / "ui_settings.json").write_text(json.dumps(s, indent=1))
-        return {"ok": True, "message": "saved"}
-
     def mutate(self, op: dict) -> dict:
         """Edits that change the store: applied now, or queued while a job is writing the store."""
         from .. import todos
@@ -622,6 +644,9 @@ class App:
                 e = {"name": name, "description": desc}
                 if kinds and it.get("kind") in ("drug", "disease"):
                     e["kind"] = it["kind"]
+                was = next((f for f in self.cfg["topic"].get("extraction_fields") or [] if f.get("name") == name), None) if kinds else None
+                if was and was.get("kind") == "rows":    # a rows item's columns are written in the topic file; kept as they are
+                    e.update(kind="rows", columns=was["columns"])
                 out.append(e)
             if not out:
                 raise ValueError("at least one item is needed")
@@ -757,11 +782,167 @@ class App:
         from .. import provenance
         return provenance.mode(self.ctx())
 
-    def _last_budget(self) -> dict:
-        s = self._settings()
-        return {"extra_budget": s["extra_budget"]} if s.get("extra_budget") else {}
-
     # ------------------------------------------------------------ state
+    # ------------------------------------------------------------ budget
+    def budget_view(self) -> dict:
+        """budget: as the page shows it: the total and each stage's limit (None: unlimited) with what was spent."""
+        from ..config import budget_limits
+        try:
+            b = budget_limits(self.cfg)
+        except ValueError as e:
+            return {"error": str(e)}
+        spent, by = 0.0, {}
+        p = self.run_dir / "usage.jsonl"
+        if p.exists():
+            for line in p.read_text().splitlines():
+                try:
+                    row = json.loads(line)
+                    usd = float(row.get("usd") or 0)
+                except (ValueError, AttributeError):
+                    continue
+                spent += usd
+                if row.get("stage"):
+                    by[row["stage"]] = by.get(row["stage"], 0.0) + usd
+        return {"total_usd": b["total_usd"], "spent_usd": round(spent, 4),
+                "stages": [{"key": k, "label": stagespec.label(k), "limit_usd": v, "spent_usd": round(by.get(k, 0.0), 4)}
+                           for k, v in b["stages"].items()]}
+
+    def save_budget(self, b: dict, lib: "Library") -> dict:
+        """Write budget: into the run file (it can change at any time; a running job keeps the limits it started with)."""
+        from ..config import UNLIMITED, budget_limits
+        try:
+            p = lib.resolve(self.config_path)
+        except ValueError:
+            return {"ok": False, "message": "This run file is outside configs/; edit its budget: section in the file."}
+        try:
+            new = {"total_usd": float(b.get("total_usd")),
+                   "stages": {k: (UNLIMITED if v in (None, "", UNLIMITED) else float(v))
+                              for k, v in (b.get("stages") or {}).items()}}
+            budget_limits({"budget": new})
+        except (TypeError, ValueError) as e:
+            return {"ok": False, "message": str(e)}
+        new["total_usd"] = int(new["total_usd"]) if new["total_usd"] == int(new["total_usd"]) else new["total_usd"]
+        new["stages"] = {k: (int(v) if isinstance(v, float) and v == int(v) else v) for k, v in new["stages"].items()}
+        out = lib.set_block(p.read_text(), "budget", new, "USD limits of this run folder: the total, and each stage "
+                            "that calls a model (a number or unlimited)", flow=False)
+        chk = lib.check(self.config_path, out)
+        if chk["errors"]:
+            return {"ok": False, "message": "; ".join(chk["errors"])}
+        r = lib.save(self.config_path, out, p.stat().st_mtime)
+        if r.get("ok"):
+            self.stale = True
+        return {"ok": r.get("ok", False), "message": "Saved in " + lib.rel(p) if r.get("ok") else r.get("message")}
+
+    def _budget_stop(self, since: float | None) -> dict | None:
+        """The limit that stopped the job (budget_stop.json, written by CostTracker.check) when it is this job's."""
+        try:
+            d = json.loads((self.run_dir / "budget_stop.json").read_text())
+        except (OSError, ValueError):
+            return None
+        if since and d.get("ts", 0) < since - 1:
+            return None
+        if d.get("stage"):
+            d["label"] = stagespec.label(d["stage"])
+        return d
+
+    def resume(self, jid: str) -> dict:
+        """Run a job stopped by a limit again (after the limit was raised): it continues where it stopped."""
+        with self.lock:
+            old = next((j for j in reversed(self.history) if j.get("id") == jid), None)
+        if old is None:
+            return {"ok": False, "message": "That job is no longer in the list; start it again from its stage."}
+        keep = {k: v for k, v in old.items() if k not in ("id", "status", "created", "started", "ended", "usd", "returncode",
+                                                          "cmd", "log", "pid", "error", "budget_stop", "stop_requested")}
+        spec = self.submit(keep)
+        return {"ok": True, "message": f"{spec['label']} queued again", "job": spec}
+
+    def report_pages(self, config: str = "") -> tuple[str, dict]:
+        """The report as the interface serves it: one page, or a main page and appendix pages when it is large
+        (report.split_report). Built once per version of the store."""
+        from urllib.parse import quote
+        from ..stages.report import _with_meta, place_links, report_html, split_report
+        ctx = self.ctx()
+        key = (self._mtime, config)
+        if getattr(self, "_report", (None,))[0] != key:
+            main, parts = split_report(_with_meta(ctx, report_html(ctx)))
+            q = "?config=" + quote(config) if config else ""
+            part = lambda n: f"/report_parts/{n}{q}"
+            self._report = (key, place_links(main, f"/report{q}", part), {n: place_links(t, f"/report{q}", part) for n, t in parts.items()})
+        return self._report[1], self._report[2]
+
+    def manuscript_page(self) -> str:
+        """The report for readers, built from the review's report_plan.yaml (free, no model call), or the reason it
+        cannot be built. Rebuilt whenever the store changed, so it always shows the current data."""
+        from .. import figlib, reportplan
+        ctx = self.ctx()
+        page = lambda b: f"<!doctype html><meta charset='utf-8'><title>Report for readers</title><body style='font:15px/1.6 Helvetica,Arial,sans-serif;margin:40px;max-width:46em'>{b}</body>"
+        pp = reportplan.plan_path(ctx)
+        if not pp.exists():
+            return page(f"<h1>No report for readers</h1><p>This review has no <code>report_plan.yaml</code> beside its run file "
+                        f"(<code>{figlib.x(str(pp))}</code>). The verification report is under Output \u00b7 Report.</p>")
+        edited = code_changed()
+        key = (self._mtime, pp.stat().st_mtime, tuple(edited))   # the data, the plan itself, and the code that reads them
+        if getattr(self, "_ms", (None,))[0] != key:
+            r = reportplan.render(ctx)
+            html = Path(r["path"]).read_text() if r.get("ok") else page(
+                "<h1>The report plan has problems</h1><ul>" + "".join(f"<li>{figlib.x(p)}</li>" for p in r["problems"]) + "</ul>")
+            if edited:
+                html = html.replace("<body>", "<body>" + _restart_notice(edited), 1)
+            self._ms = (key, html)
+        return self._ms[1]
+
+    def run_estimate(self, op: str, args: dict) -> dict:
+        """Before a model job starts: what it may cost, by the stages whose limits apply, and whether that fits.
+        `<stage>.run` (run up to that stage) is estimated from the work left; other jobs say only what room is left."""
+        from ..estimate import ROW_CELL, estimate_stages, history, remaining_calls
+        from .. import ops
+        bv = self.budget_view()
+        out = {"op": op, "budget": bv, "known": False}
+        if bv.get("error"):
+            return out
+        try:
+            o = ops.get(op)
+        except KeyError:
+            o = None
+        until = {"protocol.draft": "protocol", "synthesis.write": "report"}.get(op) or \
+            (o.stage if o is not None and op.endswith(".run") and o.stage in stagespec.BY_KEY else None)
+        if until:   # a stage's Run: the pipeline up to that stage
+            ctx = self.ctx()
+            calls = remaining_calls(ctx, None, until)
+            est = estimate_stages(calls, self.cfg, history(self.run_dir.parent), _sizes(self.ctx()))
+            per: dict[str, float] = {}
+            for r in est["rows"]:
+                k = ROW_CELL.get(r["stage"], ("feedback", "writer"))[0]
+                per[k] = per.get(k, 0.0) + r["usd"]
+            out.update(known=True, calls=sum(calls.values()), total_usd=est["total_usd"], range_usd=est["range_usd"])
+        elif op == "eligibility.verify":   # a second reading of full-text decisions: one verifier call per study
+            from ..stages.screening import verify_todo
+            ctx = self.ctx()
+            calls = {"screen_verify": len(verify_todo(ctx.store, args.get("mode") or "pending", args.get("rids") or None))}
+            est = estimate_stages(calls, self.cfg, history(self.run_dir.parent), _sizes(self.ctx()))
+            per = {"eligibility": est["total_usd"]}
+            out.update(known=True, calls=calls["screen_verify"], total_usd=est["total_usd"], range_usd=est["range_usd"])
+        elif op in ("extract.read_figures", "extract.studies"):
+            ctx = self.ctx()
+            if op == "extract.read_figures":      # one call per figure with rows still to read
+                from .. import figures
+                calls = {"extract_figures": figures.pending(ctx, args.get("rids") or None)["figures"]}
+            else:
+                calls = {"extract": len([r for r in args.get("rids") or [] if r in set(ctx.store.included_ids())])}
+            est = estimate_stages(calls, self.cfg, history(self.run_dir.parent), _sizes(ctx))
+            per = {"extract": est["total_usd"]}
+            out.update(known=True, calls=sum(calls.values()), total_usd=est["total_usd"], range_usd=est["range_usd"])
+        if out["known"]:
+            out["stages"] = []
+            for st in bv["stages"]:
+                if st["key"] in per:
+                    room = None if st["limit_usd"] is None else round(st["limit_usd"] - st["spent_usd"], 4)
+                    out["stages"].append({**st, "usd": round(per[st["key"]], 3), "room_usd": room,
+                                          "fits": room is None or per[st["key"]] <= room})
+        out["room_total_usd"] = round(bv["total_usd"] - bv["spent_usd"], 4)
+        out["fits_total"] = (not out["known"]) or out["total_usd"] <= out["room_total_usd"]
+        return out
+
     def state(self) -> dict:
         from .. import todos
         from ..stages.fulltext import fulltext_dir, needed_pdfs, new_local_files
@@ -787,13 +968,14 @@ class App:
         from ..stages.report import open_flags
         of = open_flags(ctx) if ctx.store.get("protocol") else {"n": 0, "by_source": {}}
         return {"next": todos.next_action(ctx, tlist, self.job is not None, len(nf)),
-                "stale": stale, "open_flags": {"n": of["n"], "by_source": of["by_source"]},
+                "code_changed": code_changed(), "stale": stale, "open_flags": {"n": of["n"], "by_source": of["by_source"]},
                 "ruled": todos.rule_exclusions(ctx),
                 "run": {"name": self.run_dir.name, "run_dir": str(self.run_dir), "config": self.config_path,
                         "config_rel": getattr(self, "config_rel", self.config_path), "benchmark": is_benchmark(self.cfg),
                         "human_mode": self.human_mode(),
-                        "spent_usd": round(self.spent(), 4), "topic": ctx.topic.get("question", "")},
-                "steps": steps(ctx, tlist), "todos": tlist, "job": self.job_view(),
+                        "spent_usd": round(self.spent(), 4), "topic": ctx.topic.get("question", ""),
+                        "manuscript": (Path(self.cfg["_config_dir"]) / "report_plan.yaml").exists()},
+                "steps": steps(ctx, tlist), "todos": tlist, "job": self.job_view(), "budget": self.budget_view(),
                 "registry": [{"key": s.key, "label": s.label, "llm": s.llm} for s in stagespec.STAGES],
                 "fulltext": {"dir": str(fulltext_dir(ctx)), "needed": needed_pdfs(ctx) if ctx.store.get("protocol") else [],
                              "new_files": nf}}
@@ -807,7 +989,8 @@ class App:
         cfg["local"]["wait_timeout"] = 30   # do not wait indefinitely for a local endpoint here
         llm = None
         try:
-            llm = LLM(cfg, model_for(cfg, None), CostTracker(0.05, self.run_dir / "usage.jsonl"), None)
+            from ..config import budget_limits   # within the run's total (a tracker of its own would count past spending)
+            llm = LLM(cfg, model_for(cfg, None), CostTracker(budget_limits(cfg), self.run_dir / "usage.jsonl"), None)
             t0 = time.time()
             out = llm.chat([{"role": "user", "content": 'Return the JSON {"ok": true}'}], tag="ui_test_model",
                            max_tokens=200, use_cache=False)
@@ -898,6 +1081,15 @@ class Workspace:
 
 
 # ---------------------------------------------------------------- HTTP
+def _sizes(ctx) -> dict:
+    """Input tokens per call measured on this review (estimate.sizes); {} when it cannot be measured."""
+    from ..estimate import sizes
+    try:
+        return sizes(ctx)
+    except Exception:
+        return {}
+
+
 def make_handler(ws: Workspace):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -1008,10 +1200,17 @@ def make_handler(ws: Workspace):
                     return self._send(200, app.models())
                 if path == "/api/job":
                     return self._send(200, app.job_view())
-                if path == "/report":
-                    from ..stages.report import report_html
+                if path == "/manuscript":
+                    return self._send(200, app.manuscript_page(), "text/html")
+                if path == "/report" or path.startswith("/report_parts/"):
                     ctx = app.ctx()
-                    return self._send(200, report_html(ctx) if ctx.store.get("protocol") else "No review yet.", "text/html")
+                    if not ctx.store.get("protocol"):
+                        return self._send(200, "No review yet.", "text/html")
+                    main, parts = app.report_pages((q.get("config") or [""])[0])
+                    if path == "/report":
+                        return self._send(200, main, "text/html")
+                    name = path[len("/report_parts/"):]
+                    return self._send(200, parts[name], "text/html") if name in parts else self._send(404, {"error": "not found"})
                 if path == "/api/studies":
                     from ..studies import studies_list
                     return self._send(200, studies_list(app.ctx()))
@@ -1039,6 +1238,17 @@ def make_handler(ws: Workspace):
                     return self._send(200, history(app.ctx(), actor=q.get("actor", [""])[0], q=q.get("q", [""])[0]))
                 if path.startswith("/export/"):
                     return self._export(app, path[len("/export/"):], q)
+                if path.startswith("/meta/"):       # pooled results written by synthesis.meta_analysis: plots, tables
+                    name = path[len("/meta/"):]
+                    f = app.run_dir / "meta" / name
+                    import re as _re
+                    if not _re.fullmatch(r"[A-Za-z0-9_.-]+\.(svg|csv|md|json)", name) or not f.exists():
+                        return self._send(404, {"error": "not found"})
+                    ctype = {"svg": "image/svg+xml", "csv": "text/csv", "md": "text/markdown", "json": "application/json"}[name.rsplit(".", 1)[1]]
+                    return self._send(200, f.read_bytes(), ctype)
+                if path == "/meta_rows.csv":
+                    from ..rows import export_csv
+                    return self._send(200, export_csv(app.ctx())[0].read_bytes(), "text/csv")
                 if path == "/needed_pdfs.csv":
                     from ..stages.fulltext import write_needed_pdfs
                     return self._send(200, write_needed_pdfs(app.ctx()).read_bytes(), "text/csv")
@@ -1101,8 +1311,15 @@ def make_handler(ws: Workspace):
                     if r.get("ok"):
                         ws.changed()
                     return self._send(200, r)
-                if path == "/api/settings":
-                    return self._send(200, app.save_settings(b))
+                if path == "/api/budget":
+                    r = app.save_budget(b, ws.lib)
+                    if r.get("ok"):
+                        ws.changed()
+                    return self._send(200, r)
+                if path == "/api/job_resume":
+                    return self._send(200, app.resume(b.get("id", "")))
+                if path == "/api/run_estimate":
+                    return self._send(200, app.run_estimate(b.get("op", ""), b.get("args") or {}))
                 if path == "/api/cancel":
                     return self._send(200, {"ok": app.cancel(b.get("id", ""))})
                 if path == "/api/test_model":

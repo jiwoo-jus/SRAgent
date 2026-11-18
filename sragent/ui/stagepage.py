@@ -29,6 +29,26 @@ TYPES = {"protocol": ("protocol", "criterion", "approval"), "search": ("strategy
          "extract": ("extraction",), "rob": ("rob",), "synthesis": ("synthesis", "synthesis_scope"), "report": ("report",)}
 
 
+RETRIEVAL_LABEL = {"fulltext_unavailable": "no full text", "parse_failed": "unreadable file"}
+
+
+def _retrieval_status(decision: str | None, req: dict) -> str:
+    """A forwarded study without a usable full text: why (no full text found / the file has no text), and whether a
+    person declared that no copy can be had. The two reasons stay apart, as in the report's flow diagram."""
+    base = RETRIEVAL_LABEL.get(decision)
+    if req.get("unavailable"):
+        return f"{base} · not obtainable" if base else "not obtainable"
+    return base or ("requested" if req.get("wanted") else "not retrieved yet")
+
+
+def _text_source(fd: dict) -> str:
+    """Where the study's text came from, for the Full texts page (only the abstract when no full text was found)."""
+    if fd.get("kind") != "fulltext":
+        return f"abstract only ({fd['local_file']} has no usable text)" if fd.get("parse_failed") else "abstract only"
+    o = fd.get("origin", "")
+    return "your file" if o.startswith("user file") else f"agent: {o}"
+
+
 def _title(st, rid: str) -> str:
     r = record_of(st, rid)
     return (r.get("title") or "(no title)")[:160]
@@ -75,15 +95,16 @@ def _items(ctx, key: str, derived: dict) -> list[dict]:
             if not (selection.forwarded(st, rid) or v.get("stage") in ("retrieval", "full_text")):
                 continue
             ft = st.get(f"ft:{rid}")
+            fd = (ft or {}).get("data") or {}
             req = state.pdf_request(st, rid)
-            kind = (ft or {}).get("data", {}).get("kind")
-            status = "full text" if kind == "fulltext" else ("not obtainable" if req.get("unavailable") else
-                                                            "requested" if req.get("wanted") else v.get("decision") if v.get("stage") == "retrieval" else "not retrieved yet")
+            kind = fd.get("kind")
+            status = "full text" if kind == "fulltext" else _retrieval_status(v.get("decision"), req)
             acts = []
             if kind != "fulltext" and not req.get("unavailable"):
-                acts = [{"op": "retrieve.declare_unobtainable", "args": {"rids": [rid]}, "label": "Not obtainable"},
-                        {"op": "retrieve.decide_without", "args": {"rids": [rid]}, "label": "Decide without"}]
-            rows.append(_row(st, rid, derived, ft, decision=status, by=str((ft or {}).get("data", {}).get("origin", "")),
+                acts = [{"op": "retrieve.declare_unobtainable", "args": {"rids": [rid]}, "label": "Not obtainable"}]
+            if req.get("wanted") and not req.get("unavailable"):    # a reviewer asked for another copy: stop waiting for it
+                acts.append({"op": "retrieve.decide_without", "args": {"rids": [rid]}, "label": "Decide without"})
+            rows.append(_row(st, rid, derived, ft, decision=status, by=_text_source(fd) if ft else "",
                              status=(ft or {}).get("status", ""), actions=acts))
     elif key == "eligibility":
         for rid, v in selection.screened(st):
@@ -95,7 +116,10 @@ def _items(ctx, key: str, derived: dict) -> list[dict]:
             acts = [{"op": "eligibility.decide", "args": {"rid": rid, "decision": x}, "label": x.capitalize()}
                     for x in ("include", "exclude") if v.get("decision") != x]
             acts.append({"op": "eligibility.recompute", "args": {"rid": rid}, "label": "Re-run"})
-            rows.append(_row(st, rid, derived, el, decision=v.get("decision"), by=by, because=v.get("because") or [],
+            dec = v.get("decision")
+            if dec in RETRIEVAL_LABEL:      # forwarded but not screened yet: its full text is missing (stage 4)
+                by, dec = "", f"not screened: {_retrieval_status(dec, state.pdf_request(st, rid))}"
+            rows.append(_row(st, rid, derived, el, decision=dec, by=by, because=v.get("because") or [],
                              status=(el or {}).get("status", ""), actions=acts))
     elif key == "snowball":
         for r in (state.snowball(st) or {}).get("added") or []:
@@ -110,7 +134,8 @@ def _items(ctx, key: str, derived: dict) -> list[dict]:
             if key == "extract":
                 edited = sum(1 for x in (d.get("fields") or {}).values() if isinstance(x, dict) and x.get("edited"))
                 dec, by = ("extracted" if n and n["status"] == "active" else "not extracted"), ("person" if edited else "agent" if n else "")
-                acts = [{"op": "extract.recompute", "args": {"rid": rid}, "label": "Re-run"}]
+                acts = [{"op": "extract.recompute", "args": {"rid": rid}, "label": "Re-run"}] if n and n["status"] == "active" else \
+                       [{"op": "extract.studies", "args": {"rids": [rid]}, "label": "Extract"}]      # selectable: several at once
             else:
                 dec, by = (d.get("overall") if n and n["status"] == "active" else "not assessed"), ("person" if d.get("human_confirmed") else "agent" if n else "")
                 acts = ([{"op": "rob.confirm", "args": {"rids": [rid]}, "label": "Confirm"}] if n and not d.get("human_confirmed") else []) + \
@@ -132,12 +157,36 @@ def _items(ctx, key: str, derived: dict) -> list[dict]:
     return rows
 
 
+def _eligibility_verify(ctx) -> tuple[tuple, dict, int]:
+    """The Verify button of full-text screening follows pipeline.verify_screening: every full-text decision not yet
+    read twice (full_text, all), the undecided ones and those the screener contradicted itself on (conflict), or
+    only the undecided ones."""
+    from ..stages.screening import verify_todo
+    vs = ctx.cfg["pipeline"].get("verify_screening")
+    mode = "full_text" if vs in ("full_text", "all") else "conflict" if vs == "conflict" else "pending"
+    n = len(verify_todo(ctx.store, mode))
+    label = {"full_text": "Verify unread", "conflict": "Verify undecided and conflicting"}.get(mode, "Verify undecided") + (f" ({n})" if n else "")
+    return ("eligibility.verify", label), {"mode": mode}, n
+
+
 def _status(spec, rows: list[dict], waiting: int, st) -> str:
     if waiting:
         return "needs you"
     if any(r["stale"] for r in rows):
         return "out of date"
     return "done" if spec.started(st) else "not started"
+
+
+def _budget_of(ctx, key: str) -> dict | None:
+    """This stage's limit under budget: (limit_usd None: unlimited) and the total; None for a stage without model calls."""
+    from ..config import MODEL_STAGES, budget_limits
+    if key not in MODEL_STAGES:
+        return None
+    try:
+        b = budget_limits(ctx.cfg)
+    except ValueError:
+        return None
+    return {"limit_usd": b["stages"].get(key), "total_usd": b["total_usd"]}
 
 
 def spent_by_cell(ctx) -> dict[tuple, float]:
@@ -175,8 +224,12 @@ def stage_page(ctx, key: str, job: dict | None = None, jobs: list[dict] | None =
                "enabled": key in CLEARABLE and spec.started(st) and not running, "reason": NOT_CLEARABLE.get(key, "" if spec.started(st) else "not started"),
                "preview": True})
     v = VERIFY_OP.get(key)
-    tb.append({"key": "verify", "label": v[1] if v else "Verify", "op": v[0] if v else None, "args": {},
-               "enabled": bool(v) and spec.started(st) and not running, "reason": "" if v else "this stage has no verifier step", "preview": False})
+    vargs, vreason = {}, "" if v else "this stage has no verifier step"
+    if key == "eligibility":
+        v, vargs, n = _eligibility_verify(ctx)
+        vreason = "" if n else "nothing left for the verifier to read"
+    tb.append({"key": "verify", "label": v[1] if v else "Verify", "op": v[0] if v else None, "args": vargs,
+               "enabled": bool(v) and spec.started(st) and not running and not vreason, "reason": vreason, "preview": False})
     tb.append({"key": "stop", "label": "Stop", "op": None, "args": {}, "enabled": running, "reason": "" if running else "nothing running",
                "preview": False})
     # inputs: what this stage's outputs depend on, with how many are out of date because of each
@@ -204,9 +257,50 @@ def stage_page(ctx, key: str, job: dict | None = None, jobs: list[dict] | None =
             "status": "off (pipeline.citation_chasing)" if off else _status(spec, rows, len(waiting), st), "counts": {"items": len(rows), "out_of_date": sum(1 for r in rows if r["stale"]),
                                                                          "needs_you": len(waiting)},
             "models": models, "spent_usd": round(sum(u for (s, _), u in spent.items() if s == key), 4),
+            "budget": _budget_of(ctx, key),
             "pending": {"items": len(mine), "est_usd": engine._cost(ctx, mine).get("total_usd") if mine else 0},
-            "toolbar": tb, "inputs": inputs, "dependents": dict(sorted(down.items())), "items": rows, "needs_you": waiting,
+            "toolbar": tb, "downloads": _downloads(ctx, key), "extras": _extras(ctx, key), "inputs": inputs, "dependents": dict(sorted(down.items())), "items": rows, "needs_you": waiting,
             "jobs": [j for j in (jobs or []) if _job_stage(j) == key][:20]}
+
+
+def _extras(ctx, key: str) -> dict:
+    """What a review with rows items adds to a stage page (no model calls): on Data extraction the figure-only rows
+    still to read; on Synthesis the pooled results (sragent/meta.py), computed from the current rows."""
+    from .. import figures, meta
+    from ..rows import is_rows
+    if not any(is_rows(f) for f in ctx.topic.get("extraction_fields") or []):
+        return {}
+    if key == "extract":
+        p = figures.pending(ctx)
+        return {"figures": {**p, "no_pdf": len(p["no_pdf"]), "no_pdf_ids": p["no_pdf"][:40]}}
+    if key == "synthesis" and meta.plan_of(ctx.topic):
+        try:
+            res = meta.analyse(ctx)
+        except Exception as e:
+            return {"meta": {"error": str(e)[:300]}}
+        gb = res["group_by"]
+        groups = [{"group": " · ".join(g["group"][k] for k in gb), "measure": g["measure"], "k": g["k"],
+                   **({"ratio": g["pooled"]["ratio"], "ci": g["pooled"]["ratio_ci"], "i2": g["pooled"]["i2"],
+                       "prediction": g["pooled"].get("ratio_prediction"), "sensitivity": g["sensitivity"],
+                       "estimated": sum(1 for s in g["studies"] if s["estimated"]),
+                       "plot": f"/meta/forest_{meta._name(g['group'], g['measure'])}.svg"} if g["pooled"] else {})}
+                  for g in res["groups"]]
+        return {"meta": {"rows": res["rows"], "rows_used": res["rows_used"], "min_studies": res["min_studies"], "not_used": res["not_used"],
+                         "possible_duplicates": res["possible_duplicates"], "groups": groups,
+                         "written": (ctx.run_dir / "meta" / "results.json").exists()}}
+    return {}
+
+
+def _downloads(ctx, key: str) -> list[dict]:
+    """Files a stage page offers: the rows of the rows items (one row per result) for the analysis."""
+    from ..rows import is_rows
+    if key == "extract" and any(is_rows(f) for f in ctx.topic.get("extraction_fields") or []):
+        return [{"label": "Rows for the meta-analysis (CSV)", "href": "/meta_rows.csv",
+                 "hint": "one line per result of every included study, with its cited sentence ids; also written as meta_rows.csv with each report"}]
+    if key == "synthesis" and (ctx.run_dir / "meta" / "effects.csv").exists():
+        return [{"label": "Effect sizes (CSV)", "href": "/meta/effects.csv", "hint": "one line per study and group"},
+                {"label": "Pooled table (Markdown)", "href": "/meta/summary.md", "hint": "the pooled estimates as a table"}]
+    return []
 
 
 def _job_stage(j: dict) -> str | None:
