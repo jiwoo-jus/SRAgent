@@ -80,7 +80,9 @@ def eval_context(ctx: Ctx, out: Path, allow_cache: bool) -> Ctx:
     from ..stages.fulltext import fulltext_dir
     cfg = copy.deepcopy(ctx.cfg)
     cfg.setdefault("pipeline", {})["fulltext_dir"] = str(fulltext_dir(ctx))   # PDFs the person supplied
-    cfg["budget_usd"] = float(cfg.get("eval", {}).get("budget_usd", 8.0))     # per evaluation run
+    from ..config import budget_limits, unlimited_budget
+    cfg["budget"] = unlimited_budget(float(cfg.get("eval", {}).get("budget_usd", 8.0)))   # per evaluation run: a total only
+    budget_limits(cfg)
     hub = LLMHub(cfg, out, mock_fn=ctx.hub.mock_fn)
     hub.cache_read = allow_cache
     return Ctx(cfg=cfg, run_dir=out, hub=hub, store=ctx.store, topic=ctx.topic, quiet=ctx.quiet)

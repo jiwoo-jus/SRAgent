@@ -33,8 +33,19 @@ FATAL_ERRORS = ("insufficient_quota", "credit_balance", "credit balance", "inval
                 "PERMISSION_DENIED", "authentication_error", "permission_error")
 
 
+BUDGET_STOP = 3   # exit code of a job stopped by a limit of budget: (the web interface offers to raise it and resume)
+
+
 class BudgetExceeded(RuntimeError):
-    pass
+    """A limit of `budget:` is reached: the total (`stage` None) or one stage's. The job stops cleanly; what it finished
+    is saved, and run again after the limit is raised it continues."""
+
+    def __init__(self, msg: str, stage: str | None = None, limit: float = 0.0, spent: float = 0.0):
+        super().__init__(msg)
+        self.stage, self.limit, self.spent = stage, limit, spent
+
+    def record(self) -> dict:
+        return {"ts": time.time(), "stage": self.stage, "limit": self.limit, "spent": round(self.spent, 4), "message": str(self)}
 
 
 class Refused(RuntimeError):
@@ -68,8 +79,13 @@ BATCH_DISCOUNT = 0.5    # Message Batches: half the price of every token
 class CostTracker:
     """Shared by every model of a run. Logs every call to usage.jsonl (with its stage and role) and enforces the budget."""
 
-    def __init__(self, budget_usd: float, log_path: str | Path | None = None):
-        self.budget = float(budget_usd) if budget_usd is not None else float("inf")
+    def __init__(self, budget: dict | float | None, log_path: str | Path | None = None):
+        """`budget`: config.budget_limits() ({total_usd, stages: {stage: limit or None}}), or one total."""
+        if not isinstance(budget, dict):
+            budget = {"total_usd": float("inf") if budget is None else float(budget), "stages": {}}
+        self.budget = budget["total_usd"]
+        self.stage_limits: dict[str, float | None] = dict(budget.get("stages") or {})
+        self.by_stage: dict[str, float] = {}     # spent per stage (rows of usage.jsonl with their stage)
         self.spent = 0.0
         self.spent_equiv = 0.0   # what calls would have cost without the cache (for fair per-task costs)
         self.calls = 0
@@ -83,15 +99,42 @@ class CostTracker:
             if self.log_path.exists():
                 for line in self.log_path.read_text().splitlines():
                     try:
-                        self.spent += float(json.loads(line).get("usd", 0))
-                    except ValueError:
-                        pass
+                        row = json.loads(line)
+                        usd = float(row.get("usd", 0) or 0)
+                    except (ValueError, AttributeError):
+                        continue
+                    self.spent += usd
+                    if row.get("stage"):
+                        self.by_stage[row["stage"]] = self.by_stage.get(row["stage"], 0.0) + usd
         self.spent_at_start = self.spent
 
-    def check(self):
+    def room(self, stage: str | None = None) -> float:
+        """What can still be spent by a call of this stage: the smaller of the total's and the stage's room."""
+        with self.lock:
+            r = self.budget - self.spent
+            lim = self.stage_limits.get(stage) if stage else None
+            if lim is not None:
+                r = min(r, lim - self.by_stage.get(stage, 0.0))
+            return max(0.0, r)
+
+    def check(self, stage: str | None = None):
+        """Before every paid call: both the total and the call's stage must have room. Reaching a limit stops the job
+        (budget_stop.json next to usage.jsonl says which limit, for the interface's Resume)."""
         with self.lock:   # read under the same lock add() writes under: parallel workers see the latest total
+            e = None
+            lim = self.stage_limits.get(stage) if stage else None
             if self.spent >= self.budget:
-                raise BudgetExceeded(f"Budget ${self.budget:.2f} exhausted (spent ${self.spent:.4f}).")
+                e = BudgetExceeded(f"The total budget of ${self.budget:.2f} is used up (spent ${self.spent:.4f}).",
+                                   None, self.budget, self.spent)
+            elif lim is not None and self.by_stage.get(stage, 0.0) >= lim:
+                from .stagespec import label
+                e = BudgetExceeded(f"{label(stage)} reached its limit of ${lim:.2f} (spent ${self.by_stage.get(stage, 0.0):.4f}).",
+                                   stage, lim, self.by_stage.get(stage, 0.0))
+            if e is None:
+                return
+            if self.log_path:
+                self.log_path.with_name("budget_stop.json").write_text(json.dumps(e.record()))
+            raise e
 
     def add(self, stage: str | None, role: str, model: str, tag: str, pin: int, pout: int, cost: float,
             seconds: float, cached: bool, *, endpoint: str | None = None, provider: str | None = None, batch: bool = False):
@@ -102,6 +145,8 @@ class CostTracker:
             else:
                 self.calls += 1
                 self.spent += cost
+                if stage:
+                    self.by_stage[stage] = self.by_stage.get(stage, 0.0) + cost
             t = self.by_tag.setdefault(tag or "untagged", {"calls": 0, "in": 0, "out": 0, "usd": 0.0, "sec": 0.0})
             t["calls"] += 1
             t["in"] += pin
@@ -126,7 +171,7 @@ class CostTracker:
 
     def summary(self) -> dict:
         return {"spent_usd": round(self.spent, 4), "spent_this_session_usd": round(self.spent - self.spent_at_start, 4),
-                "budget_usd": self.budget,
+                "budget_usd": self.budget, "by_stage": {k: round(v, 4) for k, v in self.by_stage.items()},
                 "api_calls": self.calls, "cache_hits": self.cached_calls,
                 "by_tag": {k: {kk: (round(vv, 4) if isinstance(vv, float) else vv) for kk, vv in v.items()}
                            for k, v in self.by_tag.items()}}
@@ -231,6 +276,7 @@ class LLM:
         self.cache = cache
         self.cache_read = True      # False: always ask the model (answers are still written to the cache)
         self._batch_out = 1500      # output tokens per request assumed for a batch until one has come back
+        self._plain_json: set = set()   # tags whose reply shape the API refused to compile: asked in plain JSON mode
         self.mock_fn = mock_fn
         self.client = None
         self.local_pool = local_pool
@@ -297,9 +343,11 @@ class LLM:
                 return val
 
         msgs = list(messages)
+        if tag in self._plain_json:
+            schema = None
         last_err, unusable = None, False
         for attempt in range(self.c["max_retries"] + 1):
-            self.tracker.check()   # before every paid call, retries included
+            self.tracker.check(self.stage)   # before every paid call, retries included: the total and this stage
             t0 = time.time()
             try:
                 text, pin, pout = self._call(msgs, json_out, max_tokens, temperature, schema)
@@ -317,6 +365,13 @@ class LLM:
                 continue
             except Exception as e:  # network / rate limit / server errors
                 last_err, unusable = e, False
+                if schema is not None and any(k in str(e).lower() for k in ("too complex", "compilation", "compiled grammar")):
+                    # the API could not compile the reply's JSON shape (a wide rows item, say): ask again in plain JSON
+                    # mode, whose prompt describes the same shape; the reply is checked as before (no charge for a 400)
+                    print(f"[llm] {self.name}: structured output refused ({str(e)[:160]}); asking in plain JSON mode (tag={tag})", flush=True)
+                    schema = None
+                    self._plain_json.add(tag)      # the same shape would be refused again: not sent for this tag any more
+                    continue
                 if "per_day" in str(e).lower() or "PerDay" in str(e):
                     raise QuotaExhausted(f"{self.name}: daily request quota used up: {str(e)[:300]}") from e
                 if any(k in str(e) for k in FATAL_ERRORS):
@@ -474,7 +529,7 @@ class LLM:
             key = self._key(messages, True, temperature, max_tokens)
             if self.cache.get(key) is None:
                 todo[key] = (messages, tag)
-        room = self.tracker.budget - self.tracker.spent
+        room = self.tracker.room(self.stage)   # the total's and this stage's
         n = sum(len(str(m["content"])) for ms, _ in todo.values() for m in ms) / 4 / max(1, len(todo))    # tokens per prompt
         each = self._cost(int(n), self._batch_out) * BATCH_DISCOUNT
         if each and room / each < len(todo):
@@ -598,7 +653,8 @@ class LLMHub:
 
     def __init__(self, cfg: dict, run_dir: str | Path, mock_fn=None):
         self.cfg = cfg
-        self.tracker = CostTracker(cfg.get("budget_usd", 5.0), Path(run_dir) / "usage.jsonl")
+        from .config import budget_limits
+        self.tracker = CostTracker(budget_limits(cfg), Path(run_dir) / "usage.jsonl")
         self.cache = DiskCache(Path(cfg.get("cache_dir", ".cache")) / "llm_cache.sqlite")
         self.mock_fn = mock_fn
         self.cache_read = True      # False: always ask the model (answers are still written to the cache)

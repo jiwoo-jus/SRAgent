@@ -13,7 +13,18 @@ llm_defaults:                # request settings every model uses
   max_tokens: 16000
   concurrency: 6
 cache_dir: .cache
-budget_usd: 5.0              # hard cap for this run folder (the review itself)
+budget:                  # USD limits of this run folder: the total, and each stage that calls a model (a number or unlimited)
+  total_usd: 5
+  stages:
+    protocol: unlimited
+    search: unlimited
+    screen: unlimited
+    eligibility: unlimited
+    snowball: unlimited
+    extract: unlimited
+    rob: unlimited
+    synthesis: unlimited
+    feedback: unlimited
 pipeline:
   human_mode: agent_only
   fulltext_unclear: include  # the agent decides: still unclear after the full text -> included and flagged

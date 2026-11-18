@@ -31,7 +31,7 @@ def _ctx(args, fresh=False, check_config=True, write=True):
     (sragent/lease.py): one writer at a time, also against the web interface and its jobs."""
     over = {}
     if getattr(args, "budget", None) is not None:
-        over["budget_usd"] = args.budget
+        over["budget"] = {"total_usd": args.budget}
     if getattr(args, "run_dir", None):
         over["run_dir"] = args.run_dir
     cfg = load_config(args.config, over)
@@ -107,7 +107,7 @@ def cmd_runs(args):
     from .ui.configs import run_status
     root = Path(args.configs)
     files = sorted(p for kind in ("benchmark", "review") for p in (root / kind).rglob("*.yaml")
-                   if p.name != "topic.yaml" and "_template" not in p.parts)
+                   if p.name not in ("topic.yaml", "report_plan.yaml") and "_template" not in p.parts)
     rows = []
     for p in files:
         try:
@@ -268,7 +268,7 @@ def main(argv=None):
 
     def common(p):
         p.add_argument("--config", required=True)
-        p.add_argument("--budget", type=float, default=None, help="override budget_usd")
+        p.add_argument("--budget", type=float, default=None, help="override budget.total_usd")
         p.add_argument("--run-dir", default=None, help="override run_dir")
 
     p = sub.add_parser("run"); common(p)
@@ -343,7 +343,7 @@ def main(argv=None):
     p.set_defaults(fn=cmd_eval_audit)
 
     p = sub.add_parser("verify-screening", help="a second reading (the screening verifier) of screening decisions already made; disagreements go to a person"); common(p)
-    p.add_argument("--mode", default="pending", choices=["pending", "full_text", "all"],
+    p.add_argument("--mode", default="pending", choices=["pending", "conflict", "full_text", "all"],
                    help="pending: records undecided after their full text; full_text: every full-text decision too; all: also title/abstract exclusions")
     p.add_argument("--rids", nargs="*", default=None, help="only these record ids")
     p.set_defaults(fn=cmd_verify_screening)
@@ -399,8 +399,13 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     from .config_lock import ConfigChanged
+    from .llm import BUDGET_STOP, BudgetExceeded
     try:
         return args.fn(args)
+    except BudgetExceeded as e:   # a clean stop: what was finished is saved; raise the limit and run again to continue
+        print(f"sragent: stopped: {e} Raise the limit under budget: in the run file (or in Settings), then run again "
+              "to continue where it stopped.", file=sys.stderr)
+        return BUDGET_STOP
     except ConfigChanged as e:
         print("sragent: " + str(e), file=sys.stderr)
         for c in e.changes:

@@ -24,6 +24,7 @@ DEFAULTS = {
     "screen_full_text": (2500, 300, 1200),
     "screen_verify": (2600, 200, 900),
     "extract": (6000, 750, 1500),
+    "extract_figures": (7000, 450, 900),      # one page image and a figure's rows (aspirin review: 7,081 in, 455 out)
     "rob": (6000, 600, 2000),
     "rob_verify": (6500, 300, 1200),
     "synthesis": (10000, 1800, 6000),
@@ -33,7 +34,7 @@ DEFAULTS = {
 }
 # estimate rows -> the (stage, role) whose model does that work (config.model_for)
 ROW_CELL = {"plan": ("protocol", "writer"), "search": ("search", "writer"), "screen_title_abstract": ("screen", "writer"),
-            "screen_full_text": ("eligibility", "writer"), "extract": ("extract", "writer"), "rob": ("rob", "writer"),
+            "screen_full_text": ("eligibility", "writer"), "extract": ("extract", "writer"), "extract_figures": ("extract", "writer"), "rob": ("rob", "writer"),
             "synthesis": ("synthesis", "writer"), "synthesis_repair": ("synthesis", "writer"),
             "synthesis_verify": ("synthesis", "verifier"), "screen_verify": ("eligibility", "verifier"),
             "rob_verify": ("rob", "verifier"), "feedback": ("feedback", "writer")}
@@ -41,10 +42,15 @@ ROB_FLAG_RATE = 1.0     # share of risk-of-bias drafts with a reason for a secon
 FORWARD_RATE = 0.56     # share of records forwarded past title/abstract (v2)
 INCLUDE_RATE = 0.09     # share of records finally included (v2)
 RETRIEVED_RATE = 0.6    # share of forwarded records whose full text can be retrieved (benchmark runs: 25/42, 36/55)
+CONFLICT_RATE = 0.17    # share of full-text decisions the screener's overall answer disagrees with (aspirin review: 91/527)
 SNOWBALL_PER_SEED = 6   # candidates citation chasing adds per included study (64/13 and 115/15 in the benchmark runs)
 N_STATEMENTS = 8        # statements per synthesis (the prompt asks for 5 to 10)
 RECHECK_RATE = 0.15     # share of extractions that raise an eligibility doubt and re-screen the record (3/19 in the v2 run)
-REPAIR_RATE = 0.6       # share of statements the self-check faults and the repair round rewrites (8/10 in the v2 run)
+REPAIR_RATE = 0.9       # share of statements the self-check faults and the repair round rewrites (8/10 in the v2 run; 48/54
+                        #   on the aspirin review, where every faulted statement cost one rewrite by the synthesis writer and one more check)
+STATEMENTS_PER_GROUP = 2  # a review with a meta-analysis plan: statements per pooled group (aspirin review: 54 from 26 + 1 calls)
+CHARS_PER_TOKEN = 3.5      # extracted data (JSON)
+PAPER_CHARS_PER_TOKEN = 2.2   # a paper in a prompt, with its numbered sentences (aspirin review: 35,000 characters -> 17,700 tokens)
 
 
 def history(root: Path = Path("runs")) -> dict:
@@ -67,6 +73,27 @@ def history(root: Path = Path("runs")) -> dict:
                 acc[(stage, "*")]["in"].append(r["prompt_tokens"])
     return {k: {"in": statistics.mean(v["in"]), "out": statistics.mean(v["out"]) if v["out"] else None, "n": len(v["in"])}
             for k, v in acc.items()}
+
+
+def sizes(ctx) -> dict:
+    """Input tokens per call measured on this review, for the calls whose prompt carries a paper or a statement's
+    evidence: the defaults assume short papers, and a verifier or repair call reads as much as the writer did (the
+    aspirin review: 18,000 tokens per risk-of-bias call against a default of 6,000; 47,000 per statement repair)."""
+    st = ctx.store
+    p = ctx.cfg["pipeline"]
+    inc = st.included_ids()
+    lens = [(st.get(f"ft:{r}") or {}).get("data", {}).get("chars") or 0 for r in inc] or \
+           [n["data"].get("chars") or 0 for n in st.by_type("fulltext") if n["data"].get("kind") == "fulltext"]
+    if not lens:
+        return {}
+    paper = lambda cap: int(statistics.mean(min(x, cap) for x in lens) / PAPER_CHARS_PER_TOKEN) + 1500
+    out = {"extract": paper(int(p.get("context_chars", 60000))), "screen_full_text": paper(int(p.get("fulltext_screen_chars", 15000)))}
+    out.update(rob=out["extract"], rob_verify=out["extract"] + 800, screen_verify=out["screen_full_text"] + 300)
+    exts = [len(json.dumps(n["data"].get("fields") or {}, default=str)) for n in st.by_type("extraction", active_only=True)]
+    if exts:     # a statement's check and repair read the extracted data of every study it cites (up to 6, more when pooled)
+        per_study = statistics.mean(exts) / CHARS_PER_TOKEN
+        out["synthesis_verify"] = out["synthesis_repair"] = int(6 * per_study) + 1000
+    return out
 
 
 def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict:
@@ -105,6 +132,8 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
     vs = ctx.cfg["pipeline"].get("verify_screening") or "off"
     if vs in ("full_text", "all") and "eligibility" in order:
         calls["screen_verify"] = calls.get("screen_full_text", 0)
+    elif vs == "conflict" and "eligibility" in order:
+        calls["screen_verify"] = int(calls.get("screen_full_text", 0) * CONFLICT_RATE)
     if vs == "all" and "screen" in order:
         calls["screen_verify"] = calls.get("screen_verify", 0) + int(calls.get("screen_title_abstract", 0) * (1 - FORWARD_RATE))
     inc = st.included_ids()
@@ -136,10 +165,17 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
             calls["rob_verify"] = math.ceil(calls["rob"] * ROB_FLAG_RATE)
     if "synthesis" in order:
         if not st.by_type("synthesis", active_only=True):
-            calls["synthesis"] = 1
-            calls["synthesis_verify"] = N_STATEMENTS
+            calls["synthesis"], n_st = 1, N_STATEMENTS
+            from . import meta
+            if meta.plan_of(ctx.topic):       # written per pooled group, plus one call for what is not pooled
+                try:
+                    n_groups = sum(1 for g in meta.analyse(ctx)["groups"] if g["pooled"])
+                except Exception:
+                    n_groups = 0
+                calls["synthesis"], n_st = n_groups + 1, STATEMENTS_PER_GROUP * n_groups + 5
+            calls["synthesis_verify"] = n_st
             if ctx.cfg["pipeline"].get("verify_synthesis", True) and ctx.cfg["pipeline"].get("repair_synthesis", True):
-                n_rep = math.ceil(N_STATEMENTS * REPAIR_RATE)         # the repair round: one rewrite and one re-check each
+                n_rep = math.ceil(n_st * REPAIR_RATE)         # the repair round: one rewrite and one re-check each
                 calls["synthesis_repair"] = n_rep
                 calls["synthesis_verify"] += n_rep
         elif set(state.considered(st) or []) != set(inc) or n_inc_future:
@@ -149,8 +185,11 @@ def remaining_calls(ctx, max_records: int | None, until: str = "report") -> dict
     return dict(calls)
 
 
-def estimate(calls: dict, model: str, pricing: dict, effort: str | None, hist: dict | None = None) -> dict:
-    hist = hist or {}
+def estimate(calls: dict, model: str, pricing: dict, effort: str | None, hist: dict | None = None,
+             measured: dict | None = None) -> dict:
+    """measured (sizes(ctx)): input tokens per call measured on this review, used before another model's history and
+    the defaults."""
+    hist, measured = hist or {}, measured or {}
     rows, total = [], 0.0
     for stage, n in calls.items():
         if not n:
@@ -158,9 +197,9 @@ def estimate(calls: dict, model: str, pricing: dict, effort: str | None, hist: d
         d_in, d_low, d_def = DEFAULTS[stage]
         h = hist.get((stage, model)) or {}
         h_any = hist.get((stage, "*")) or {}
-        tin = h.get("in") or h_any.get("in") or d_in
-        tout = out_tokens(stage, effort)
-        src = "your past runs" if h else ("past runs (other model)" if h_any else "defaults")
+        tin = h.get("in") or measured.get(stage) or h_any.get("in") or d_in
+        tout = max(out_tokens(stage, effort), h.get("out") or 0)
+        src = "your past runs" if h else "this review's papers" if measured.get(stage) else ("past runs (other model)" if h_any else "defaults")
         usd = n * (tin * pricing.get("input_per_m", 0) + tout * pricing.get("output_per_m", 0)) / 1e6
         total += usd
         rows.append({"stage": stage, "calls": n, "in_per_call": int(tin), "out_per_call": int(tout),
@@ -175,7 +214,7 @@ def out_tokens(stage: str, effort: str | None) -> float:
     return {"low": low, "medium": (low + dflt) / 2, "high": dflt, "xhigh": dflt * 1.5, "max": dflt * 2}.get(effort or "", dflt)
 
 
-def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None) -> dict:
+def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None, measured: dict | None = None) -> dict:
     """Like estimate(), with the model, price and effort of the stage and role that makes each kind of call."""
     from .config import model_for
     rows, total = [], 0.0
@@ -183,7 +222,7 @@ def estimate_stages(calls: dict, cfg: dict, hist: dict | None = None) -> dict:
         if not n:
             continue
         c = model_for(cfg, *ROW_CELL.get(stage, ("feedback", "writer")))
-        e = estimate({stage: n}, c.get("model"), c.get("pricing") or {}, c.get("reasoning_effort"), hist)
+        e = estimate({stage: n}, c.get("model"), c.get("pricing") or {}, c.get("reasoning_effort"), hist, measured)
         cell = ROW_CELL.get(stage, ("feedback", "writer"))
         half = cell[1] == "writer" and cell[0] in (cfg["pipeline"].get("batch_stages") or []) and c.get("provider") == "anthropic"
         for r in e["rows"]:

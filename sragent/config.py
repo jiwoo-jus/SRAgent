@@ -29,7 +29,9 @@ from . import stagespec   # the one list of stages
 DEFAULTS: dict[str, Any] = {
     "run_dir": None,              # None: runs/<the run file's path under configs/, without .yaml>
     "cache_dir": ".cache",
-    "budget_usd": 5.0,
+    # Cost limits of this run folder in USD (required; budget_limits): `total_usd`, one hard ceiling, and a limit for
+    # every stage that calls a model (MODEL_STAGES), a number or `unlimited`. A call runs only when both have room.
+    "budget": None,
     "contact_email": "",          # sent to NCBI, Unpaywall and OpenAlex (Unpaywall requires it)
     "ncbi_api_key": "",           # optional, raises E-utilities rate limit
     "models_file": "configs/models.yaml",   # model catalog: provider and price per model name (project root)
@@ -91,8 +93,9 @@ DEFAULTS: dict[str, Any] = {
         "verify_rob": "off",          # risk-of-bias drafts with a reason for a second look (the agent's own doubt, a judgment
                                       #   without a cited sentence, an overall milder than a domain): off -> to a person;
                                       #   flagged -> the verifier settles them, a person sees only what it cannot settle
-        "verify_screening": "off",    # a second agent (the stage's verifier) reads screening decisions: off | pending | full_text | all
+        "verify_screening": "off",    # a second agent (the stage's verifier) reads screening decisions: off | pending | conflict | full_text | all
                                       #   pending: only records undecided after their full text (it decides, or leaves it to a person)
+                                      #   conflict: also full-text decisions the screener's overall answer disagrees with
                                       #   full_text: every full-text decision; all: also title/abstract exclusions (disputes go to a person)
         "batch_stages": [],           # screen, eligibility: those stages' model calls go through Anthropic's Message Batches
                                       #   (half price; usually within the hour, at most 24 hours; other providers: normal calls)
@@ -175,11 +178,24 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
     if cfg["run_dir"] is None:
         cfg["run_dir"] = default_run_dir(path)
     p = cfg["pipeline"]
+    from .rows import check_field, is_rows
+    bad_rows = [e for f in (cfg.get("topic") or {}).get("extraction_fields") or [] if isinstance(f, dict) and is_rows(f)
+                for e in check_field(f)]
+    if bad_rows:
+        raise ValueError("; ".join(bad_rows))
+    if (cfg.get("topic") or {}).get("meta_analysis"):
+        from .meta import plan_of
+        plan_of(cfg["topic"])          # the analysis plan names real columns
+    if p.get("verify_screening") not in (None, "off", "pending", "conflict", "full_text", "all"):
+        raise ValueError(f"pipeline.verify_screening: {p['verify_screening']!r}; use off, pending, conflict, full_text or all")
     if p["human_mode"] == "agent_only" and p["fulltext_unclear"] == "await":
         raise ValueError("pipeline.fulltext_unclear: await leaves records for a person to decide; "
                          "with human_mode: agent_only set it to include or exclude")
     if p["reassess_excluded"] not in ("needed", "all"):
         raise ValueError(f"pipeline.reassess_excluded: {p['reassess_excluded']!r}; use needed or all")
+    if "budget_usd" in cfg:
+        raise ValueError("budget_usd was replaced by budget: a total and a limit per stage, e.g. "
+                         "budget: {total_usd: 30, stages: {protocol: unlimited, screen: 5, ...}} (configs/README.md)")
     unknown = set(cfg) - set(DEFAULTS) - {"topic", "_config_dir", "_catalog", "job_model"}
     if unknown:
         raise ValueError(f"unknown settings: {', '.join(sorted(unknown))} (configs/README.md lists the run file's sections)")
@@ -188,6 +204,8 @@ def load_config(path: str | os.PathLike | None, overrides: dict | None = None) -
         raise ValueError(f"llm_defaults: unknown keys {', '.join(sorted(bad))}; models are chosen under models: "
                          "(models.default.writer, models.<stage>.<role>)")
     _check_models(cfg)
+    if cfg.get("budget") is not None:   # a written budget: is checked here; LLMHub (any model call) requires one
+        budget_limits(cfg)
     for k, v in (cfg.get("update_policy") or {}).items():
         if k not in ("screen", "extraction", "rob", "synthesis") or v not in ("auto", "propose", "manual"):
             raise ValueError(f"update_policy.{k}: {v!r}; keys are screen, extraction, rob, synthesis and values auto, propose or manual")
@@ -274,6 +292,46 @@ MODEL_STAGES = stagespec.model_slots()        # the stages with model cells (mod
 STAGE_LABELS = {k: stagespec.label(k) for k in MODEL_STAGES}
 EVAL_ROLES = ("judge", "judge2", "reviewer")
 BATCH_STAGES = ("screen", "eligibility")      # the stages whose bulk calls can go through a batch API
+UNLIMITED = "unlimited"
+
+
+def budget_limits(cfg: dict) -> dict:
+    """The run file's `budget:` as {"total_usd": float, "stages": {stage: float, or None for unlimited}}; a missing
+    section, a missing or unknown stage, or a value that is not a number or `unlimited` is an error."""
+    b = cfg.get("budget")
+    example = ("budget: {total_usd: 30, stages: {" + ", ".join(f"{s}: unlimited" for s in MODEL_STAGES) + "}}")
+    if not isinstance(b, dict):
+        raise ValueError(f"budget is required: the total and a limit for each stage that calls a model, e.g. {example}")
+    bad = set(b) - {"total_usd", "stages"}
+    if bad:
+        raise ValueError(f"budget: unknown keys {', '.join(sorted(bad))}; write total_usd and stages")
+    total = b.get("total_usd")
+    if isinstance(total, bool) or not isinstance(total, (int, float)) or total < 0:
+        raise ValueError(f"budget.total_usd: {total!r}; a number of US dollars (the hard ceiling of this run folder)")
+    stages = b.get("stages")
+    if not isinstance(stages, dict):
+        raise ValueError(f"budget.stages: a limit for each stage that calls a model, e.g. {example}")
+    missing = [s for s in MODEL_STAGES if s not in stages]
+    unknown = sorted(set(stages) - set(MODEL_STAGES))
+    if missing or unknown:
+        raise ValueError("budget.stages: " + "; ".join(
+            ([f"missing {', '.join(missing)}"] if missing else []) + ([f"unknown {', '.join(unknown)}"] if unknown else []))
+            + f". List every stage that calls a model ({', '.join(MODEL_STAGES)}) with a number or {UNLIMITED}")
+    out = {}
+    for s in MODEL_STAGES:
+        v = stages[s]
+        if v == UNLIMITED:
+            out[s] = None
+        elif isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+            out[s] = float(v)
+        else:
+            raise ValueError(f"budget.stages.{s}: {v!r}; a number of US dollars or {UNLIMITED}")
+    return {"total_usd": float(total), "stages": out}
+
+
+def unlimited_budget(total_usd: float) -> dict:
+    """A `budget:` section with a total and no stage limits (evaluations, tests)."""
+    return {"total_usd": total_usd, "stages": {s: UNLIMITED for s in MODEL_STAGES}}
 EFFORTS = {"anthropic": ("low", "medium", "high", "xhigh", "max"), "openai": ("low", "medium", "high"),
            "gemini": ("low", "medium", "high")}
 _FACTS = ("model", "provider", "pricing", "base_url", "reasoning_effort", "fallbacks",

@@ -244,7 +244,8 @@ def _cost(ctx: Ctx, items: list[dict]) -> dict:
             calls["feedback"] += 1
             calls["synthesis_verify"] += 1
     try:
-        e = estimate_stages(dict(calls), ctx.cfg)
+        from .estimate import sizes
+        e = estimate_stages(dict(calls), ctx.cfg, measured=sizes(ctx))
     except Exception:
         return {"total_usd": None, "rows": []}
     return {"total_usd": e["total_usd"], "range_usd": e["range_usd"], "rows": e["rows"]}

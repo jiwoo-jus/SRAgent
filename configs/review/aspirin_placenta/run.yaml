@@ -6,7 +6,18 @@ llm_defaults:                # request settings every model uses
   max_tokens: 16000
   concurrency: 6
 cache_dir: .cache
-budget_usd: 10           # hard cost cap for this run folder
+budget:                  # USD limits of this run folder: the total, and each stage that calls a model (a number or unlimited)
+  total_usd: 10
+  stages:
+    protocol: unlimited
+    search: unlimited
+    screen: unlimited
+    eligibility: unlimited
+    snowball: unlimited
+    extract: unlimited
+    rob: unlimited
+    synthesis: unlimited
+    feedback: unlimited
 contact_email: parkjiwoo9980@gmail.com          # Unpaywall open-access full texts need it
 pipeline:
   human_mode: human_in_the_loop
