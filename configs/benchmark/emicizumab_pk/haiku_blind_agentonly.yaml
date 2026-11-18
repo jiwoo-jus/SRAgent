@@ -1,0 +1,39 @@
+# Benchmark run: emicizumab_pk · one low-cost model (low effort) everywhere · 60 records · AGENT ONLY.
+# A cheap, fast test of the pipeline and of the screening verifier read blind (pipeline.verify_screening_blind: true);
+# haiku_anchored_agentonly and haiku_blind_agentonly differ only in that setting (the second reuses the first's cached calls).
+#   sragent run  --config configs/benchmark/emicizumab_pk/haiku_blind_agentonly.yaml
+#   sragent eval --config configs/benchmark/emicizumab_pk/haiku_blind_agentonly.yaml --suite screening
+include:
+  - topic.yaml
+llm_defaults:                # request settings every model uses
+  api_env: ../../../api_env.yaml
+  max_tokens: 8000
+  concurrency: 8
+models:                      # one model for every stage and role (writer and verifier)
+  default: {writer: {model: claude-haiku-5-5, reasoning_effort: low}}
+cache_dir: .cache
+budget:                  # USD limits of this run folder: the total, and each stage that calls a model (a number or unlimited)
+  total_usd: 2
+  stages:
+    protocol: unlimited
+    search: unlimited
+    screen: unlimited
+    eligibility: unlimited
+    snowball: unlimited
+    extract: unlimited
+    rob: unlimited
+    synthesis: unlimited
+    feedback: unlimited
+pipeline:
+  human_mode: agent_only
+  fulltext_unclear: include
+  max_records: 60            # a sample; every known answer is kept
+  context_chars: 30000
+  fulltext_screen_chars: 12000
+  verify_screening: full_text   # the verifier reads every full-text decision
+  verify_screening_blind: true
+  citation_chasing: false
+  validate_terms: false
+eval:
+  models: {judge: {model: claude-haiku-5-5, reasoning_effort: low}}
+  budget_usd: 1.0

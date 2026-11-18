@@ -40,7 +40,7 @@ The benchmark topic is the pharmacokinetics of emicizumab in humans, with the kn
 | `benchmark/emicizumab_pk/gemini_agentonly.yaml` | Gemini · all · agent only (the main results) |
 | `review/_template/run.yaml` | Gemini · all · human in the loop (template) |
 
-Details and how to write a config: `configs/README.md`.
+Details and how to write a config: `configs/README.md`. The switches that shape a review are listed together there under **The switches that shape a review**: `budget` (a total and a limit per stage), `human_mode`, `fulltext_unclear`, `verify_screening` (`off` < `pending` < `conflict` < `full_text` < `all`: which screening decisions a second agent reads), `verify_rob`, `reassess_excluded`, `confirm_search`, `wait_for_pdfs`, `citation_chasing`, `batch_stages` and `skip_stages`. Each can be changed on the **Configs** page of the web interface.
 
 ## Setup
 
@@ -76,7 +76,7 @@ sragent eval --config configs/benchmark/emicizumab_pk/gemini_agentonly.yaml --su
 
 Use `--until STAGE` to stop early. Every change to a review is an operation: `sragent op --list` shows them, `sragent op NAME --config C --args JSON` runs one. Other commands: `runs` (every run file and its state), `accept-config` (continue a review whose fixed settings were edited; recorded), `rescreen` (re-derive decisions after editing the protocol, no LLM calls), `pdfs` (process added full-text PDFs), `sync`, `feedback`, `rerun`, `propagate`, `accept`, `reject`, `revalidate-terms`, `fetch-files` (keep the agent-fetched full texts as files), `eval-audit`, `eval-summary` (one comparable results row per evaluation run, `docs/RESULTS.md`), `local-endpoints`, and `data --synergy KEY`. See GUIDE.md section 7.
 
-Outputs go to the run's folder under `runs/`: `protocol.yaml`, `store.json` and `store_changelog.jsonl` (decisions, evidence, history), `report.md` and `report_evidence.html`, `usage.jsonl` and `cost.json` (API usage and cost), `fulltext/needed_pdfs.csv` (papers whose full-text review is blocked; put `<rid>.pdf` in `fulltext/`), and `fulltext/auto/` (the texts, and PDFs where the source allows, that the agent fetched itself). Caches are in `.cache/`. Outputs, caches, and credentials are ignored by Git.
+Outputs go to the run's folder under `runs/`: `protocol.yaml`, `store.json` and `store_changelog.jsonl` (decisions, evidence, history), `report.md` and `report_evidence.html` (a large report keeps the main text in that file and puts Appendix A and C on pages in `report_parts/`), `usage.jsonl` and `cost.json` (API usage and cost), `fulltext/needed_pdfs.csv` (papers whose full-text review is blocked; put `<rid>.pdf` in `fulltext/`), and `fulltext/auto/` (the texts, and PDFs where the source allows, that the agent fetched itself). Caches are in `.cache/`. Outputs, caches, and credentials are ignored by Git.
 
 ## Local models
 

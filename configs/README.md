@@ -100,7 +100,18 @@ models:                                # models by name; provider and price come
   protocol: {writer: {model: claude-sonnet-5-5, reasoning_effort: high}}
   extract: {writer: {model: claude-sonnet-5-5, reasoning_effort: medium}}
   screen: {writer: {reasoning_effort: medium}}   # the default writer's model, another effort
-budget_usd: 5.0                        # hard cost cap for this run folder
+budget:                                # USD limits of this run folder (required)
+  total_usd: 5                         # one hard ceiling for every call
+  stages:                              # every stage that calls a model: a number or unlimited
+    protocol: unlimited
+    search: unlimited
+    screen: 2                          # title/abstract screening may spend at most $2
+    eligibility: unlimited
+    snowball: unlimited
+    extract: unlimited
+    rob: unlimited
+    synthesis: unlimited
+    feedback: unlimited
 pipeline:
   human_mode: human_in_the_loop        # or agent_only
   max_records: 60                      # benchmark only; omit for all records
@@ -126,7 +137,7 @@ Defaults are in parentheses.
 | `include` | files loaded first (the folder's topic.yaml) |
 | `run_dir` (derived: `runs/<run file's path under configs/>`) | output folder; write it only to override |
 | `cache_dir` (`.cache`) | LLM and HTTP cache shared by all runs |
-| `budget_usd` (5.0) | cumulative cost cap for `run_dir`; the run stops cleanly when reached |
+| `budget` (required) | what `run_dir` may spend, in USD: `total_usd`, one hard ceiling, and `stages`, a limit for every stage that calls a model (`protocol`, `search`, `screen`, `eligibility`, `snowball`, `extract`, `rob`, `synthesis`, `feedback`), each a number or `unlimited`. A missing stage is an error (`retrieve` and `report` make no model calls). A call runs only when the total and its stage both have room; a job that reaches a limit stops cleanly and keeps what it finished, and run again after the limit is raised it continues (the web interface: **Raise and resume**). Spending is cumulative (usage.jsonl); the section can change at any time (Settings → Budget). Evaluations have their own `eval.budget_usd` |
 | `contact_email` | sent to NCBI, Unpaywall and OpenAlex; Unpaywall needs it. May also be put in `api_env.yaml` (kept out of git) instead of the run file |
 | `ncbi_api_key` | optional, higher PubMed rate limit |
 | `models_file` (`configs/models.yaml`) | the model catalog |
@@ -155,7 +166,36 @@ The web interface's Settings page edits this section (a table of stages and role
 
 **`local` (run file, for `provider: local`)**: `endpoints_file` (`local_endpoints.yaml` in the project root), `poll_interval` (2 s), `retry_interval` (5 s), `probe_timeout` (5 s), `wait_timeout` (null = wait until cancelled). See GUIDE section 4.
 
-**`pipeline` (run file)**
+**The switches that shape a review.** All under `pipeline:` in the run file except `budget`. Change them on the **Configs** page (open `run.yaml`, edit, save) or in a text editor. "Fixed" ones need an accept once the review has started (rule 6); the others take effect on the next run.
+
+| Key | Values (default first) | What it changes | Fixed after start |
+|---|---|---|---|
+| `budget` | `total_usd` + a limit per stage | how much the run folder may spend; Settings → Budget edits it | no |
+| `human_mode` | `human_in_the_loop`, `agent_only` | whether people decide, edit and approve, or only supply PDFs | yes |
+| `fulltext_unclear` | `await`, `include`, `exclude` | a study still unclear after its full text: a person decides, or the rule includes / excludes it | yes |
+| `verify_screening` | `off`, `pending`, `conflict`, `full_text`, `all` | which screening decisions a second agent reads (levels below) | no |
+| `verify_screening_blind` | `false`, `true` | the screening verifier sees the screener's answer, or reads independently | no |
+| `verify_rob` | `off`, `flagged` | risk-of-bias drafts with a reason for a second look go to you, or to the verifier first | no |
+| `reassess_excluded` | `all`, `needed` | after a criterion changes, which excluded records are read again | no |
+| `confirm_search` | `false`, `true` | the search waits for a query the team confirmed | no |
+| `wait_for_pdfs` | `false`, `true` | the first synthesis waits until requested PDFs are supplied or declared not obtainable | no |
+| `citation_chasing` | `true`, `false` | follow references and citations of included studies (stage 6); `false` skips it | no |
+| `batch_stages` | `[]`, `[screen, eligibility]` | those stages' writer calls go through Anthropic batches at half price, slower | no |
+| `skip_stages` | `[]`, e.g. `[rob]` | stages left out entirely | no |
+
+**Second readings of screening (`verify_screening`).** Each level reads what the one before it reads, and more. One verifier call per record read; the Verify button on the Full-text screening page follows the level and shows the count and cost first.
+
+| Level | The verifier reads | Typical share of full-text decisions |
+|---|---|---|
+| `off` | nothing | 0 |
+| `pending` | full-text decisions the screener could not make (undecided) | the undecided ones |
+| `conflict` | also full-text decisions the screener's overall answer disagrees with: its criterion answers give include and it answered exclude or uncertain, or the reverse | about 1 in 6 (aspirin review: 91 of 527) |
+| `full_text` | also every other full-text include and exclude | all |
+| `all` | also every title/abstract exclusion by the agent | all, plus title/abstract exclusions |
+
+When the two agents agree, the decision stands. When the verifier decides a record the screener left undecided, its decision stands ("included (verifier)"). When they disagree on a decision, the record becomes undecided and goes to you with both readings (agent-only: `fulltext_unclear` applies, flagged); a disputed title/abstract exclusion is forwarded to the full text. A decision you made is never read again.
+
+**`pipeline` (run file)**: every key.
 
 | Key | Meaning |
 |---|---|
@@ -172,13 +212,13 @@ The web interface's Settings page edits this section (a table of stages and role
 | `open_access_lookup` (true) | Unpaywall / OpenAlex legal open-access copies |
 | `pdf_parser` (`auto`) | `auto`, `azure_cu` or `pdftotext` |
 | `azure_cu_analyzer` | Azure Content Understanding analyzer |
-| `vision_pages` (false), `vision_max_pages` (6) | read table/figure pages with a multimodal agent model |
-| `citation_chasing` (true), `citation_chasing_rounds` (1), `citation_chasing_max_citing` (400) | follow references and citations of included studies |
+| `vision_pages` (false), `vision_max_pages` (6) | read table/figure pages with a multimodal agent model. Only adds to a PDF that already has text: a scanned PDF with no text layer stays unreadable (add a text version, or the study is reported as unreadable) |
+| `citation_chasing` (true), `citation_chasing_rounds` (1), `citation_chasing_max_citing` (400) | stage 6, before data extraction: for each included study, the papers it cites and the papers citing it (OpenAlex, else NCBI links; up to `citation_chasing_max_citing` citing papers each). Papers already in the review, published after the search end date, or not mentioning an intervention term are dropped; the rest go through title/abstract screening, Full texts and full-text screening like any record (no model calls of its own, but those screenings cost). About 6 new candidates per included study on the benchmark. `false` skips it; the report then leaves citation searching out of its methods and flow diagram, so state in your write-up that it was not done |
 | `validate_terms` (true) | check drug and disease terms in RxNorm, PubChem, ChEMBL, MONDO |
 | `verify_synthesis` (true) | check every synthesis statement against the cited data |
 | `repair_synthesis` (true) | one repair round: a statement the check faulted is narrowed to what the data show, checked again, and retired if still unsupported |
 | `verify_rob` (`off`) | risk-of-bias drafts with a reason for a second look: the agent's own doubt about a domain, a low/high judgment citing no sentence, or an overall milder than a domain. `off`: they are required To-do items. `flagged`: the verifier (`models.rob.verifier`) reads the source, the draft and the reasons, and its judgments replace the draft's (the agent's are kept beside them, "set by the verifier"); only what it cannot settle reaches you. Drafts without a reason are optional in both cases and marked as drafts in the report. The New-review form sets `flagged` for human-in-the-loop reviews. One verifier call per flagged draft |
-| `verify_screening` (`off`) | a second agent (the stage's verifier, `models.screen.verifier` or `models.eligibility.verifier`) reads the record and decides independently. `pending`: only records the screener could not decide after their full text; the verifier's decision stands ("included/excluded (verifier)"), and only a record neither can decide goes to a person. `full_text`: also every full-text include/exclude; `all`: also every title/abstract exclusion; there a disputed title/abstract exclusion is forwarded to the full text and a disputed full-text decision becomes undecided for a person (agent-only: `fulltext_unclear`, flagged). The New-review form sets `pending` for human-in-the-loop reviews. One verifier call per record read |
+| `verify_screening` (`off`) | `off`, `pending`, `conflict`, `full_text` or `all`: which screening decisions a second agent (`models.screen.verifier` or `models.eligibility.verifier`) reads; see **Second readings of screening** above. The New-review form sets `pending` for human-in-the-loop reviews |
 | (no key) structured replies | On Claude models the prompts that run once per record or study (screening, its verifier, extraction, risk of bias and its verifier, the statement check) ask the API for their exact JSON shape (`sragent/schemas.py`), so those replies are valid JSON by construction; about 500 more input tokens per call (about 2,300 for extraction). `json_mode: false` in a model cell turns it off. Other providers keep plain JSON mode |
 | `batch_stages` (`[]`) | `screen`, `eligibility`: those stages' writer calls go through Anthropic's Message Batches at half price. The job waits for the answers (usually within the hour, at most 24 hours; 1,000 requests per batch, written to the review before the next is sent); a job stopped while waiting collects its batch next time, without paying twice. Only as many requests as the budget has room for are sent. A request with no usable answer is asked normally. Verifier calls and other providers use normal calls |
 | `verify_screening_blind` (false) | the screening verifier is shown the record and the criteria, not the screener's assessments or decision; the two readings are compared afterwards with the same outcomes. An independent second reading (the default verifier sees the first answer, which pulls it towards agreeing); the benchmark compares the two before this becomes the default |
@@ -203,6 +243,85 @@ The web interface's Settings page edits this section (a table of stages and role
 | `screening_rules` | deterministic exclusions before any LLM call: `empty_record`, `conference_abstract`, `erratum`, `editorial`, `review`, `off_topic_no_abstract` (default: all except `review`) |
 | `records.source` | `synergy` = benchmark with known answers (with `synergy_key`, `data_dir`); `pubmed` (with `pubmed_retmax`, `maxdate`) or `file` (with `file`, a JSONL path) = real review |
 | `records.maxdate` | search end date, also used for citation chasing |
-| `extraction_fields` | `{name, description, kind}`; `kind: drug` or `disease` turns on database term checks |
+| `extraction_fields` | `{name, description, kind}`; `kind: drug` or `disease` turns on database term checks. `kind: rows` with `columns` extracts one row per result for a quantitative synthesis (below) |
 | `rob_tool_name`, `rob_domains` | quality tool name and domains `{name, description}` |
 | `protocol_file` | optional fixed protocol YAML instead of LLM planning |
+
+**Rows items (`kind: rows`), for a meta-analysis.** An ordinary item is one short text per study. A rows item is a table: one row per result (outcome × comparison × dose × time point), each row with its own cited sentences.
+
+```yaml
+- name: outcome_data
+  kind: rows
+  description: "One row per result that compares aspirin with a control."
+  columns:
+    outcome_family: [sFlt-1, PlGF, invasion, other]     # a list: one of these values
+    n_aspirin: number                                   # a number, copied as the paper writes it
+    mean_aspirin: number
+    dispersion_type: [SD, SEM, 95% CI, not stated]
+    challenge: {type: text, description: "none, hypoxia, H2O2 ... as written"}
+    source: [text, table, figure]
+```
+
+The model copies numbers exactly as written and computes nothing (no SEM to SD, no values read off a figure: a result shown only in a figure is a row with source `figure` and no numbers). Every number is checked against the row's cited sentences; one found nowhere in the paper is shown beside the row, and a value that is not on a column's list is kept and marked. The item's value is a short summary ("8 rows: sFlt-1 ×3, invasion ×5"). The study page shows the rows as a table, and **Edit values** edits them as one JSON object per line. Every row of every included study goes to `meta_rows.csv` (Data extraction page → *Rows for the meta-analysis (CSV)*, `sragent op extract.export_rows --config C`, and with every report) for the analysis, for example in R with metafor. Columns are written in the topic file; the data-items card keeps them as they are.
+
+**Pooling (`topic.meta_analysis`).** The statistics are general code (`sragent/meta.py`); a review only says, in its topic file, which rows item to pool, which rows count, how to group them and which columns hold what:
+
+```yaml
+meta_analysis:
+  field: outcome_data
+  include: {comparison_type: [aspirin vs control]}     # rows used
+  group_by: [outcome_family, model_tier, readout]      # one pooled estimate per combination
+  min_studies: 3
+  classify:                             # a group_by dimension the rows do not hold, derived by rules
+    - set: readout                      # "what was measured": blood and expression are not one quantity
+      column: analyte_name              # the text the patterns are matched against (any case)
+      also: [measure_level, model]      # more columns added to that text (the sample counts)
+      rules: [{label: release / circulating level, pattern: 'serum|plasma|medium|secret'}, ...]
+      otherwise: {column: measure_level, map: {protein: protein level}}
+  columns:
+    treated: {n: n_aspirin, value: value_aspirin, spread: dispersion_aspirin, upper: dispersion_aspirin_upper}
+    control: {n: n_control, value: value_control, spread: dispersion_control, upper: dispersion_control_upper}
+    value_type: value_type          # mean, geometric mean -> ratio of means; number of events, percent -> risk ratio
+    spread_type: dispersion_type    # SD, SEM, 95% CI
+    normalised: {column: measure_basis, value: normalised to control}
+    binary_only_if: {column: unit_of_n, values: [participants]}   # elsewhere a percentage is a mean (% apoptotic cells)
+    risk_of_bias_high: high         # the overall rating left out in a sensitivity analysis
+```
+
+`sragent op synthesis.meta_analysis --config C` (no model calls) writes `<run folder>/meta/`: `summary.md` (the pooled table), `effects.csv` (one line per study and group), `results.json` and a forest plot per pooled group. Effects are log ratios, treated over control; several rows of one study in a group are averaged into one effect; pooling is random effects with the Hartung-Knapp interval, I² and a prediction interval; the sensitivity columns leave out values estimated from figures and studies at high risk of bias; rows that cannot be used are counted by reason. The section is not a fixed setting: it can change without an accept. Grouping is what keeps unlike things apart: a concentration in maternal serum, the same protein inside a trophoblast and its transcript are three quantities, and nothing is pooled across a `group_by` dimension. `classify` adds a dimension the extracted rows do not hold, read from the wording of a measurement (and of the sample, through `also`), so "what was measured" can group the analysis without the extraction model having to label it. Optional keys: `refine` (finer groups from a text column by rules, first match wins: `{when: {outcome_family: clinical outcome}, column: analyte_name, set: outcome_family, rules: [{label: preeclampsia, pattern: 'pre-?eclampsia'}], otherwise: other}` gives groups like `clinical outcome: preeclampsia`), `same_study` (lists of papers that report one trial: in a group only one counts; two studies with the same effect are listed as possible duplicates), `columns.direction` (the column counted for groups that are not pooled). `exclude` (rows left out by a rule on a text column, counted by its label: `[{column: model, pattern: '\\b(mouse|mice|rats?)\\b', label: animal model}]`). `columns.risk_of_bias_high` is an overall rating, or `{judgment: high, domains: [...]}` when only some domains are about bias (others, such as dose or model relevance, say how well a study applies). A median with its quartiles or range is converted to a mean and SD (Wan et al. 2014) and marked. In the web interface, the Synthesis page shows the pooled table (click a row for its forest plot; **Compute again** needs no model) and the Data extraction page has **Read figures** (with the cost first) and a selectable **Extract** for studies not extracted yet. With a plan, the synthesis is written per pooled group from its pooled result and that group's rows, plus one call for what was not pooled, and the report carries the pooled table and the forest plots.
+
+**The report for readers (`report_plan.yaml`).** The standard report (`report_evidence.html`) lists everything for verification. A report for readers is planned: a file `report_plan.yaml` beside the run file gives the title, the key messages, the concept map (how extracted results are grouped for figures), the settings, the dose scales and the sections, each made of paragraphs, lists, figures and tables. `sragent op report.manuscript --config C` renders it as `<run folder>/manuscript.html` with each figure also in `manuscript_figures/`; `sragent op report.inventory --config C` lists what the data can show (studies per model and concept, the pooled groups, the figure types). Neither makes a model call.
+
+Figure types: `prisma`, `forest`, `direction_plot`, `evidence_map`, `dose_plot`, `rob_summary`, `mechanism_map`, `pathway` (a signalling cascade whose nodes the plan declares and whose evidence the system fills in; `flow: down` for a deep chain, `settings: [a, b]` for one evidence line per setting). Table types: `pooled` (one column per grouping dimension, so what was pooled with what is readable), `concepts` (one line per molecule **and setting**, with the doses used, one summarising direction and the per-study counts), `modulation` (what kind of change each molecule shows in each setting: expression, activation, activity, release or function), `dose_check` (whether each study's dose is the dose a patient receives), or columns and rows written in the plan.
+
+Keeping unlike evidence apart is the plan's job too:
+
+```yaml
+settings:                                 # nothing is counted or pooled across these
+  # `given` is where the drug was given: a dose written per day was given to the patient, a concentration was added
+  # in vitro. Tissue from a treated patient is in-vivo evidence; her serum dosed in a tube is in-vitro evidence.
+  - {key: cells, label: Aspirin added in vitro, short: cells, given: in vitro, tiers: [cell line, primary cells, explant or tissue, pregnant women]}
+  - {key: exvivo, label: Tissue from treated women, short: ex vivo, given: in vivo, tiers: [cell line, primary cells, explant or tissue]}
+  - {key: women, label: Pregnant women, short: women, given: in vivo, tiers: [pregnant women]}
+group_labels: {outcome_family: Outcome, model_tier: Model, readout: What was measured}
+concepts:                                 # every row of a figure or table reads at one level
+  column: analyte_name
+  tier_column: model_tier
+  domains: [{key: angio, label: Angiogenic balance}, {key: function, label: Cellular function}]
+  items:
+    - {name: sFlt-1, domain: angio, pattern: 'sflt|flt-?1', leads_to: [tube formation]}   # the function it ends in
+    - {name: tube formation, domain: function, pattern: 'tube|angiogen', short: tube formation}
+dose:                                     # the concentration the cells were given
+  value: aspirin_dose
+  unit: aspirin_dose_unit
+  unit_label: µM
+  factors: {uM: 1, mM: 1000, "ug/mL": 5.55}
+  band: [10, 100]                         # what the patient reaches, for the figure and the dose check
+  clinical: {unit_label: mg/day, factors: {mg/day: 1}, band: [75, 150]}    # the dose the patient took
+```
+
+A figure or table covers one setting with `setting: <key>` (or its own `tiers:`). Rows are grouped by domain in the order the domains are declared, so a domain is never split into two blocks; a molecule with `leads_to` is labelled "name → function", which is the plan's reading of its own cascades, and a `leads_to` naming nothing is an error. The readout classes are the ones the pooling groups by (`topic.meta_analysis.classify`): one definition, so a table line and a pooled estimate always mean the same quantity.
+
+Numbers the system can compute are written as tokens: `{{pool:<group>|<measure>}}` (a group name may leave out dimensions where what is left names one group, and is an error where it names two), `{{n:included}}` (also `{{n:search_date}}`, `{{n:screened}}`, `{{n:assessed}}`, `{{n:human_decisions}}`, `{{n:high_risk}}`, `{{n:studies:<setting>}}`, `{{n:rows_left_out:<reason>}}`), `{{dir:<item>|<direction>|<setting>}}` (how many studies of that setting report it), `{{dose:<setting>|<scale>|<verdict>}}` (how many studies used the dose a patient receives). Citations are `[@<study id>]`, references to figures and tables `{fig:<id>}` and `{tab:<id>}`. The renderer refuses a plan whose citations are not included studies, whose pooled groups do not exist or are ambiguous, or whose settings and concepts are not declared. See `docs/refactor/07-report-planning.md`.
+
+**Results shown only in a figure.** `sragent op extract.read_figures --config C` (optionally `--args '{"rids": [...]}'`) shows the PDF page of each such figure to the extraction model and fills the row's empty columns with what it reads from the plot. These are estimates, not reported numbers: each column filled this way is marked (≈ on the study page, `estimated_from_figure` in the CSV), so an analysis can leave them out. A reported number or a value you entered is never replaced. A study whose text came without a PDF is skipped; add `<id>.pdf` to the full-text folder to read its figures. `sragent op extract.studies --config C --args '{"rids": [...]}'` extracts chosen included studies only (a pilot).
