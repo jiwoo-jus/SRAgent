@@ -13,6 +13,7 @@ before any change, aligned controls across stages, clear model roles, and better
 | [04 · The refactor plan](04-refactor-plan.md) | The five rules, the canonical vocabulary, the target pipeline interface, the target graph, the operations layer, the stage-page template and the dependency preview, model roles, agentic upgrades, migration phases, decisions to take first. |
 | [05 · Models, tools, visibility](05-models-tools-visibility.md) | How a model is chosen today, roles and stages, the stage × information matrix (what each model sees), the tool catalogue, and what is deliberately hidden from the models. |
 | [06 · Update plan after the refactor](06-update-plan.md) | Added 2026-11-10. The work after phase 5 in build order (engine fixes, budgets, page fixes and the full-text flow, settings, rest of phase 5, phase 6, checks, GPT/Gemini), with the issues found on the aspirin review placed in it. |
+| [07-report-planning.md](07-report-planning.md) | A report planned with the team: report plan, figure library, renderer; the planning stage to build |
 
 Reading order for a decision: 03 §1 (the ten reasons) → 04 §0-§1 (rules and vocabulary) → 04 §9
 (decisions) → the rest of 04. Reading order for implementation: 01 → 02 → 04 → 03 (as the checklist).

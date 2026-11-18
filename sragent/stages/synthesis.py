@@ -70,6 +70,9 @@ def write_statements(ctx: Ctx, statements: list[dict], reason: str, actor: str =
         cites = [str(c).strip("[] ") for c in s.get("cites", [])]
         cites, fixes = reconcile_citations(st, s["text"], cites)
         data = {"id": s["id"], "text": s["text"], "cites": cites, "scope": s.get("scope", "")}
+        for k in ("pooled", "basis"):         # the pooled result a statement reports, and what it was written from (its check reads it)
+            if s.get(k):
+                data[k] = s[k]
         if fixes:
             data["citation_fixes"] = fixes
         old = st.get(sid)
@@ -103,10 +106,131 @@ def coverage_note(st) -> str:
     return ("; ".join(parts) + ".") if parts else ""
 
 
+def pooled_text(g: dict) -> str:
+    """One pooled group as text for a prompt: the estimate, its interval, heterogeneity and the sensitivity analyses."""
+    P = g["pooled"]
+    L = [f"{' · '.join(g['group'].values())} ({g['measure']}, treated / control): pooled ratio {P['ratio']:.2f} "
+         f"(95% CI {P['ratio_ci'][0]:.2f} to {P['ratio_ci'][1]:.2f}), {P['k']} studies, random effects with the Hartung-Knapp interval; "
+         f"I² = {P['i2']:.0f}%" + (f"; 95% prediction interval {P['ratio_prediction'][0]:.2f} to {P['ratio_prediction'][1]:.2f}"
+                                  if P.get("ratio_prediction") else "") + "."]
+    for name, x in (g.get("sensitivity") or {}).items():
+        L.append(f"Sensitivity, {name}: " + (f"ratio {x['ratio']:.2f} (95% CI {x['ratio_ci'][0]:.2f} to {x['ratio_ci'][1]:.2f}), {x['k']} studies."
+                                             if "ratio" in x else f"only {x['k']} studies left, not pooled."))
+    n_est = sum(1 for s in g["studies"] if s["estimated"])
+    if n_est:
+        L.append(f"{n_est} of {P['k']} studies contribute values estimated from a figure (not reported numbers).")
+    return "\n".join(L)
+
+
+def pooled_sentence(g: dict) -> str:
+    """The pooled finding of a group in plain words, written by rule from the computed result (no model call): what a
+    statement falls back to when the pooled numbers change after it was written."""
+    P = g["pooled"]
+    r, (lo, hi) = P["ratio"], P["ratio_ci"]
+    what = " · ".join(g["group"].values())
+    size = "the same as" if abs(r - 1) < 0.005 else f"{abs(r - 1) * 100:.0f}% {'lower' if r < 1 else 'higher'} than"
+    s = [f"{what}: across {P['k']} studies the pooled {g['measure']} (treated / control) was {r:.2f} (95% CI {lo:.2f} to {hi:.2f}), "
+         f"that is {size} in controls; the interval {'includes' if lo <= 1 <= hi else 'excludes'} no effect."]
+    het = "consistent" if P["i2"] < 30 else "moderately inconsistent" if P["i2"] < 60 else "inconsistent" if P["i2"] < 90 else "highly inconsistent"
+    pr = P.get("ratio_prediction")
+    s.append(f"The studies were {het} (I² = {P['i2']:.0f}%" + (f"; 95% prediction interval {pr[0]:.2f} to {pr[1]:.2f}" if pr else "") + ").")
+    for name, x in (g.get("sensitivity") or {}).items():
+        lead = {"reported numbers only": "With reported numbers only (no values estimated from figures)",
+                "without high risk of bias": "Without the studies at high risk of bias"}.get(name, f"Sensitivity ({name})")
+        s.append(f"{lead}, " + (f"{x['k']} studies gave {x['ratio']:.2f} (95% CI {x['ratio_ci'][0]:.2f} to {x['ratio_ci'][1]:.2f})."
+                                     if "ratio" in x else f"only {x['k']} {'study was' if x['k'] == 1 else 'studies were'} left, too few to pool."))
+    n_est = sum(1 for x in g["studies"] if x["estimated"])
+    if n_est:
+        s.append(f"{n_est} of {P['k']} studies contribute values estimated from a figure, not reported numbers.")
+    return " ".join(s)
+
+
+def group_basis(ctx: Ctx, plan: dict, g: dict) -> tuple[str, str, str]:
+    """What a pooled group's statements rest on, as text: (pooled result, its studies with their effects and rows,
+    their risk of bias). The writer and the check both get exactly this."""
+    from .. import rows
+    st = ctx.store
+    cols = rows.columns_of(next(f for f in ctx.topic["extraction_fields"] if f["name"] == plan["field"]))
+    lines = []
+    for s in g["studies"]:
+        got = (st.get(f"ext:{s['rid']}")["data"]["fields"][plan["field"]].get("rows")) or []
+        lines.append(f"[{s['rid']}] {s['label']}: ratio {s['ratio']:.2f} (95% CI {s['ratio_ci'][0]:.2f} to {s['ratio_ci'][1]:.2f})"
+                     + (f", weight {s['weight']:.0f}%" if "weight" in s else "") + (", estimated from a figure" if s["estimated"] else "")
+                     + (", high risk of bias" if s["high_risk"] else "") + ("; " + "; ".join(s["notes"]) if s["notes"] else ""))
+        lines += [f"    row {i}: {rows.row_text(got[i - 1], cols)}" for i in s["rows"] if i <= len(got)]
+    return pooled_text(g), "\n".join(lines), rob_text(ctx, [s["rid"] for s in g["studies"]]) or "(not assessed)"
+
+
+def unpooled_basis(ctx: Ctx, plan: dict, res: dict) -> tuple[str, str, str] | None:
+    """The groups that were not pooled, as text: per group the studies by direction of effect; why rows could not be
+    used; the names of the pooled groups. None when the plan names no direction column or nothing is left."""
+    from collections import defaultdict
+    from .. import meta
+    st = ctx.store
+    dcol = (plan.get("columns") or {}).get("direction")
+    if not dcol:
+        return None
+    pooled = [g for g in res["groups"] if g["pooled"]]
+    done = {tuple(g["group"].values()) for g in pooled}
+    votes: dict = defaultdict(lambda: defaultdict(set))
+    for rid in st.included_ids():
+        ext = st.get(f"ext:{rid}")
+        for r in ((ext["data"]["fields"].get(plan["field"]) or {}).get("rows") or []) if ext and ext["status"] == "active" else []:
+            if meta.left_out(r, plan) or not r.get(dcol):
+                continue
+            key = tuple(meta.refined(r, plan).values())
+            if key not in done:
+                votes[key][r[dcol]].add(rid)
+    lines = [f"- {' · '.join(k)}: " + "; ".join(f"{d}: {len(v)} ({', '.join(sorted(v)[:8])}{', …' if len(v) > 8 else ''})"
+                                                for d, v in sorted(by.items(), key=lambda x: -len(x[1])))
+             for k, by in sorted(votes.items(), key=lambda x: -len(set().union(*x[1].values()))) if len(set().union(*by.values())) >= 2]
+    if not lines:
+        return None
+    return ("\n".join(lines[:80]), "; ".join(f"{k}: {v}" for k, v in res["not_used"].items()),
+            "; ".join(" · ".join(g["group"].values()) for g in pooled) or "none")
+
+
+POOLED_BASIS = "POOLED RESULT (computed by code; its numbers are correct by construction):\n{}\n\nSTUDIES IN THIS GROUP " \
+               "(effect of each; the extracted rows it comes from):\n{}\n\nRISK OF BIAS (overall per study):\n{}"
+UNPOOLED_BASIS = "OUTCOME GROUPS NOT POOLED (studies by direction of effect, with their ids):\n{}\n\nWHY ROWS COULD NOT BE USED " \
+                 "IN THE POOLING (rows, by reason): {}\n\nPOOLED GROUPS: {}"
+
+
+def _grouped(ctx: Ctx, plan: dict) -> list[dict]:
+    """A review with a meta-analysis plan: one call per pooled group (its pooled result, its studies' rows), and one
+    for what could not be pooled. The whole extraction table is never sent in one prompt. Each statement keeps what
+    it was written from (`basis`), which is what its check and repair read."""
+    from .. import meta
+    res = meta.analyse(ctx)
+    pooled = [g for g in res["groups"] if g["pooled"]]
+
+    def one(g):
+        ptxt, studies, rob = group_basis(ctx, plan, g)
+        rids = [s["rid"] for s in g["studies"]]
+        out = ctx.writer.chat(ctx.msgs(prompts.SYNTH_POOLED.format(
+            question=ctx.topic["question"], group=" · ".join(g["group"].values()) + f" ({g['measure']})", pooled=ptxt,
+            studies=studies, rob=rob)), tag="synthesis")
+        return [{**s, "pooled": ptxt, "basis": POOLED_BASIS.format(ptxt, studies, rob),
+                 "cites": [c for c in (s.get("cites") or rids) if str(c).strip("[] ") in rids] or rids}
+                for s in out.get("statements", []) if isinstance(s, dict) and s.get("text")]
+    statements = [s for ss in ctx.map(one, pooled, label="Writing the synthesis") for s in ss]
+    ub = unpooled_basis(ctx, plan, res)
+    if ub:
+        out = ctx.writer.chat(ctx.msgs(prompts.SYNTH_UNPOOLED.format(question=ctx.topic["question"], groups=ub[0], not_used=ub[1],
+                                                                    pooled=ub[2])), tag="synthesis")
+        statements += [{**s, "basis": UNPOOLED_BASIS.format(*ub)} for s in out.get("statements", []) if isinstance(s, dict) and s.get("text")]
+    return [{**s, "id": f"S{i}"} for i, s in enumerate(statements, 1)]
+
+
 def synthesize(ctx: Ctx) -> int:
-    out = ctx.writer.chat(ctx.msgs(prompts.SYNTH.format(question=ctx.topic["question"], table=table_text(ctx),
-                                                       rob=rob_text(ctx))), tag="synthesis")
-    statements = out.get("statements", [])
+    from .. import meta
+    plan = meta.plan_of(ctx.topic)
+    if plan:
+        statements = _grouped(ctx, plan)
+    else:
+        out = ctx.writer.chat(ctx.msgs(prompts.SYNTH.format(question=ctx.topic["question"], table=table_text(ctx),
+                                                           rob=rob_text(ctx))), tag="synthesis")
+        statements = out.get("statements", [])
     keep = write_statements(ctx, statements, "synthesis drafted")
     for n in ctx.store.by_type("synthesis", active_only=True):   # a re-written synthesis replaces the old one
         if n["id"] not in keep:
@@ -130,9 +254,11 @@ ABSENCE = re.compile(r"\b(not reported|not available|not provided|not stated|not
                      r"none of the (included )?studies|in (none|no) (of the )?(included )?stud(y|ies))\b", re.I)
 
 
-def statement_evidence(ctx: Ctx, cites: list[str], text: str = "") -> str:
+def statement_evidence(ctx: Ctx, cites: list[str], text: str = "", basis: str = "") -> str:
     """The cited studies' data with quotes; for a statement that says something is absent or not reported,
     every included study's data as well, so the check can find what the statement says is missing."""
+    if basis:      # a statement of a grouped synthesis: judged on exactly what it was written from
+        return basis
     ev = table_text(ctx, cites, with_quotes=True) or "(no active cited studies)"
     if text and ABSENCE.search(text):
         others = [r for r in ctx.store.included_ids() if r not in cites]
@@ -146,7 +272,7 @@ def verify_one(ctx: Ctx, sid: str, tag: str = "synthesis_verify") -> dict:
     n = st.get(sid)
     d = n["data"]
     res = ctx.hub.model("synthesis", "verifier").chat(ctx.msgs(prompts.SYNTH_VERIFY.format(sid=d["id"], text=d["text"],
-                                                                 evidence=statement_evidence(ctx, d["cites"], d["text"]))), tag=tag, schema=schemas.SYNTH_VERIFY)
+                                                                 evidence=statement_evidence(ctx, d["cites"], d["text"], d.get("basis", "")))), tag=tag, schema=schemas.SYNTH_VERIFY)
     n["data"]["verification"] = res
     if res.get("support") in ("unsupported", "partially_supported") or res.get("overgeneralization"):
         st.flag(sid, f"Self-check: {res.get('support')}; overgeneralization={res.get('overgeneralization')}; "
@@ -169,7 +295,7 @@ def repair_one(ctx: Ctx, sid: str) -> str:
     issues = f"{res.get('support')}; overgeneralization={res.get('overgeneralization')}; " + "; ".join(res.get("issues") or [])
     out = ctx.writer.chat(ctx.msgs(prompts.SYNTH_REPAIR.format(sid=d["id"], text=d["text"], scope=d.get("scope", ""),
                                                                cites=", ".join(d["cites"]), issues=issues,
-                                                               evidence=statement_evidence(ctx, d["cites"], d["text"]))),
+                                                               evidence=statement_evidence(ctx, d["cites"], d["text"], d.get("basis", "")))),
                          tag="synthesis_repair")
     for f in n["flags"]:
         if f["status"] == "open" and f.get("source") == "synthesis_verify":
@@ -182,6 +308,9 @@ def repair_one(ctx: Ctx, sid: str) -> str:
     cites, fixes = reconcile_citations(st, out["text"], cites)
     data = {"id": d["id"], "text": str(out["text"]), "cites": cites, "scope": str(out.get("scope") or d.get("scope", "")),
             "repaired_from": {"text": d["text"], "cites": d["cites"], "check": res}}
+    for k in ("pooled", "basis"):
+        if d.get(k):
+            data[k] = d[k]
     if fixes:
         data["citation_fixes"] = fixes
     st.write(sid, "synthesis", data, depends_on=statement_deps(st, cites), reason="repaired after the self-check")

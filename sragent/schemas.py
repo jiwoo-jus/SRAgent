@@ -42,6 +42,7 @@ SYNTH_VERIFY = _obj(support=_enum("supported", "partially_supported", "unsupport
 
 def extract(fields: list[dict]) -> dict:
     """The reply to EXTRACT for this review's data items (extraction_fields)."""
+    from . import rows
     item = _obj(value=STR, evidence=_EVIDENCE, entities=_list(STR), note=STR)
-    return _obj(fields=_obj(**{f["name"]: item for f in fields}),
+    return _obj(fields=_obj(**{f["name"]: rows.schema(f) if rows.is_rows(f) else item for f in fields}),
                 eligibility_doubt={"anyOf": [_obj(criterion=STR, why=STR), {"type": "null"}]})

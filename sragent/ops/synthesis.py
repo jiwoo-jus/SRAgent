@@ -59,3 +59,26 @@ def render(ctx) -> dict:
     from ..stages import report
     report.write_reports(ctx)
     return {"message": "report written"}
+
+
+@operation("synthesis.meta_analysis", "synthesis", "deterministic")
+def meta_analysis(ctx) -> dict:
+    """Compute effect sizes and pooled estimates from the rows items (topic.meta_analysis); writes <run folder>/meta/."""
+    from .. import meta
+    r = meta.write(ctx)
+    return {"message": f"{r['rows_used']} of {r['rows']} rows gave an effect; {r['pooled_groups']} of {r['groups']} groups pooled", **r}
+
+
+@operation("report.manuscript", "report", "deterministic")
+def manuscript(ctx) -> dict:
+    """Render the report for readers from its plan (report_plan.yaml beside the run file); no model call."""
+    from .. import reportplan
+    return reportplan.render(ctx)
+
+
+@operation("report.inventory", "report", "deterministic")
+def inventory(ctx) -> dict:
+    """What the data can show for a planned report: studies per model and concept, pooled groups, figure types."""
+    from .. import reportplan
+    plan = reportplan.load(ctx) if reportplan.plan_path(ctx).exists() else {}
+    return {"message": "what a report plan can draw on", **reportplan.inventory(ctx, plan)}

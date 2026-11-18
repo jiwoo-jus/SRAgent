@@ -9,14 +9,15 @@ from __future__ import annotations
 import json
 import re
 
-from .. import prompts, schemas, terms
+from .. import prompts, rows, schemas, terms
 from ..context import Ctx
 from ..evidence import attach, chunks, cites_of, data_chars, packed, segment
 
 
 def fields_text(fields: list[dict]) -> str:
-    return "\n".join(f"- {f['name']}{' [' + f['kind'] + ']' if f.get('kind') in ('drug', 'disease') else ''}: "
-                     f"{f['description']}" for f in fields)
+    return "\n".join(rows.prompt_text(f) if rows.is_rows(f) else
+                     f"- {f['name']}{' [' + f['kind'] + ']' if f.get('kind') in ('drug', 'disease') else ''}: {f['description']}"
+                     for f in fields)
 
 
 def validate_field_terms(value: str, kind: str, entities: list[str] | None = None,
@@ -46,6 +47,10 @@ def postprocess(ctx: Ctx, rid: str, fields_out: dict, text: str, src_node: str) 
     evidence = []
     clean = {}
     for name, f in spec.items():
+        if rows.is_rows(f):
+            clean[name], ev = _postprocess_rows(f, fields_out.get(name), text, src_node)
+            evidence += ev
+            continue
         raw = fields_out.get(name) or {"value": "NR"}
         if not isinstance(raw, dict):
             raw = {"value": str(raw)}
@@ -62,6 +67,47 @@ def postprocess(ctx: Ctx, rid: str, fields_out: dict, text: str, src_node: str) 
                     item["entities"] = ents
         clean[name] = item
     return clean, evidence
+
+
+def _best_sentences(nums: list[str], text: str, most: int = 2) -> list[str]:
+    """Where a row's numbers are in the source, when the model cited nothing: the sentence (or table row) holding the
+    most of them, then the one holding the most of the rest (n is often in Methods, the value in Results). At most
+    `most` sentences; a tie goes to the first."""
+    left = [re.compile(r"(?<![\w.])" + re.escape(n) + r"(?![\w.])")
+            for n in dict.fromkeys(nums) if not (n.isdigit() and int(n) < 10)]
+    segs = [(s["sid"], _norm_numbers(s["text"])) for s in segment(text)]
+    out = []
+    while left and len(out) < most:
+        sid, hit = max(((sid, [r for r in left if r.search(t)]) for sid, t in segs), key=lambda x: len(x[1]), default=(None, []))
+        if not hit:
+            break
+        out.append(sid)
+        left = [r for r in left if r not in hit]
+    return out
+
+
+def _postprocess_rows(f: dict, raw, text: str, src_node: str) -> tuple[dict, list]:
+    """A rows item: each row's numbers checked against its cited sentences (a number found in exactly one other
+    sentence gets it cited; one found nowhere is listed in row["uncovered"]), its sentences located."""
+    raw = raw if isinstance(raw, dict) else {}
+    got = rows.clean(f, raw.get("rows"))
+    cols = rows.columns_of(f)
+    evidence = []
+    for i, r in enumerate(got, 1):
+        probe = {"value": rows.numbers_of(r, cols)}
+        cites = cover_numbers(probe, r.pop("evidence", []), text) if probe["value"] else r.pop("evidence", [])
+        if not cites and probe["value"]:      # the model cited nothing (evidence is optional for rows): the best sentence
+            cites = _best_sentences(probe["value"].split(), text)
+            if cites:
+                probe["auto_evidence"] = cites
+        for k in ("uncovered", "auto_evidence"):
+            if probe.get(k):
+                r[k] = probe[k]
+        evidence.append(attach(r, cites, text, f"{f['name']}[{i}] {rows.row_text(r, cols)[:80]}", src_node))
+    item = {"value": rows.summary(f, got), "rows": got}
+    if isinstance(raw.get("note"), str) and raw["note"].strip():
+        item["note"] = raw["note"].strip()[:300]
+    return item, evidence
 
 
 _NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?(?![\w.])")
@@ -161,6 +207,17 @@ def _merge(ctx: Ctx, rid: str, outs: list[dict], text: str) -> tuple[dict, list]
     by_id = {s["sid"]: s for s in segment(text)}
     final, need = {}, {}
     for name in spec:
+        if rows.is_rows(spec[name]):    # rows from every part, each once; no merge call
+            seen, got = set(), []
+            for o in outs:
+                v = (o.get("fields") or {}).get(name)
+                for r in (v.get("rows") if isinstance(v, dict) else None) or []:
+                    k = json.dumps({a: b for a, b in r.items() if a != "evidence"} if isinstance(r, dict) else r, sort_keys=True, default=str)
+                    if k not in seen:
+                        seen.add(k)
+                        got.append(r)
+            final[name] = {"rows": got}
+            continue
         cands = []
         for o in outs:
             v = (o.get("fields") or {}).get(name)
@@ -342,6 +399,8 @@ def keep_human_edits(old: dict | None, fields: dict) -> list[str]:
         if isinstance(item, dict) and item.get("edited") and name in fields:
             fresh = fields[name]
             fields[name] = {**item, "agent_value": fresh.get("value"), "agent_evidence": fresh.get("evidence", [])}
+            if "rows" in fresh:
+                fields[name]["agent_rows"] = fresh["rows"]
             kept.append(name)
     return kept
 
@@ -366,18 +425,24 @@ def extract_all(ctx: Ctx, only: list[str] | None = None) -> int:
 def table_text(ctx: Ctx, rids: list[str] | None = None, with_quotes: bool = False) -> str:
     st = ctx.store
     rids = rids if rids is not None else st.included_ids()
-    rows = []
+    spec = {f["name"]: f for f in ctx.topic.get("extraction_fields") or []}
+    out = []
     for rid in rids:
         n = st.get(f"ext:{rid}")
         if not n or n["status"] != "active":
             continue
         f = n["data"]["fields"]
         if with_quotes:
-            d = {k: {"value": v["value"], "evidence": v.get("quote", "")} for k, v in f.items()}
+            d = {k: {"value": _value_text(spec.get(k), v), "evidence": v.get("quote", "")} for k, v in f.items()}
         else:
-            d = {k: v["value"] for k, v in f.items()}
-        rows.append(f"[{rid}] " + json.dumps(d, ensure_ascii=False))
-    return "\n".join(rows)
+            d = {k: _value_text(spec.get(k), v) for k, v in f.items()}
+        out.append(f"[{rid}] " + json.dumps(d, ensure_ascii=False))
+    return "\n".join(out)
+
+
+def _value_text(f: dict | None, item: dict) -> str:
+    """An item's value as the synthesis reads it: a rows item with its rows."""
+    return rows.as_text(f, item) if f and rows.is_rows(f) and item.get("rows") else item["value"]
 
 
 def revalidate_terms(ctx: Ctx) -> dict:

@@ -144,12 +144,26 @@ def _protocol_for_search(d: dict):
     return {k: d.get(k) for k in ("question", "pico", "key_concepts")}            # search.build_query, protocol_brief
 
 
+def _row_columns(v: dict):
+    """A rows item's rows without their located sentences (a change of a number or a column counts; re-locating
+    the same evidence does not)."""
+    return [{k: x for k, x in r.items() if k not in ("spans", "quote", "check")} for r in (v or {}).get("rows") or []]
+
+
 def _extracted_values(d: dict):
-    return {k: (v or {}).get("value") for k, v in (d.get("fields") or {}).items()}    # rob._ext_brief
+    return {k: ((v or {}).get("value"), _row_columns(v)) for k, v in (d.get("fields") or {}).items()}    # rob._ext_brief
 
 
 def _extracted_with_quotes(d: dict):
-    return {k: ((v or {}).get("value"), (v or {}).get("quote", "")) for k, v in (d.get("fields") or {}).items()}   # extraction.table_text
+    return {k: ((v or {}).get("value"), (v or {}).get("quote", ""), _row_columns(v))
+            for k, v in (d.get("fields") or {}).items()}   # extraction.table_text
+
+
+def _record_content(d: dict):
+    """What a record says about the study, as screening, extraction and quality assessment read it. Its
+    bibliographic details (journal, volume, issue, pages) are for the reference list, so completing them does not
+    make a decision out of date."""
+    return {k: d.get(k) for k in ("title", "abstract", "pub_types", "doi", "pmcid", "year", "authors")}
 
 
 def _rob_ratings(d: dict):
@@ -161,6 +175,12 @@ def _rob_ratings(d: dict):
 # rating. A pair not listed reads the whole input.
 READS = {
     ("search", "protocol"): _protocol_for_search,
+    ("screen", "record"): _record_content,
+    ("eligibility", "record"): _record_content,
+    ("fulltext", "record"): _record_content,
+    ("extraction", "record"): _record_content,
+    ("rob", "record"): _record_content,
+    ("pdf_request", "record"): _record_content,
     ("strategy", "protocol"): _protocol_for_search,
     ("rob", "extraction"): _extracted_values,
     ("synthesis", "extraction"): _extracted_with_quotes,

@@ -33,7 +33,10 @@ def prisma(ctx: Ctx) -> dict:
         for c in n["data"].get("because", []) or ["unspecified"]:
             reasons[c] = reasons.get(c, 0) + 1
     rule_excl = [n for n in screens if n["data"].get("rule") and dec(n) == "exclude"]
-    return {"identified": s.get("n_identified"), "duplicates": s.get("n_duplicates"),
+    fetched = s.get("n_identified") or 0
+    returned = s.get("n_returned") or len(s.get("retrieved_pmids") or []) or fetched
+    return {"identified": max(returned, fetched), "no_article_record": max(0, returned - fetched),
+            "duplicates": s.get("n_duplicates"),
             "screened": len(screens), "excluded_by_rules": len(rule_excl),
             "excluded_title_abstract": len([n for n in ta_excl if not n["data"].get("rule")]),
             "awaiting_fulltext_review": len(pending_ta),
@@ -75,7 +78,10 @@ def report_markdown(ctx: Ctx) -> str:
     s = (st.get("search") or {}).get("data", {})
     L += ["", f"**Search.** PubMed: `{s.get('query', '')}` ({s.get('hits', '?')} hits).", "",
           "## Study selection (PRISMA)", "",
-          f"Records identified: {pr['identified']}; duplicates removed: {pr['duplicates']}; "
+          f"Records identified: {pr['identified']}; "
+          + (f"returned by the query with no article record (e.g. book chapters): {pr['no_article_record']}; "
+             if pr.get("no_article_record") else "")
+          + f"duplicates removed: {pr['duplicates']}; "
           f"screened: {pr['screened']}; excluded by publication-type rules: {pr['excluded_by_rules']}; "
           f"excluded at title/abstract: {pr['excluded_title_abstract']}; full texts sought: {pr['reports_sought']}; "
           f"not retrieved: {pr['reports_not_retrieved']}; unreadable files: {pr['reports_unreadable']}; "
@@ -193,8 +199,9 @@ def evidence_text(ctx: Ctx, max_chars_per_study: int = 0) -> str:
         for c in n["data"]["cites"]:          # the cited studies' extracted values, so the claim can be checked here
             e = st.get(f"ext:{c}")
             if e and e["status"] == "active":
+                keep = statement_fields(ctx)
                 vals = "; ".join(f"{k}: {str(x.get('value', 'NR'))[:160]}" for k, x in e["data"]["fields"].items()
-                                 if k in STATEMENT_FIELDS and str(x.get("value", "NR")).upper() != "NR")
+                                 if k in keep and str(x.get("value", "NR")).upper() != "NR")
                 block.append(f"      [{c}] {vals or '(no values)'}")
         L.append(cap("\n".join(block)))
     from ..attention import by_node, open_flags as _open
@@ -368,16 +375,31 @@ def _source_html(ctx: Ctx, rid: str) -> str:
             + "".join(rows) + "</div></details>")
 
 
-# the extracted items a synthesis statement can rest on (shown per cited study in the evidence bundle)
-STATEMENT_FIELDS = ("study_design", "population", "sample_size", "intervention", "pk_results", "exposure_response", "efficacy_safety")
+def population_field(ctx: Ctx) -> str:
+    """The extraction item that says who or what was studied: the review's `population_field`, else an item named
+    for the population or the model. Reviews name this item differently (population, model_system), so nothing here
+    may assume one name."""
+    names = [f["name"] for f in ctx.topic.get("extraction_fields") or [] if isinstance(f, dict) and f.get("name")]
+    want = (ctx.topic.get("population_field") or "").strip()
+    if want in names:
+        return want
+    return next((n for n in names if "population" in n or "model" in n or "participant" in n), names[0] if names else "")
+
+
+def statement_fields(ctx: Ctx) -> tuple[str, ...]:
+    """What a cited study contributes to a statement: its extracted items, except the rows item (its numbers are in
+    the pooled tables) and any item the review marks as not part of a statement's basis."""
+    from .. import rows as rowslib
+    return tuple(f["name"] for f in ctx.topic.get("extraction_fields") or []
+                 if isinstance(f, dict) and f.get("name") and not rowslib.is_rows(f))
 
 
 def cited_populations(ctx: Ctx, cites: list[str]) -> str:
-    out = []
+    out, field = [], population_field(ctx)
     for c in cites:
         n = ctx.store.get(f"ext:{c}")
         if n and n["status"] == "active":
-            out.append(f"[{c}] {n['data']['fields'].get('population', {}).get('value', 'NR')[:200]}")
+            out.append(f"[{c}] {str((n['data']['fields'].get(field) or {}).get('value', 'NR'))[:200]}")
     return "; ".join(out) or "(none)"
 
 
@@ -403,7 +425,11 @@ FLAG_KIND = {"screening": "awaiting classification", "screening_unclear": "inclu
 
 def open_flags(ctx: Ctx) -> dict:
     """Every open flag on an active output of the review, for the report and the Overview (in agent-only mode nobody
-    answers them during the run, so they must be visible at the end)."""
+    answers them during the run, so they must be visible at the end).
+
+    A term that RxNorm, PubChem, ChEMBL or MONDO does not list is not a doubt about the review: those vocabularies
+    do not hold ordinary obstetric wording (preterm birth, recurrent miscarriage). Those notes are returned apart,
+    deduplicated, as `terms`, so the flag count stays what someone has to answer."""
     from ..attention import by_node, open_flags as _open
     st = ctx.store
     inc = set(st.included_ids())
@@ -419,8 +445,14 @@ def open_flags(ctx: Ctx) -> dict:
             rec = (st.get(f"rec:{rid}") or {}).get("data", {}) if rid else {}
             items.append({"node": n["id"], "study": (rec.get("title") or "") if rid else (n["data"].get("id") or ""),
                           "source": FLAG_KIND.get(f.get("source"), f.get("source") or "flag"), "text": f["text"]})
+    terms, seen = [], set()
+    for x in [i for i in items if i["source"] == "term"]:
+        if (x["node"], x["text"]) not in seen:       # the same term in two rows of one study is one note
+            seen.add((x["node"], x["text"]))
+            terms.append(x)
+    items = [i for i in items if i["source"] != "term"]
     by = Counter(x["source"] for x in items)
-    return {"n": len(items), "by_source": dict(sorted(by.items())), "items": items}
+    return {"n": len(items), "by_source": dict(sorted(by.items())), "items": items, "terms": terms}
 
 
 def _flags(n, derived: dict | None = None) -> str:
@@ -477,8 +509,14 @@ def _vancouver(r: dict) -> str:
     out = (f"{_e(au)}. " if au else "") + f"{_e(t)}. "
     if r.get("journal"):
         out += f"<i>{_e(r['journal'])}</i>. "
-    if r.get("year"):
-        out += f"{_e(r['year'])}. "
+    if r.get("year"):          # year;volume(issue):pages, as a journal reference list prints it
+        out += _e(r["year"]) + (";" if r.get("volume") or r.get("pages") else ". ")
+    if r.get("volume"):
+        out += f"{_e(r['volume'])}" + (f"({_e(r['issue'])})" if r.get("issue") else "")
+    if r.get("pages"):
+        out += f":{_e(r['pages'])}"
+    if r.get("volume") or r.get("pages"):
+        out += ". "
     if r.get("doi"):
         out += f"doi:<a href='https://doi.org/{_e(r['doi'])}'>{_e(r['doi'])}</a>. "
     if r.get("pmid"):
@@ -514,9 +552,14 @@ def _flow(ctx: Ctx) -> dict:
     reasons = Counter((D(n).get("because") or ["unspecified"])[0] for n in ft_ex)
     from .. import state
     added = set((state.snowball(st) or {}).get("added") or [])
-    identified, dups = s.get("n_identified") or 0, s.get("n_duplicates") or 0
-    f = {"identified": identified, "duplicates": dups,
-         "not_sampled": max(0, identified - dups - s["sampled_to"]) if s.get("sampled_to") else 0,
+    fetched, dups = s.get("n_identified") or 0, s.get("n_duplicates") or 0
+    # every record the query returned, including the ones the database gave back in a form that is not an article
+    # record (PubMed book chapters, for example): PRISMA counts what the search returned, so they are shown and then
+    # removed with a reason, never dropped in silence.
+    returned = s.get("n_returned") or len(s.get("retrieved_pmids") or []) or fetched
+    identified = max(returned, fetched)
+    f = {"identified": identified, "duplicates": dups, "no_record": max(0, identified - fetched),
+         "not_sampled": max(0, fetched - dups - s["sampled_to"]) if s.get("sampled_to") else 0,
          "citation": sum(1 for n in screens if n["id"].split(":", 1)[1] in added),
          "screened": len(screens), "excluded_screen": len(ta_ex),
          "excluded_screen_rules": sum(1 for n in ta_ex if D(n).get("rule")),
@@ -531,7 +574,8 @@ def _flow(ctx: Ctx) -> dict:
          "included_by_rule": sum(1 for n in ft if D(n)["decision"] == "include" and D(n).get("unclear_by_rule") == "include"),
          "included_doubt": sum(1 for n in ft if D(n)["decision"] == "include" and
                                any(x["status"] == "open" and x.get("source") == "eligibility_doubt" for x in n["flags"]))}
-    f["reconciles"] = identified - dups - f["not_sampled"] + f["citation"] == f["screened"]
+    f["reconciles"] = identified - f["no_record"] - dups - f["not_sampled"] + f["citation"] == f["screened"] \
+        and f["sought"] - f["not_retrieved"] - f["unreadable"] - f["excluded_before_assessment"] == f["assessed"]
     return f
 
 
@@ -545,6 +589,9 @@ def _prisma_figure(ctx: Ctx, f: dict, crit_by_id: dict, n_fig: int) -> str:
     if f["citation"]:
         ident += f"<li>Citation searching of included studies (n = {f['citation']})</li>"
     removed = f"<b>Records removed before screening</b><ul><li>Duplicate records (n = {f['duplicates']})</li>"
+    if f.get("no_record"):
+        removed += (f"<li>Returned by the query but not available as an article record, e.g. book chapters "
+                    f"(n = {f['no_record']})</li>")
     if f["not_sampled"]:
         removed += f"<li>Not sampled for screening (n = {f['not_sampled']})</li>"
     screened_ex = (f"<b>Records excluded (n = {f['excluded_screen']})</b><ul>"
@@ -583,10 +630,20 @@ def _prisma_figure(ctx: Ctx, f: dict, crit_by_id: dict, n_fig: int) -> str:
             + (f"<ul><li>Included by the pipeline rule although a criterion stayed unclear at full text, flagged (n = {f['included_by_rule']})</li></ul>"
                if f.get("included_by_rule") else "") + "</div>"
             f"</div>")
-    note = ("" if f["reconciles"] else
-            f"<p class='foot'>Note: the identification counts do not add up to the records screened "
-            f"({f['identified']} − {f['duplicates']} − {f['not_sampled']} + {f['citation']} ≠ {f['screened']}); "
-            f"check the search and citation-searching logs of this run.</p>")
+    sums = ("<p class='foot'>How the counts add up: "
+            + " − ".join([f"{f['identified']} identified"] + [f"{n} {lab}" for n, lab in
+                                                              [(f['no_record'], 'with no article record'), (f['duplicates'], 'duplicates'),
+                                                               (f['not_sampled'], 'not sampled')] if n])
+            + (f" + {f['citation']} by citation searching" if f["citation"] else "")
+            + f" = {f['screened']} screened; "
+            + " − ".join([f"{f['sought']} sought"] + [f"{n} {lab}" for n, lab in
+                                                      [(f['not_retrieved'], 'not retrieved'), (f['unreadable'], 'unreadable'),
+                                                       (f['excluded_before_assessment'], 'excluded by rule')] if n])
+            + f" = {f['assessed']} assessed; {f['assessed']} − {f['excluded_fulltext']} excluded"
+            + (f" − {f['awaiting_classification']} awaiting classification" if f["awaiting_classification"] else "")
+            + f" = {f['included']} included.</p>")
+    note = sums + ("" if f["reconciles"] else
+                   "<p class='foot'>Note: those counts do not add up; check the search and screening logs of this run.</p>")
     return (f"<figure id='fig-prisma'>{grid}<figcaption><b>Figure {n_fig}.</b> PRISMA 2020 flow diagram of study selection. "
             f"Reasons for exclusion at full text are counted by the primary reason recorded for each report.</figcaption>{note}</figure>")
 
@@ -652,7 +709,9 @@ def report_html(ctx: Ctx) -> str:
     H.append("<div class='notice'><b>Status of this report</b>Generated by SRAgent, a research prototype. Eligibility decisions, extracted data, "
              "quality judgements and synthesis statements are drafts produced by an AI agent. Each is linked to the source sentences it relies on "
              "(Appendix A) and must be verified by qualified reviewers before any clinical, regulatory or policy use.</div>")
-    toc = [("sum", "Summary", 0)] + ([("flags", "Open flags (needs a person)", 0)] if open_flags(ctx)["n"] else []) + [("methods", "1 Methods", 0), ("results", "2 Results", 0), ("res-selection", "2.1 Study selection", 1),
+    _of = open_flags(ctx)
+    toc = [("sum", "Summary", 0)] + ([("terms", "Terms not found in a reference vocabulary", 0)] if _of.get("terms") else []) \
+        + ([("flags", "Open flags (needs a person)", 0)] if _of["n"] else []) + [("methods", "1 Methods", 0), ("results", "2 Results", 0), ("res-selection", "2.1 Study selection", 1),
            ("res-char", "2.2 Characteristics of included studies", 1), ("res-results", "2.3 Results of individual studies", 1),
            ("res-rob", "2.4 Study quality (risk of bias)", 1), ("res-syn", "2.5 Synthesis", 1), ("refs", "References", 0),
            ("app-a", "Appendix A Study-level data with supporting evidence", 0), ("app-b", "Appendix B Studies excluded at full text", 0),
@@ -675,16 +734,31 @@ def report_html(ctx: Ctx) -> str:
              f"<p><b>Results.</b> {f['screened']} records were screened, {f['assessed']} full-text reports were assessed and "
              f"{f['included']} studies were included ({n_ft_inc} assessed from the full text, {f['included'] - n_ft_inc} from the abstract only)."
              + (f" {f['awaiting_classification']} reports await classification." if f["awaiting_classification"] else "")
-             + f" The synthesis comprises {len(syn)} statements; the automated check judged {sup.get('supported', 0)} supported by the cited data"
-             + (f", {sup.get('partially_supported', 0)} partially supported" if sup.get("partially_supported") else "")
-             + (f", {sup.get('unsupported', 0)} unsupported" if sup.get("unsupported") else "") + ".</p></div>")
+             + (f" The synthesis comprises {len(syn)} statements." if syn else "")
+             + (f" The automated check against the cited data has not been run on them (synthesis.verify)."
+                if syn and sup.get("unchecked") == len(syn) else
+                f" The automated check judged {sup.get('supported', 0)} of them supported by the cited data"
+                + (f", {sup.get('partially_supported', 0)} partially supported" if sup.get("partially_supported") else "")
+                + (f", {sup.get('unsupported', 0)} unsupported" if sup.get("unsupported") else "")
+                + (f", {sup['unchecked']} not checked" if sup.get("unchecked") else "") + "." if syn else "")
+             + "</p></div>")
 
     # ---------------- open flags: what the agent could not settle (needs a person)
     of = open_flags(ctx)
+    if of.get("terms"):
+        H.append("<h2 id='terms'>Terms not found in a reference vocabulary</h2><p class='prose note'>"
+                 f"{len(of['terms'])} extracted term(s) that RxNorm, PubChem, ChEMBL or MONDO does not list. These "
+                 "vocabularies cover drugs, compounds and diseases, not ordinary obstetric or laboratory wording, so a "
+                 "miss here is about the vocabulary, not about the value. They are listed for checking, and are not "
+                 "counted as open flags.</p>")
+        H.append(_table("<b>Table F2.</b> Extracted terms a reference vocabulary does not list.",
+                        ["Output", "Study", "What the agent says"],
+                        [[f"<a href='#{_e(x['node'])}'><span class='mono'>{_e(x['node'])}</span></a>", _e(x["study"][:90]), _e(x["text"])]
+                         for x in of["terms"]], cls=["nw", "", ""]))
     if of["n"]:
         H.append(f"<h2 id='flags'>Open flags (needs a person)</h2><p class='prose note'>{of['n']} point(s) the agent raised and nobody "
-                 "has answered: a self-check that failed, an inclusion decided by a rule, an eligibility doubt, a value without a source "
-                 "sentence or a term not found in a database. Each links to the output concerned.</p>")
+                 "has answered: a self-check that failed, an inclusion decided by a rule, an eligibility doubt or a value without a "
+                 "source sentence. Each links to the output concerned.</p>")
         H.append(_table("<b>Table F1.</b> Open flags by output.", ["Output", "Study", "Kind", "What the agent says"],
                         [[f"<a href='#{_e(x['node'])}'><span class='mono'>{_e(x['node'])}</span></a>", _e(x["study"][:90]),
                           _e(_label(x["source"])), _e(x["text"])] for x in of["items"]], cls=["nw", "", "nw", ""]))
@@ -700,7 +774,13 @@ def report_html(ctx: Ctx) -> str:
                       _e(c["text"])] for c in crit_list], cls=["nw", "nw", "nw", ""]))
     H.append("<h3>1.2 Information sources and search</h3><div class='prose'>")
     if s.get("database") and s.get("database") != "Imported records":
-        H.append(f"<p>{_e(s['database'])} was searched with the strategy below ({_e(s.get('hits', '?'))} hits).</p>")
+        import datetime as _dt
+        when = (st.get("search") or {}).get("updated")
+        day = _dt.date.fromtimestamp(when).isoformat() if when else ""
+        H.append(f"<p>{_e(s['database'])} was searched with the strategy below"
+                 + (f", last on {day}" if day else "") + f" ({_e(s.get('hits', '?'))} hits). "
+                 + ("No other database, trial registry or grey-literature source was searched, and the strategy has not been "
+                    "peer-reviewed (PRESS).</p>"))
     src = ctx.topic.get("records") or {}
     if src.get("source") == "synergy":
         H.append(f"<p>Records for screening were taken from the benchmark record set {_e(src.get('synergy_key'))} "
@@ -743,8 +823,25 @@ def report_html(ctx: Ctx) -> str:
              "rationale and supporting sentences.</p>")
     H.append(_table(f"<b>Table {tno()}.</b> Quality domains.", ["Domain", "", "Signalling question"],
                     [[f"D{i + 1}", _e(_label(d["name"])), _e(d.get("description", ""))] for i, d in enumerate(doms)], cls=["nw", "nw", ""]))
-    H.append("<h3>1.6 Synthesis</h3><p class='prose'>Findings were summarised narratively. Each statement cites the included studies it rests on "
-             "and was checked automatically against the extracted data of those studies (supported, partially supported or unsupported).</p>")
+    from .. import meta as _meta
+    mplan = _meta.plan_of(ctx.topic)
+    H.append("<h3>1.6 Synthesis</h3><p class='prose'>Findings were summarised narratively. Each statement cites the included studies it rests on"
+             + (" and was checked automatically against the extracted data of those studies (supported, partially supported or unsupported)."
+                if any((n["data"].get("verification") or {}).get("support") for n in syn) else
+                "; the automated check of each statement against those data has not been run.")
+             + "</p>")
+    if mplan:    # what the numbers in this review are, and how they were pooled: PRISMA 2020 items 12 and 13
+        res = (st.get("meta") or {}).get("data") or {}
+        gb = ", ".join(_label(g).lower() for g in mplan.get("group_by") or [])
+        H.append("<p class='prose'>Results that reported a value, a group size and a measure of spread for both groups were turned into effect "
+                 "sizes: the log ratio of means for continuous outcomes and the log risk ratio for binary ones, with medians converted to means "
+                 "by the method of Wan and colleagues where only quartiles or a range were given. Effect sizes were pooled by random effects "
+                 "(DerSimonian-Laird between-study variance, Hartung-Knapp confidence interval) within groups defined by "
+                 f"{gb or 'the grouping of the analysis plan'}, so that a concentration in blood, the same molecule inside a cell and its "
+                 f"transcript are never one estimate. A group was pooled from {mplan.get('min_studies', 3)} studies on; heterogeneity is "
+                 f"reported as I\u00b2, and a prediction interval only from {_meta.PREDICTION_MIN} studies on, below which it cannot be "
+                 "estimated. Sensitivity analyses leave out values read from figures and studies rated at high risk of bias. Reporting bias "
+                 "across studies (funnel plots, small-study effects) was not assessed, and no formal certainty rating (GRADE) was applied.</p>")
 
     # ---------------- 2 Results
     H.append("<h2 id='results'>2 Results</h2><h3 id='res-selection'>2.1 Study selection</h3><div class='prose'>")
@@ -829,8 +926,9 @@ def report_html(ctx: Ctx) -> str:
     for n in syn:
         d = n["data"]
         v = d.get("verification") or {}
+        pfield = population_field(ctx)
         pops = "".join(f"<div class='ev'><b>{_e(lab.get(c, c))}</b> {_cite([c], num)}: "
-                       f"{_e(((st.get(f'ext:{c}') or {}).get('data') or {}).get('fields', {}).get('population', {}).get('value', 'NR'))}</div>"
+                       f"{_e((((st.get(f'ext:{c}') or {}).get('data') or {}).get('fields', {}).get(pfield) or {}).get('value', 'NR'))}</div>"
                        for c in d.get("cites", []))
         H.append(f"<div class='stmt' id='{_e(n['id'])}'><p><span class='sid'>{_e(d['id'])}</span>{_e(d['text'])} {_cite(d.get('cites', []), num)}</p>"
                  f"<div class='smeta'>Automated check: {_badge(v.get('support', 'unchecked'))} · Scope: {_e(d.get('scope') or 'not stated')} · version {n['version']}</div>"
@@ -933,10 +1031,140 @@ def report_html(ctx: Ctx) -> str:
     return "\n".join(H)
 
 
+SPLIT_OVER = 4_000_000      # characters: a report larger than this is written as a main page and appendix pages
+PART_SIZE = 2_000_000       # characters per appendix page
+PARTS_DIR = "report_parts"
+_MAIN, _PART = "\x00MAIN\x00", "\x00PART:{}\x00"
+
+
+def _with_meta(ctx: Ctx, html: str) -> str:
+    """The report with the quantitative synthesis (sragent/meta.py) after the narrative one, from the current rows."""
+    from .. import meta
+    if not meta.plan_of(ctx.topic):
+        return html
+    res = meta.analyse(ctx)
+    pooled = [g for g in res["groups"] if g["pooled"]]
+    gb = res["group_by"]
+
+    def br(x):
+        return "" if not x else f"k = {x['k']}" if "ratio" not in x else f"{x['ratio']:.2f} ({x['ratio_ci'][0]:.2f}–{x['ratio_ci'][1]:.2f}), k = {x['k']}"
+    rows = [[_e(" · ".join(g["group"][k] for k in gb)), _e(g["measure"]), str(g["pooled"]["k"]),
+             f"<b>{g['pooled']['ratio']:.2f}</b> ({g['pooled']['ratio_ci'][0]:.2f}–{g['pooled']['ratio_ci'][1]:.2f})", f"{g['pooled']['i2']:.0f}%",
+             (lambda pr: f"{pr[0]:.2f}–{pr[1]:.2f}" if pr else "")(g["pooled"].get("ratio_prediction")),
+             _e(br(g["sensitivity"].get("reported numbers only"))), _e(br(g["sensitivity"].get("without high risk of bias")))] for g in pooled]
+    body = (f"<p class='prose'>{res['rows_used']} of {res['rows']} extracted rows gave an effect size; {len(pooled)} groups have at least "
+            f"{res['min_studies']} studies and were pooled (random effects, Hartung-Knapp interval; treated / control, so a ratio below 1 "
+            f"means lower with treatment). Values estimated from figures are marked ≈ in the plots.</p>"
+            + _table("<b>Pooled estimates.</b>", ["Group", "Measure", "Studies", "Ratio (95% CI)", "I²", "Prediction interval",
+                                                  "Reported numbers only", "Without high risk of bias"], rows, cls=["", "nw", "nw", "nw", "nw", "nw", "nw", "nw"])
+            + "<p class='prose note'>Rows not used: " + _e("; ".join(f"{k}: {v}" for k, v in res["not_used"].items())) + ".</p>"
+            + "".join(f"<div style='margin:18px 0;overflow-x:auto'>{meta.forest_svg(g)}</div>" for g in pooled))
+    mark = "<h2 id='app-a'>"
+    sect = f"<h2 id='meta'>Quantitative synthesis (pooled estimates)</h2>{body}"
+    return html.replace(mark, sect + mark, 1) if mark in html else html.replace("</body></html>", sect + "</body></html>")
+
+
+def split_report(html: str, limit: int = SPLIT_OVER, part_size: int = PART_SIZE) -> tuple[str, dict[str, str]]:
+    """A report too large for a browser to render in one page (thousands of screened records, every included study's
+    source text) as a main page and appendix pages: Appendix A (study-level data) and Appendix C (every eligibility
+    decision) go to pages of about `part_size` characters, listed in the main page. Links between pages keep working:
+    an anchor that moved to another page is addressed there. Returns (main, {page name: html}); links to other pages
+    are written with markers that `place_links` turns into addresses. A small report comes back whole, with no pages."""
+    import re
+    if len(html) <= limit:
+        return html, {}
+    try:
+        body = html.index("<body>") + len("<body>")
+        a0, b0 = html.index("<h2 id='app-a'>"), html.index("<h2 id='app-b'>")
+        c0, d0 = html.index("<h2 id='app-c'>"), html.index("<h2 id='app-d'>")
+        a_first = html.index("<div class='study'>", a0, b0)
+        c_first = html.index("<tr id='screen:", c0, d0)
+        c_end = html.rindex("</tbody></table></div>", c0, d0)
+    except ValueError:       # not the expected layout: left whole
+        return html, {}
+    head, tail = html[:body], "</body></html>"
+
+    def chunks(items: list[str]) -> list[list[str]]:
+        out, cur, size = [], [], 0
+        for it in items:
+            if cur and size + len(it) > part_size:
+                out.append(cur)
+                cur, size = [], 0
+            cur.append(it)
+            size += len(it)
+        return out + ([cur] if cur else [])
+    studies = ["<div class='study'>" + x for x in html[a_first:b0].split("<div class='study'>")[1:]]
+    recs = ["<tr id='screen:" + x for x in html[c_first:c_end].split("<tr id='screen:")[1:]]
+    c_open = html[c0:c_first]                                   # heading, note and the table's header row
+    th = c_open[c_open.index("<div class='tbl'>"):]
+    back = f"<p class='noprint'><a href='{_MAIN}'>← Back to the report</a></p>"
+    parts: dict[str, str] = {}
+    a_list, c_list = [], []
+    a_ch, c_ch = chunks(studies), chunks(recs)
+    for i, ch in enumerate(a_ch, 1):
+        name = f"appendix_a_{i:02d}.html"
+        labels = [re.sub(r"<[^>]+>", "", re.search(r"<h3[^>]*>(.*?)</h3>", s, re.S).group(1)).strip() for s in ch]
+        parts[name] = (f"{head}{back}<h2>Appendix A. Study-level data with supporting evidence (page {i} of {len(a_ch)})</h2>"
+                       + "".join(ch) + back + tail)
+        first, last = (re.sub(r"\s*\[\d+\]$", "", x) for x in (labels[0], labels[-1]))
+        a_list.append(f"<li><a href='{_PART.format(name)}'>Page {i}</a>: {_e(first)} to {_e(last)} ({len(ch)} studies)</li>")
+    for i, ch in enumerate(c_ch, 1):
+        name = f"appendix_c_{i:02d}.html"
+        ids = [re.match(r"<tr id='screen:([^']+)'", r).group(1) for r in ch]
+        parts[name] = (f"{head}{back}<h2>Appendix C. Eligibility assessment of all records (page {i} of {len(c_ch)})</h2>{th}"
+                       + "".join(ch) + "</tbody></table></div>" + back + tail)
+        c_list.append(f"<li><a href='{_PART.format(name)}'>Page {i}</a>: records {_e(ids[0])} to {_e(ids[-1])} ({len(ch)})</li>")
+    note = "<p class='prose note'>This part of the report is on separate pages, so that each opens quickly; links to a study or a record lead to its page.</p>"
+    main = (html[:a_first] + note + "<ul>" + "".join(a_list) + "</ul>" + html[b0:c0]
+            + c_open[:c_open.index("<div class='tbl'>")] + note + "<ul>" + "".join(c_list) + "</ul>" + html[c_end + len("</tbody></table></div>"):])
+    where = {}
+    for name, text in parts.items():
+        for x in re.findall(r"\bid='([^']+)'", text[body:]):
+            where[x] = name
+    main_ids = set(re.findall(r"\bid=['\"]([^'\"]+)['\"]", main))
+
+    def relink(text: str, here: str | None) -> str:
+        def fix(m):
+            x = m.group(1)
+            if x in main_ids:
+                return m.group(0) if here is None else f"href='{_MAIN}#{x}'"
+            owner = where.get(x)
+            return m.group(0) if owner is None or owner == here else f"href='{_PART.format(owner)}#{x}'"
+        return re.sub(r"href='#([^']+)'", fix, text)
+    return relink(main, None), {name: relink(text, name) for name, text in parts.items()}
+
+
+def place_links(text: str, main: str, part) -> str:
+    """Turn the link markers of `split_report` into addresses: `main` for the main page, part(name) for a page."""
+    import re
+    return re.sub(r"\x00PART:([^\x00]+)\x00", lambda m: part(m.group(1)), text).replace(_MAIN, main)
+
+
 def write_reports(ctx: Ctx):
+    import shutil
     md = report_markdown(ctx)
+    html = _with_meta(ctx, report_html(ctx))
+    from .. import meta
+    if meta.plan_of(ctx.topic):          # the quantitative synthesis as files too: meta/summary.md, effects.csv, forest plots
+        meta.write(ctx)
+        summary = (ctx.run_dir / "meta" / "summary.md").read_text()
+        md += "\n" + summary.replace("# Quantitative synthesis", "## Quantitative synthesis (pooled estimates)") + \
+              "\nForest plots: `meta/forest_*.svg`; one line per study and group: `meta/effects.csv`.\n"
+    main, parts = split_report(html, SPLIT_OVER, PART_SIZE)
+    pdir = ctx.run_dir / PARTS_DIR
+    if pdir.exists():
+        shutil.rmtree(pdir)
+    if parts:
+        pdir.mkdir()
+        for name, text in parts.items():
+            (pdir / name).write_text(place_links(text, "../report_evidence.html", lambda n: n))
+        main = place_links(main, "report_evidence.html", lambda n: f"{PARTS_DIR}/{n}")
+        ctx.log(f"[report] the report is large: Appendix A and C are on {len(parts)} pages in {PARTS_DIR}/")
     (ctx.run_dir / "report.md").write_text(md)
-    (ctx.run_dir / "report_evidence.html").write_text(report_html(ctx))
+    (ctx.run_dir / "report_evidence.html").write_text(main)
+    from .. import rows
+    if any(rows.is_rows(f) for f in ctx.topic.get("extraction_fields") or []):
+        rows.export_csv(ctx)            # meta_rows.csv: the rows items of every included study, for the analysis
     ctx.store.write("report", "report", {"prisma": prisma(ctx), "chars": len(md)},
                      depends_on=[n["id"] for n in ctx.store.by_type("synthesis", active_only=True)], reason="rendered")
     ctx.save()

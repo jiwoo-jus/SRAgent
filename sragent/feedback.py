@@ -84,7 +84,8 @@ def sandbox_delta(live_store, sandbox_store, cs: dict) -> None:
 def editable(n: dict) -> dict:
     d, t = n["data"], n["type"]
     if t == "extraction":
-        return {"fields": {k: {"value": v.get("value"), "evidence": _ev(v)} for k, v in d["fields"].items()}}
+        return {"fields": {k: ({"rows": [{c: x for c, x in r.items() if c not in ("spans", "quote", "check")} for r in v["rows"]]}
+                               if "rows" in v else {"value": v.get("value"), "evidence": _ev(v)}) for k, v in d["fields"].items()}}
     if t in SCREEN_TYPES:
         return {"criteria": [{"id": a.get("id"), "assessment": a.get("assessment"), "evidence": _ev(a)}
                              for a in d.get("criteria", [])],
@@ -465,6 +466,8 @@ def _check_one(sb: Ctx, node_id: str, before, tp: str) -> list[str]:
         old = (before or {}).get("fields", {}) if isinstance(before, dict) else {}
         for name, item in n["data"]["fields"].items():
             if item.get("value") == (old.get(name) or {}).get("value") or str(item.get("value", "")).upper().startswith("NR"):
+                continue
+            if "rows" in item:      # rows: each number was checked against its cited sentences when written
                 continue
             desc = next((f["description"] for f in sb.topic["extraction_fields"] if f["name"] == name), "")
             r = verifier(sb).chat(sb.msgs(prompts.SOURCE_CHECK.format(rid=rid, field=name, description=desc, value=item["value"],

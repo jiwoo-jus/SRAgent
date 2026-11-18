@@ -290,10 +290,22 @@ def study_detail(ctx: Ctx, rid: str, with_text: bool = False) -> dict:
                           "evidence": _ev(a), "check": (a.get("check") or {}).get("status")}
                          for a in d.get("criteria", [])]}
     if ext:
+        from .rows import columns_of, is_rows
+        spec = {f["name"]: f for f in ctx.topic.get("extraction_fields") or []}
+
+        def _rows(k, v):
+            if not (k in spec and is_rows(spec[k])):
+                return {}
+            return {"columns": [c["name"] for c in columns_of(spec[k])],
+                    "rows": [{**{c: r.get(c) for c in (x["name"] for x in columns_of(spec[k]))}, "evidence": _ev(r),
+                              "check": (r.get("check") or {}).get("status"), "uncovered": r.get("uncovered") or [],
+                              "off_list": r.get("off_list") or [], "note": r.get("note") or "",
+                              "estimated": r.get("estimated") or [], "figure_read": r.get("figure_read")} for r in v.get("rows") or []]}
         out["extraction"] = {"status": ext["status"], "version": ext["version"], "source_kind": ext["data"].get("source_kind"),
                              "fields": [{"name": k, "value": v.get("value"), "evidence": _ev(v),
                                          "check": (v.get("check") or {}).get("status"), "terms": v.get("terms", []),
-                                         "uncovered": v.get("uncovered") or [], "note": v.get("note") or "", "edited": v.get("edited")}
+                                         "uncovered": v.get("uncovered") or [], "note": v.get("note") or "", "edited": v.get("edited"),
+                                         **_rows(k, v)}
                                         for k, v in ext["data"]["fields"].items()]}
     if rob:
         from .stages.rob import reasons_of as rob_reasons
@@ -342,6 +354,12 @@ def study_markdown(d: dict) -> str:
             if f.get("edited"):
                 v += f" *(edited by you; was: {str(f['edited'].get('before'))[:80]})*"
             L.append(f"| {f['name']} | {v} | {ev.replace('|', '/')} |")
+        for f in d["extraction"]["fields"]:
+            if f.get("rows"):
+                cols = f["columns"]
+                L += ["", f"### {f['name']}", "| # | " + " | ".join(cols) + " | evidence |", "|---" * (len(cols) + 2) + "|"]
+                L += [f"| {i} | " + " | ".join("" if r.get(c) is None else str(r[c]).replace("|", "/") for c in cols)
+                      + f" | {' '.join(e['sid'] for e in r['evidence'])} |" for i, r in enumerate(f["rows"], 1)]
     if d.get("rob"):
         L += ["", f"## Risk of bias (overall {d['rob']['overall']}{', confirmed' if d['rob'].get('confirmed') else ', draft'})"]
         for x in d["rob"]["domains"]:

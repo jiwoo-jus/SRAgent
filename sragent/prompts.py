@@ -321,8 +321,8 @@ RISK OF BIAS (overall per study):
 Return JSON:
 {{"statements": [{{"id": "S1", "text": str, "cites": [study ids], "scope": str}}]}}
 Rules:
-- 5 to 10 statements covering design/populations, main PK findings, exposure-response or efficacy,
-  safety if reported, and limitations / certainty.
+- 5 to 10 statements covering what the question asks: designs and populations, the main findings for each
+  outcome, dose or exposure relationships and safety if reported, and limitations / certainty.
 - One claim per statement: one finding or quantity in one population or regimen. A finding that
   differs by population, regimen or subgroup is several statements, not one broad one.
 - Cite at most 6 studies per statement: the ones whose extracted data carry that claim, not every
@@ -333,6 +333,57 @@ Rules:
 - Numbers must come from the extracted data.
 - Say that something was not reported or not available only after checking every field of every
   study in the table; such a statement must cite the studies whose data you checked."""
+
+SYNTH_POOLED = """Write the statements of a systematic review's synthesis for ONE outcome group whose studies were pooled.
+
+QUESTION: {question}
+
+GROUP: {group}
+
+POOLED RESULT (computed by code from the studies' extracted rows; do not recompute or change any number):
+{pooled}
+
+STUDIES IN THIS GROUP (effect of each; the extracted rows it comes from):
+{studies}
+
+RISK OF BIAS (overall per study):
+{rob}
+
+Return JSON: {{"statements": [{{"text": str, "cites": [study ids], "scope": str}}]}}
+Rules:
+- 1 or 2 statements. The first states the pooled finding: the direction and size as the pooled ratio with its 95%
+  confidence interval and the number of studies, in plain words (a ratio of 0.60 is "40% lower"), and whether the
+  interval includes no effect. Say how consistent the studies are (I², the prediction interval) and, when given,
+  what the sensitivity analyses show (reported numbers only; without high risk of bias).
+- A second statement only for something the pooled number hides and the rows show: a dose or condition pattern, one
+  study that drives the result, values that are estimates read from figures, studies at high risk of bias.
+- Every number comes from the pooled result or the rows above. No causal or clinical claim beyond the group.
+- cites: the studies of this group that carry the statement (all of them for the pooled finding).
+- scope: the outcome, the model (cells, tissue, pregnant women) and the comparison the statement applies to."""
+
+SYNTH_UNPOOLED = """Write the statements of a systematic review's synthesis for the outcomes that could NOT be pooled, and
+for the limits of the evidence. The pooled outcomes are written separately; do not repeat them.
+
+QUESTION: {question}
+
+OUTCOME GROUPS NOT POOLED (too few studies with usable numbers). For each: the studies that report a direction of
+effect, counted by direction, with their ids:
+{groups}
+
+WHY ROWS COULD NOT BE USED IN THE POOLING (rows, by reason):
+{not_used}
+
+POOLED GROUPS (for context only): {pooled}
+
+Return JSON: {{"statements": [{{"text": str, "cites": [study ids], "scope": str}}]}}
+Rules:
+- 3 to 6 statements. A finding is worth a statement when at least 3 studies of one group agree in direction, or when
+  the studies of a group clearly disagree; say how many studies point each way. These are counts of direction, not
+  effect sizes: say so, and give no pooled number.
+- One statement on the limits: how much of the evidence is shown only in figures or without group sizes or spread,
+  and what that means for certainty.
+- Cite at most 6 studies per statement, only studies listed above for that group.
+- scope: the outcome and the model the statement applies to."""
 
 SYNTH_VERIFY = """Check whether a synthesis statement is supported by the extracted data it cites.
 
